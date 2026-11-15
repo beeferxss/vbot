@@ -49,8 +49,21 @@ class Store {
         return this;
     }
 
+    // Folds the write-ahead log into the main file so a copy of the database
+    // is complete even if it is taken while this process is still running.
+    checkpoint() {
+        if (!this.db) return;
+        this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    }
+
     close() {
-        if (this.db) this.db.close();
+        if (!this.db) return;
+        try {
+            this.checkpoint();
+        } catch {
+            // closing is best effort; the file is still usable
+        }
+        this.db.close();
         this.db = null;
     }
 

@@ -1,0 +1,127 @@
+name: Bot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: vbot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --silent
+
+      - name: Generate configuration
+        env:
+          BOT_OWNER_KEY: ${{ secrets.BOT_OWNER_KEY }}
+          BOT_ADMIN_KEY: ${{ secrets.BOT_ADMIN_KEY }}
+          BOT_TRUSTED_KEY: ${{ secrets.BOT_TRUSTED_KEY }}
+          ENABLE_SERVERS: ${{ vars.VBOT_ENABLE_SERVERS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f config.example.json
+          node scripts/make-config.js
+
+      - name: Run bot with automatic crash recovery
+        shell: bash
+        env:
+          RUN_WINDOW_SECONDS: ${{ vars.VBOT_RUN_WINDOW_SECONDS || '14100' }}
+        run: |
+          set -euo pipefail
+
+          RESTART_DELAY=10
+          deadline=$((SECONDS + RUN_WINDOW_SECONDS))
+
+          while (( SECONDS < deadline )); do
+            remaining=$((deadline - SECONDS))
+
+            set +e
+            timeout \
+              --signal=INT \
+              --kill-after=15s \
+              "${remaining}s" \
+              node src/index.js 2>&1
+            set -e
+
+            if (( SECONDS >= deadline )); then
+              break
+            fi
+
+            echo "bot exited, restarting in ${RESTART_DELAY}s"
+            sleep "$RESTART_DELAY"
+          done
+
+      - name: Commit and push bot data
+        id: persist
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          node scripts/checkpoint.js
+
+          git remote set-url origin \
+            "https://github.com/${GITHUB_REPOSITORY}.git"
+
+          git rm -r --cached --ignore-unmatch -- config.json node_modules
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "no data changes to persist"
+            exit 0
+          fi
+
+          git -c core.hooksPath=/dev/null commit \
+            -m "chore: persist bot data"
+
+          AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+
+          git -c http.extraheader="$AUTH_HEADER" \
+            push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Automatically start next session
+        if: steps.persist.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          WORKFLOW_ID="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows" \
+            --jq '[.workflows[] | select(.name == "Bot" and .state == "active")] | first | .id')"
+
+          if [[ -z "$WORKFLOW_ID" || "$WORKFLOW_ID" == "null" ]]; then
+            exit 1
+          fi
+
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/${WORKFLOW_ID}/dispatches" \
+            -f ref="${GITHUB_REF_NAME}"

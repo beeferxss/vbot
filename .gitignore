@@ -6,6 +6,9 @@ config.json
 .env
 .env.*
 *.log
-data/*.sqlite
-data/*.sqlite-*
 .DS_Store
+
+# The database itself is committed by the bot workflow so state persists
+# between runs; only the write-ahead log and shared-memory files are ignored.
+data/*.sqlite-wal
+data/*.sqlite-shm

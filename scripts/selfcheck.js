@@ -208,6 +208,19 @@ async function main() {
     });
 
     // --- commands -----------------------------------------------------------
+    await check('store checkpoints the WAL before the database is committed', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-db-'));
+        const file = path.join(dir, 'vbot.sqlite');
+        const scratch = new Store(file).open();
+        scratch.setUserLevel('Steve', LEVEL.ADMIN, 'selfcheck');
+        scratch.checkpoint();
+        const wal = `${file}-wal`;
+        const walSize = fs.existsSync(wal) ? fs.statSync(wal).size : 0;
+        assert.strictEqual(walSize, 0, 'write-ahead log should be empty after checkpoint');
+        scratch.close();
+        assert.ok(fs.statSync(file).size > 0, 'database file should hold data');
+    });
+
     const registry = new CommandRegistry({
         dir: path.join(ROOT, 'src', 'commands'),
         config,
