@@ -1,0 +1,9 @@
+# Reference copy of noratbot (read-only sample) — must never be committed or pushed
+example/
+
+node_modules/
+config.json
+.env
+.env.*
+*.log
+.DS_Store
