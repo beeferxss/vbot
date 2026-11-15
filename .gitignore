@@ -6,4 +6,6 @@ config.json
 .env
 .env.*
 *.log
+data/*.sqlite
+data/*.sqlite-*
 .DS_Store

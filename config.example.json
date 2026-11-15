@@ -1,0 +1,43 @@
+{
+  "minecraft": {
+    "version": false,
+    "servers": [
+      {
+        "id": "example",
+        "enabled": true,
+        "host": "localhost",
+        "port": 25565,
+        "username": "vbot",
+        "auth": "offline",
+        "version": false
+      }
+    ],
+    "connection": {
+      "autoReconnect": true,
+      "reconnectDelayMs": 3000,
+      "maxReconnectDelayMs": 60000,
+      "maxAttempts": 0
+    }
+  },
+  "bot": {
+    "prefixes": ["v:", "!"],
+    "nick": null
+  },
+  "permissions": {
+    "keys": {
+      "owner": "",
+      "admin": "",
+      "trusted": ""
+    },
+    "owner": [],
+    "admin": [],
+    "trusted": []
+  },
+  "storage": {
+    "path": "data/vbot.sqlite"
+  },
+  "logging": {
+    "level": "info",
+    "chat": true
+  }
+}
