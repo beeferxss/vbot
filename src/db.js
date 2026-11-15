@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_players_uuid ON players(uuid);
+CREATE INDEX IF NOT EXISTS idx_users_uuid ON users(uuid);
 `;
 
 class Store {
@@ -83,6 +86,37 @@ class Store {
         if (!key || !uuid) return;
         this.db.prepare('UPDATE players SET uuid = ? WHERE name_key = ?').run(uuid, key);
         this.db.prepare('UPDATE users SET uuid = ? WHERE name_key = ?').run(uuid, key);
+    }
+
+    // Records a name/uuid pair seen in the player list without counting a chat
+    // message, then carries the uuid over to any stored rank for that name.
+    linkPlayer(name, uuid) {
+        const key = Store.key(name);
+        if (!key || !uuid) return null;
+        const now = Date.now();
+        this.db.prepare(`
+            INSERT INTO players (name_key, name, uuid, first_seen, last_seen, messages)
+            VALUES (?, ?, ?, ?, ?, 0)
+            ON CONFLICT(name_key) DO UPDATE SET
+                name = excluded.name,
+                uuid = excluded.uuid
+        `).run(key, name, uuid, now, now);
+        this.db.prepare('UPDATE users SET uuid = ? WHERE name_key = ?').run(uuid, key);
+        return this.getPlayer(name);
+    }
+
+    getPlayerByUUID(uuid) {
+        if (!uuid) return null;
+        return this.db.prepare(
+            'SELECT * FROM players WHERE uuid = ? ORDER BY last_seen DESC LIMIT 1'
+        ).get(uuid) || null;
+    }
+
+    getUserByUUID(uuid) {
+        if (!uuid) return null;
+        return this.db.prepare(
+            'SELECT * FROM users WHERE uuid = ? ORDER BY granted_at DESC LIMIT 1'
+        ).get(uuid) || null;
     }
 
     getUser(name) {

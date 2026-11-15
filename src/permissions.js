@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { normalizeUuid } = require('./minecraft/uuid');
 
 const LEVEL = {
     PUBLIC: 0,
@@ -37,22 +38,30 @@ class Permissions {
         this.logger = logger;
     }
 
-    // Highest of: configured lists, stored grant. Names are matched
-    // case-insensitively; uuid is used when we have one.
+    // Highest of: configured lists, stored grant. A name or a uuid can appear in
+    // the config lists; stored grants are matched by uuid first, so a player who
+    // renames keeps their rank.
     levelFor({ name, uuid } = {}) {
         const key = String(name || '').toLowerCase();
+        const id = normalizeUuid(uuid);
         let level = LEVEL.PUBLIC;
 
         for (const rank of ['owner', 'admin', 'trusted']) {
             const list = Array.isArray(this.config[rank]) ? this.config[rank] : [];
-            const hit = list.some(entry => String(entry).toLowerCase() === key);
+            const hit = list.some(entry => {
+                const value = String(entry);
+                if (value.toLowerCase() === key) return true;
+                return id !== null && normalizeUuid(value) === id;
+            });
             if (hit) level = Math.max(level, parseLevel(rank));
         }
 
-        const stored = this.store?.getUser(name);
-        if (stored) {
-            if (uuid && !stored.uuid) this.store.setPlayerUUID(name, uuid);
-            level = Math.max(level, parseLevel(stored.level) ?? LEVEL.PUBLIC);
+        const byName = this.store?.getUser(name);
+        if (byName) level = Math.max(level, parseLevel(byName.level) ?? LEVEL.PUBLIC);
+
+        if (id) {
+            const byUuid = this.store?.getUserByUUID(id);
+            if (byUuid) level = Math.max(level, parseLevel(byUuid.level) ?? LEVEL.PUBLIC);
         }
 
         return level;

@@ -3,6 +3,8 @@
 const EventEmitter = require('node:events');
 const mc = require('minecraft-protocol');
 const { chatTextFromPacket, parseChatLine } = require('../minecraft/chat');
+const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
+const { playerInfoEntries } = require('../minecraft/players');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -23,6 +25,7 @@ class Bot extends EventEmitter {
         this.reconnectTimer = null;
         this.destroyed = false;
         this.disconnectReason = null;
+        this.known = new Map();
     }
 
     get connection() {
@@ -75,9 +78,13 @@ class Bot extends EventEmitter {
             this.state = 'ready';
             this.disconnectReason = null;
             this.log.info('connected');
-            this.store.touchPlayer(this.server.username);
+            this.store.touchPlayer(this.server.username, this.uuidFor(this.server.username));
             this.emit('ready');
         });
+
+        for (const event of ['player_info', 'player_info_update']) {
+            client.on(event, packet => this.handlePlayerInfo(packet));
+        }
 
         for (const event of CHAT_PACKETS) {
             client.on(event, packet => this.handleChat(chatTextFromPacket(packet)));
@@ -112,7 +119,7 @@ class Bot extends EventEmitter {
         if (this.config.logging?.chat) this.log.info(`<chat> ${line}`);
 
         const parsed = parseChatLine(line);
-        if (parsed) this.store.touchPlayer(parsed.username);
+        if (parsed) this.store.touchPlayer(parsed.username, this.uuidFor(parsed.username));
         this.emit('chat', { line, parsed });
 
         if (parsed) {
@@ -120,6 +127,34 @@ class Bot extends EventEmitter {
                 this.log.error(`command dispatch failed: ${error.stack || error.message}`);
             });
         }
+    }
+
+    // Online-mode servers send real UUIDs in the player list; offline-mode
+    // servers derive them from the name, so nothing needs to arrive at all.
+    handlePlayerInfo(packet) {
+        for (const { name, uuid } of playerInfoEntries(packet)) {
+            if (this.known.get(name.toLowerCase()) === uuid) continue;
+            this.known.set(name.toLowerCase(), uuid);
+            this.store.linkPlayer(name, uuid);
+            this.log.debug(`identity ${name} -> ${uuid}`);
+            this.emit('player', { name, uuid });
+        }
+    }
+
+    // Resolution order: seen in the player list, already stored, then the
+    // offline-mode derivation. Online-mode servers get null until we are told.
+    uuidFor(name) {
+        const key = String(name || '').toLowerCase();
+        if (!key) return null;
+
+        const known = this.known.get(key);
+        if (known) return known;
+
+        const stored = this.store.getPlayer(name)?.uuid;
+        if (stored) return normalizeUuid(stored);
+
+        if (this.server.auth === 'offline') return offlineUuid(name);
+        return null;
     }
 
     chat(message) {

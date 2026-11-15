@@ -106,6 +106,7 @@ class CommandRegistry {
             permissions: this.permissions,
             logger: bot.log,
             username: parsed.username,
+            uuid: typeof bot.uuidFor === 'function' ? bot.uuidFor(parsed.username) : null,
             level,
             levelName: levelName(level),
             args,
