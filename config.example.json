@@ -3,11 +3,65 @@
     "version": false,
     "servers": [
       {
-        "id": "example",
-        "enabled": true,
-        "host": "localhost",
+        "id": "chomens",
+        "enabled": false,
+        "host": "chayapak1.dev",
         "port": 25565,
-        "username": "vbot",
+        "username": "random",
+        "auth": "offline",
+        "version": false
+      },
+      {
+        "id": "blackbox",
+        "enabled": false,
+        "host": "91.99.119.210",
+        "port": 25565,
+        "username": "random",
+        "auth": "offline",
+        "version": false
+      },
+      {
+        "id": "bkbpw",
+        "enabled": false,
+        "host": "kbpw.de",
+        "port": 25565,
+        "username": "random",
+        "auth": "offline",
+        "version": false
+      },
+      {
+        "id": "qwertyad",
+        "enabled": false,
+        "host": "qwertyad.one",
+        "port": 25565,
+        "username": "random",
+        "auth": "offline",
+        "version": false
+      },
+      {
+        "id": "hceboom",
+        "enabled": false,
+        "host": "kaboom.hcesaropz.dev",
+        "port": 25565,
+        "username": "random",
+        "auth": "offline",
+        "version": false
+      },
+      {
+        "id": "kaboom",
+        "enabled": false,
+        "host": "kaboom.pw",
+        "port": 25565,
+        "username": "random",
+        "auth": "offline",
+        "version": false
+      },
+      {
+        "id": "chipmunk",
+        "enabled": false,
+        "host": "chipmunk.land",
+        "port": 17891,
+        "username": "random",
         "auth": "offline",
         "version": false
       }
