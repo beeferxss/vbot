@@ -24,7 +24,7 @@ function defaults() {
             }
         },
         bot: {
-            prefixes: ['|>'],
+            prefixes: ['v\\'],
             nick: null
         },
         permissions: {

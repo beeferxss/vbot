@@ -74,7 +74,7 @@
     }
   },
   "bot": {
-    "prefixes": ["|>"],
+    "prefixes": ["v\\"],
     "nick": "vbot"
   },
   "permissions": {
