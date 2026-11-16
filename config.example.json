@@ -75,7 +75,7 @@
   },
   "bot": {
     "prefixes": ["|>"],
-    "nick": null
+    "nick": "vbot"
   },
   "permissions": {
     "keys": {
