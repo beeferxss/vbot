@@ -32,11 +32,12 @@ jobs:
         run: npm ci --silent
 
       - name: Generate configuration
+        id: config
         env:
           BOT_OWNER_KEY: ${{ secrets.BOT_OWNER_KEY }}
           BOT_ADMIN_KEY: ${{ secrets.BOT_ADMIN_KEY }}
           BOT_TRUSTED_KEY: ${{ secrets.BOT_TRUSTED_KEY }}
-          ENABLE_SERVERS: ${{ vars.VBOT_ENABLE_SERVERS }}
+          BOT_PREFIXES: ${{ vars.VBOT_PREFIXES }}
         shell: bash
         run: |
           set -euo pipefail
@@ -72,9 +73,11 @@ jobs:
             sleep "$RESTART_DELAY"
           done
 
+      # Skipped when no server is enabled, so a misconfigured run does not
+      # chain itself into an endless loop of pointless sessions.
       - name: Commit and push bot data
         id: persist
-        if: always()
+        if: always() && steps.config.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

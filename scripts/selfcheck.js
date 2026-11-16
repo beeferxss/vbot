@@ -32,7 +32,7 @@ function tmpConfig(contents) {
 }
 
 async function main() {
-    const { loadConfig, enabledServers, ConfigError } = require('../src/config');
+    const { loadConfig, ConfigError } = require('../src/config');
     const { Logger } = require('../src/logger');
     const { Store } = require('../src/db');
     const { Permissions, LEVEL } = require('../src/permissions');
@@ -47,10 +47,14 @@ async function main() {
     const examplePath = path.join(ROOT, 'config.example.json');
 
     // --- config -------------------------------------------------------------
-    await check('example config loads with every server disabled', () => {
+    await check('example config has complete, uniquely named servers', () => {
         const config = loadConfig(examplePath);
         assert.ok(config.minecraft.servers.length > 0, 'expected servers');
-        assert.strictEqual(enabledServers(config).length, 0, 'example servers must ship disabled');
+        const ids = config.minecraft.servers.map(server => server.id);
+        assert.strictEqual(new Set(ids).size, ids.length, 'server ids must be unique');
+        for (const server of config.minecraft.servers) {
+            assert.ok(server.host && server.port && server.username, `incomplete server ${server.id}`);
+        }
     });
 
     await check('config defaults are merged in', () => {
