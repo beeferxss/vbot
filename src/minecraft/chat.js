@@ -1,6 +1,6 @@
 'use strict';
 
-const { flatten, stripColors } = require('./text');
+const { flatten, stripColors, toAnsi } = require('./text');
 const { normalizeUuid } = require('./uuid');
 
 // Packet field names differ across protocol versions, so probe the known ones.
@@ -23,6 +23,29 @@ function chatTextFromPacket(packet) {
         const text = flatten(candidate);
         if (text) return text;
     }
+    return '';
+}
+
+// Colours live in the component, and the plain line has already thrown them
+// away, so the same candidates are rendered again with their ANSI styling.
+function ansiFromPacket(packet) {
+    if (!packet || typeof packet === 'string') return '';
+
+    const candidates = [
+        packet.unsignedChatContent,
+        packet.message,
+        packet.content,
+        packet.signedChat,
+        packet.formattedMessage,
+        packet.body?.content
+    ];
+
+    for (const candidate of candidates) {
+        if (!candidate) continue;
+        const ansi = toAnsi(candidate);
+        if (ansi) return ansi;
+    }
+
     return '';
 }
 
@@ -76,6 +99,9 @@ function chatEventFromPacket(event, packet) {
 
         return {
             line: username ? `<${username}> ${message}` : message,
+            ansi: username
+                ? `\x1b[96m<${username}>\x1b[0m ${ansiFromPacket(packet) || message}`
+                : ansiFromPacket(packet) || message,
             message,
             username,
             uuid: normalizeUuid(packet.senderUuid ?? packet.sender),
@@ -85,7 +111,7 @@ function chatEventFromPacket(event, packet) {
 
     const text = stripColors(chatTextFromPacket(packet)).trim();
     if (!text) return null;
-    return { line: text, message: text, username: '', uuid: null, verified: false };
+    return { line: text, ansi: ansiFromPacket(packet) || text, message: text, username: '', uuid: null, verified: false };
 }
 
 module.exports = { chatTextFromPacket, chatEventFromPacket, parseChatLine, senderName };

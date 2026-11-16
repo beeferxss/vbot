@@ -260,7 +260,7 @@ class Bot extends EventEmitter {
             this.store.touchPlayer(parsed.username, uuid);
         }
 
-        this.emit('chat', { line: chat.line, parsed, verified: chat.verified });
+        this.emit('chat', { line: chat.line, ansi: chat.ansi, parsed, verified: chat.verified });
 
         if (parsed) {
             this.registry

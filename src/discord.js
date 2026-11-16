@@ -2,20 +2,22 @@
 
 // Two-way Discord bridge.
 //
-//   Minecraft -> Discord: every player chat line is posted to that server's
-//   channel, one message per conversation burst.
+//   Minecraft -> Discord: the server's chat feed - player chat plus joins,
+//   leaves and other system lines - is posted to that server's channel as an
+//   ANSI code block, one message per burst.
 //
 //   Discord -> Minecraft: messages in that channel are shown in game with a
 //   tellraw, through the core when it is ready and as chat when it is not.
 //
-//   Slash commands: /servers, /players, /say (say needs Manage Server or an id
-//   in discord.adminIds).
+//   Slash commands: /servers, /players and /mc, which runs a vbot command with
+//   the member's Discord rank.
 //
 // discord.js is loaded lazily, so the bot runs and the selfcheck passes when
 // the dependency or the token is missing.
 
 const tellraw = require('./minecraft/tellraw');
 const { LEVEL, levelName } = require('./permissions');
+const { nearestAnsi } = require('./minecraft/text');
 
 const RELAY_INTERVAL_MS = 900;
 const RELAY_MAX_BUFFER = 50;
@@ -52,6 +54,28 @@ function discordComponent({ author, message }) {
         { text: ': ', color: 'gray' },
         { text: oneLine(message, MC_LIMIT), color: 'white' }
     ];
+}
+
+function stripAnsi(text) {
+    return String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// Discord's ansi code block only renders the sixteen terminal colours, so any
+// truecolor the chat renderer produced is reduced to the nearest one.
+function toDiscordAnsi(text) {
+    return String(text ?? '')
+        .replace(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g, (_, red, green, blue) =>
+            `\x1b[${nearestAnsi(Number(red), Number(green), Number(blue))}m`)
+        .replace(/\x1b\[48;2;[0-9;]+m/g, '')
+        .replace(/\u00a7./g, '');
+}
+
+function protectFences(text) {
+    return String(text ?? '').replace(/```/g, "'''");
+}
+
+function ansiBlock(text) {
+    return `\`\`\`ansi\n${protectFences(text)}\n\`\`\``;
 }
 
 function onlineNames(bot) {
@@ -211,20 +235,23 @@ class DiscordBridge {
 
     handleMinecraftChat(bot, event) {
         if (!this.ready || this.config.relay?.chat === false) return;
-        const parsed = event?.parsed;
-        if (!parsed?.username || !parsed?.message) return;
-        if (parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
-        if (this.isCommand(parsed.message)) return;
 
         const relay = this.relays.get(bot.id);
         if (!relay) return;
-        if (this.consumeEcho(relay, parsed.message)) return;
 
-        relay.buffer.push(formatMinecraftLine({
-            server: bot.id,
-            username: parsed.username,
-            message: parsed.message
-        }));
+        const parsed = event?.parsed;
+        // The styled line is what the server actually showed, so system
+        // messages (joins, leaves, deaths) are relayed too, not just player chat.
+        const ansi = String(event?.ansi || event?.line || '').trim();
+        if (!ansi) return;
+
+        const plain = stripAnsi(ansi).trim();
+        if (!plain) return;
+        if (parsed?.username && parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
+        if (parsed?.message && this.isCommand(parsed.message)) return;
+        if (this.consumeEcho(relay, plain)) return;
+
+        relay.buffer.push(toDiscordAnsi(ansi));
         while (relay.buffer.length > RELAY_MAX_BUFFER) relay.buffer.shift();
 
         if (!relay.timer) {
@@ -260,7 +287,7 @@ class DiscordBridge {
                 }
                 if (!batch.length) break;
                 await channel.send({
-                    content: batch.join('\n').slice(0, RELAY_LIMIT),
+                    content: ansiBlock(batch.join('\n').slice(0, RELAY_LIMIT)),
                     allowedMentions: { parse: [] }
                 });
             }
@@ -315,11 +342,6 @@ class DiscordBridge {
                     .setName('server')
                     .setDescription('Server id (default: the one linked to this channel)')
                     .setRequired(false)),
-            new SlashCommandBuilder()
-                .setName('say')
-                .setDescription('Send a message into Minecraft (Trusted)')
-                .addStringOption(option => option.setName('server').setDescription('Server id, or all').setRequired(true))
-                .addStringOption(option => option.setName('message').setDescription('What to say').setRequired(true)),
             new SlashCommandBuilder()
                 .setName('mc')
                 .setDescription('Run a vbot command with your Discord rank')
@@ -477,28 +499,6 @@ class DiscordBridge {
                 : `${bot.id}: no players online.`);
         }
 
-        if (interaction.commandName === 'say') {
-            if (this.rankFor(interaction.member) < LEVEL.TRUSTED) {
-                return reply('The Trusted role is required for /say.');
-            }
-
-            const server = String(interaction.options.getString('server') || 'all').toLowerCase();
-            const message = interaction.options.getString('message') || '';
-            const targets = server === 'all'
-                ? this.bots()
-                : this.bots().filter(bot => bot.id.toLowerCase() === server);
-
-            if (!targets.length) return reply(`No server "${server}".`);
-            let sent = 0;
-            for (const bot of targets) {
-                if (this.sendToMinecraft(bot, interaction.member?.displayName || interaction.user.username, message)) {
-                    this.noteEcho(this.relays.get(bot.id), message);
-                    sent += 1;
-                }
-            }
-            return reply(sent ? `Sent to ${sent} server(s).` : 'No connected server could take it.');
-        }
-
         if (interaction.commandName === 'mc') {
             // /mc is a staff tool: a public-level command such as `cb` would
             // otherwise hand raw server commands to every member.
@@ -555,8 +555,10 @@ function createDiscordBridge({ config, manager, logger, registry }) {
 
 module.exports = {
     DiscordBridge,
-    createDiscordBridge,
+    ansiBlock,
     channelFor,
+    createDiscordBridge,
     discordComponent,
-    formatMinecraftLine
+    formatMinecraftLine,
+    toDiscordAnsi
 };

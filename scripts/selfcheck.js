@@ -2119,6 +2119,53 @@ async function main() {
         assert.strictEqual(unknown.ok, false);
     });
 
+    await check('chat is relayed as an ansi code block', async () => {
+        const { DiscordBridge, ansiBlock, toDiscordAnsi } = require('../src/discord');
+        const { chatEventFromPacket } = require('../src/minecraft/chat');
+
+        assert.strictEqual(ansiBlock('a\nb'), '```ansi\na\nb\n```');
+        assert.strictEqual(toDiscordAnsi('\x1b[38;2;255;255;85mx'), '\x1b[93mx');
+
+        const event = chatEventFromPacket('system_chat', {
+            content: { text: 'oDpPuqfKKNGT6g left the game', color: 'yellow' }
+        });
+        assert.strictEqual(event.line, 'oDpPuqfKKNGT6g left the game');
+        assert.strictEqual(event.ansi, '\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m');
+
+        const posted = [];
+        const bot = {
+            id: 'kbpw',
+            state: 'ready',
+            server: { username: 'Bot', channelId: '111' },
+            online: new Map(),
+            client: {},
+            chat: () => true
+        };
+        const bridge = new DiscordBridge({
+            config: {
+                bot: { prefixes: ['v\\'] },
+                discord: { enabled: true, token: 'x', relay: { chat: true, discord: true } }
+            },
+            manager: { list: () => [bot], on() {}, removeListener() {} },
+            logger
+        });
+        bridge.client = {
+            isReady: () => true,
+            channels: { cache: new Map([['111', { send: async message => { posted.push(message); } }]]) }
+        };
+        bridge.started = true;
+        bridge.buildRelays();
+
+        bridge.handleMinecraftChat(bot, { line: event.line, ansi: event.ansi, parsed: null, verified: false });
+        await bridge.flush(bridge.relays.get('kbpw'));
+
+        assert.strictEqual(posted.length, 1);
+        assert.strictEqual(posted[0].content, '```ansi\n\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m\n```');
+        assert.deepStrictEqual(posted[0].allowedMentions, { parse: [] });
+
+        bridge.destroy();
+    });
+
     store.close();
 
     console.log(results.join('\n'));
