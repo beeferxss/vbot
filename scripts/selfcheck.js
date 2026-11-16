@@ -360,7 +360,7 @@ async function main() {
         core.refill('test');
         assert.strictEqual(
             sent[0],
-            '/fill 32 64 -16 47 79 -1 minecraft:command_block replace'
+            '/fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace'
         );
 
         const first = core.run('say hello');
@@ -370,7 +370,7 @@ async function main() {
         assert.strictEqual(writes[0].name, 'update_command_block');
         assert.strictEqual(writes[0].payload.command, 'say hello');
         // The block is repeating, and the packet has to say so.
-        assert.strictEqual(writes[0].payload.mode, 2, 'an impulse block is written as impulse');
+        assert.strictEqual(writes[0].payload.mode, 1, 'a repeating block is written as repeating');
         assert.strictEqual(writes[0].payload.flags, 0b101, 'always active, tracking output');
         assert.strictEqual(writes[1].payload.command, 'gamemode creative');
 
@@ -487,7 +487,7 @@ async function main() {
         modern.refill('test');
         assert.strictEqual(
             named[0],
-            '/fill 0 64 0 8 72 8 minecraft:command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
         );
         assert.match(modern.status(), /name \{"text"/);
 
@@ -496,7 +496,7 @@ async function main() {
         legacy.refill('test');
         assert.strictEqual(
             named[1],
-            '/fill 0 64 0 8 72 8 minecraft:command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
         );
 
         // Without a name the fill stays plain.
@@ -509,7 +509,7 @@ async function main() {
         plainCore.refill('test');
         assert.strictEqual(
             named[2],
-            '/fill 0 64 0 8 72 8 minecraft:command_block replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block replace'
         );
 
         modern.destroy();
@@ -1277,7 +1277,7 @@ async function main() {
         // the fill must not be routed back into the core.
         packets.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:command_block replace']);
+        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
         assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
         core.destroy();
     });

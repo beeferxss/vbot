@@ -27,7 +27,7 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        this.block = String(this.config.refill?.block || 'minecraft:command_block');
+        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
