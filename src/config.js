@@ -44,6 +44,11 @@ function defaults() {
             // "auto" trusts unsigned chat until the server proves it signs
             // player chat; true always trusts it; false never does.
             trustUnsigned: 'auto'
+        },
+        core: {
+            enabled: true,
+            area: { size: 16, y: 64 },
+            refill: { enabled: true, block: 'minecraft:repeating_command_block', mode: 'replace' }
         }
     };
 }

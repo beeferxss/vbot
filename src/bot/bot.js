@@ -5,6 +5,7 @@ const mc = require('minecraft-protocol');
 const { chatTextFromPacket, chatEventFromPacket, parseChatLine } = require('../minecraft/chat');
 const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
 const { playerInfoEntries } = require('../minecraft/players');
+const { Core } = require('../core');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -18,8 +19,10 @@ class Bot extends EventEmitter {
         this.permissions = permissions;
         this.registry = registry;
         this.log = logger.child(server.id);
+        this.core = new Core({ bot: this, config: config.core, logger: this.log });
 
         this.client = null;
+        this.position = null;
         this.state = 'idle';
         this.attempts = 0;
         this.reconnectTimer = null;
@@ -84,11 +87,23 @@ class Bot extends EventEmitter {
             this.log.info(`connected as ${this.server.username}`);
             this.emit('ready');
             this.applyNick();
+            // Give the position packet a moment to arrive before placing anything.
+            setTimeout(() => this.core?.onReady(), 1500).unref?.();
         });
 
         for (const event of ['player_info', 'player_info_update']) {
             client.on(event, packet => this.handlePlayerInfo(packet));
         }
+
+        for (const event of ['position', 'position_look']) {
+            client.on(event, packet => {
+                if (Number.isFinite(packet?.x) && Number.isFinite(packet?.y) && Number.isFinite(packet?.z)) {
+                    this.position = { x: packet.x, y: packet.y, z: packet.z };
+                }
+            });
+        }
+
+        client.on('block_change', packet => this.core?.onBlockChange(packet));
 
         for (const event of CHAT_PACKETS) {
             client.on(event, packet => this.handleChatEvent(event, packet));
@@ -113,6 +128,7 @@ class Bot extends EventEmitter {
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
+            this.core?.destroy();
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
         });
     }

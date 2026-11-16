@@ -43,6 +43,7 @@ async function main() {
     const { normalizeUuid, offlineUuid, shortUuid } = require('../src/minecraft/uuid');
     const { playerInfoEntries } = require('../src/minecraft/players');
     const { Bot } = require('../src/bot/bot');
+    const { Core } = require('../src/core');
 
     const logger = new Logger({ level: 'error' });
     const examplePath = path.join(ROOT, 'config.example.json');
@@ -245,6 +246,24 @@ async function main() {
         assert.strictEqual(store.getPlayer('Alex').uuid, uuid);
     });
 
+    await check('names inside NBT components are decoded', () => {
+        // This is what minecraft-protocol actually hands over for networkName.
+        const event = chatEventFromPacket('player_chat', {
+            senderUuid: uuid,
+            networkName: { type: 'compound', value: { text: { type: 'string', value: '[ADMIN] Alex' } } },
+            plainMessage: '|>help'
+        });
+        assert.strictEqual(event.username, 'Alex');
+        assert.strictEqual(event.line, '<Alex> |>help');
+        assert.deepStrictEqual(parseChatLine(event.line), { username: 'Alex', message: '|>help' });
+
+        const system = chatEventFromPacket('system_chat', {
+            content: { type: 'compound', value: { text: { type: 'string', value: '<Steve> |>whoami' } } }
+        });
+        assert.strictEqual(system.verified, false);
+        assert.deepStrictEqual(parseChatLine(system.line), { username: 'Steve', message: '|>whoami' });
+    });
+
     await check('the nickname is taken from config, per server wins', () => {
         assert.strictEqual(bot.nickName(), config.bot.nick);
         assert.strictEqual(bot.nickName(), 'vbot');
@@ -262,6 +281,66 @@ async function main() {
         config.bot.nick = null;
         assert.strictEqual(bot.nickName(), null);
         config.bot.nick = 'vbot';
+    });
+
+    await check('core fills its area and rotates through blocks', () => {
+        const sent = [];
+        const writes = [];
+        const coreBot = {
+            position: { x: 35, y: 70, z: -3 },
+            chat: command => sent.push(command),
+            write: (name, payload) => writes.push({ name, payload }),
+            log: logger
+        };
+        const coreConfig = { enabled: true, area: { size: 16, y: 64 }, refill: { enabled: true } };
+        const core = new Core({ bot: coreBot, config: coreConfig, logger });
+
+        assert.strictEqual(core.reset(), true);
+        assert.deepStrictEqual(core.origin, { x: 32, y: 64, z: -16 });
+        assert.deepStrictEqual(core.bounds, { x: 47, y: 79, z: -1 });
+
+        core.refill('test');
+        assert.strictEqual(
+            sent[0],
+            '/fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace'
+        );
+
+        const first = core.run('say hello');
+        const second = core.run('/gamemode creative');
+        assert.deepStrictEqual(first, { x: 32, y: 64, z: -16 });
+        assert.notDeepStrictEqual(second, first, 'commands must use different blocks');
+        assert.strictEqual(writes[0].name, 'update_command_block');
+        assert.strictEqual(writes[0].payload.command, 'say hello');
+        assert.strictEqual(writes[1].payload.command, 'gamemode creative');
+
+        // Our own writes must not look like damage.
+        assert.strictEqual(core.onBlockChange({ location: first }), false);
+        assert.strictEqual(core.onBlockChange({ location: { x: 999, y: 999, z: 999 } }), false);
+        assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), true);
+    });
+
+    await check('core refills itself when a block is damaged', async () => {
+        const sent = [];
+        const coreBot = {
+            position: { x: 0, y: 70, z: 0 },
+            chat: command => sent.push(command),
+            write: () => {},
+            log: logger
+        };
+        const core = new Core({
+            bot: coreBot,
+            config: { enabled: true, area: { size: 4, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset();
+        core.refill('startup');
+        sent.length = 0;
+
+        core.onBlockChange({ location: { x: 1, y: 64, z: 1 } });
+        await new Promise(resolve => setTimeout(resolve, 400));
+        assert.strictEqual(sent.length, 1, 'damage should trigger exactly one refill');
+        assert.match(sent[0], /^\/fill 0 64 0 3 67 3 /);
+        core.destroy();
     });
 
     // --- commands -----------------------------------------------------------

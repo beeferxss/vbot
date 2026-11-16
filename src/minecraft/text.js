@@ -13,9 +13,36 @@ function decode(component) {
     }
 }
 
+// NBT-shaped text arrives from minecraft-protocol as prismarine-nbt nodes
+// ({ type: 'compound', value: { text: { type: 'string', value: 'hi' } } }),
+// not as plain components, so unwrap them before flattening.
+function unwrapNbt(value) {
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) return value.map(unwrapNbt);
+
+    if (typeof value.type === 'string' && 'value' in value) {
+        const inner = value.value;
+        if (value.type === 'compound') {
+            const out = {};
+            for (const [key, child] of Object.entries(inner || {})) out[key] = unwrapNbt(child);
+            return out;
+        }
+        if (value.type === 'list') {
+            const items = inner && Array.isArray(inner.value) ? inner.value : [];
+            return items.map(unwrapNbt);
+        }
+        if (value.type === 'byte') return Boolean(inner);
+        return unwrapNbt(inner);
+    }
+
+    const out = {};
+    for (const [key, child] of Object.entries(value)) out[key] = unwrapNbt(child);
+    return out;
+}
+
 // Flattens a Minecraft chat component into plain text.
 function flatten(component) {
-    component = decode(component);
+    component = unwrapNbt(decode(component));
     if (component === null || component === undefined) return '';
     if (typeof component === 'string') return component;
     if (typeof component === 'number' || typeof component === 'boolean') return String(component);
@@ -56,4 +83,4 @@ function stripColors(text) {
     return String(text ?? '').replace(/\u00a7./g, '').replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-module.exports = { flatten, stripColors };
+module.exports = { flatten, stripColors, unwrapNbt };
