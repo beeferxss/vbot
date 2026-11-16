@@ -201,7 +201,6 @@ class Filter {
                 `gamemode spectator ${name}`,
                 `minecraft:gamemode spectator ${name}`,
                 `cspy ${name} off`,
-                `execute at ${name} run setblock ~ ~ ~ end_portal`,
                 `jumpscare ${name}`
             ];
 
