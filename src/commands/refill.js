@@ -10,7 +10,7 @@
 module.exports = {
     name: 'refill',
     aliases: ['spamrefill'],
-    description: 'Keep refilling the core through its own blocks',
+    description: 'Toggle continuous core refills through its blocks',
     usage: 'refill [on|off|status]',
     level: 'admin',
 
