@@ -52,6 +52,56 @@ function parseUuid(text) {
     return match ? match[0].toLowerCase() : null;
 }
 
+// The fields a whois reply carries, in the order they are worth showing.
+const WHOIS_LABELS = [
+    ['nick', /^nick$/i],
+    ['uuid', /^uuid$/i],
+    ['gamemode', /^gamemode$/i],
+    ['health', /^health$/i],
+    ['hunger', /^hunger$/i],
+    ['exp', /^exp$/i],
+    ['ip', /^(ip|ip address)$/i],
+    ['op', /^op$/i],
+    ['fly', /^fly( mode)?$/i],
+    ['god', /^god( mode)?$/i],
+    ['speed', /^speed$/i],
+    ['money', /^money$/i],
+    ['playtime', /^playtime$/i],
+    ['afk', /^afk$/i],
+    ['jail', /^jail$/i],
+    ['muted', /^muted$/i],
+    ['whitelist', /^whitelist$/i],
+    ['location', /^location$/i]
+];
+
+// "- IP Address: /246.37.222.31" style lines into a plain object. Unknown lines
+// are ignored, so a plugin that adds fields later cannot break anything.
+function parseWhois(text) {
+    const fields = {};
+
+    for (const line of String(text || '').split('\n')) {
+        const match = /^\s*[-\u2022*]\s*([A-Za-z][A-Za-z ]{1,24}):\s*(.*)$/.exec(line);
+        if (!match) continue;
+
+        const label = match[1].trim();
+        const value = match[2].trim();
+        if (!value) continue;
+
+        const known = WHOIS_LABELS.find(([, pattern]) => pattern.test(label));
+        if (!known) continue;
+        fields[known[0]] = value;
+    }
+
+    if (fields.ip) {
+        const ips = parseIps(fields.ip);
+        if (ips.length) fields.ip = ips[0];
+        else delete fields.ip;
+    }
+    if (fields.uuid && !UUID.test(fields.uuid)) delete fields.uuid;
+
+    return fields;
+}
+
 // "whois {player}" -> "whois Steve"; empty stays empty, so lookups stay off.
 function lookupCommand(template, player) {
     const text = String(template || '').trim();
@@ -59,4 +109,4 @@ function lookupCommand(template, player) {
     return text.replace(/\{player\}/gi, player).replace(/^\/+/, '');
 }
 
-module.exports = { looksLikeIp, normalize, parseIps, parseUuid, lookupCommand };
+module.exports = { looksLikeIp, normalize, parseIps, parseUuid, parseWhois, lookupCommand };

@@ -52,6 +52,8 @@ function defaults() {
             // command whose output carries the address. Empty means /alts only
             // reports what is already stored.
             lookupCommand: 'whois {player}',
+            // Tried when the first command gives back no address.
+            fallbackCommand: 'seen {player}',
             cacheMs: 600000,
             gapMs: 1200,
             timeoutMs: 3000,

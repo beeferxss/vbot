@@ -8,7 +8,7 @@
 // runTracked, its output is parsed, and the addresses are stored so /alts and
 // /list keep working after the fact.
 
-const { parseIps, parseUuid, lookupCommand } = require('./ip');
+const { parseIps, parseUuid, parseWhois, lookupCommand } = require('./ip');
 
 const DEFAULT_CACHE_MS = 10 * 60 * 1000;
 const DEFAULT_GAP_MS = 1200;
@@ -24,6 +24,8 @@ class IpLookup {
         this.enabled = config.enabled !== false;
         // Off by default: an unknown command costs a core round trip per player.
         this.template = typeof config.lookupCommand === 'string' ? config.lookupCommand : '';
+        // Used only when the first command gives back no address.
+        this.fallback = typeof config.fallbackCommand === 'string' ? config.fallbackCommand : '';
         this.cacheMs = positive(config.cacheMs, DEFAULT_CACHE_MS);
         this.gapMs = positive(config.gapMs, DEFAULT_GAP_MS);
         this.timeoutMs = positive(config.timeoutMs, 3000);
@@ -32,6 +34,7 @@ class IpLookup {
         this.rescanMs = positive(config.rescanMs, DEFAULT_RESCAN_MS);
 
         this.cache = new Map();
+        this.detailsCache = new Map();
         this.inflight = new Map();
         // Named "pending" because queue() is the method that feeds it.
         this.pending = [];
@@ -88,41 +91,80 @@ class IpLookup {
         return run;
     }
 
-    async ask(name) {
-        const command = lookupCommand(this.template, name);
-        if (!command) return [];
+    async runLookup(template, name) {
+        const command = lookupCommand(template, name);
+        if (!command) return null;
 
         const core = this.bot.core;
         if (!core || core.ready !== true || typeof core.runTracked !== 'function') {
-            this.log.debug(`no core for an ip lookup of ${name}`);
-            return [];
+            this.log.debug(`no core for a lookup of ${name}`);
+            return null;
         }
 
-        let output = null;
         try {
-            output = await core.runTracked(command, { delay: 250, timeout: this.timeoutMs });
+            return await core.runTracked(command, { delay: 250, timeout: this.timeoutMs });
         } catch (error) {
-            this.log.warn(`ip lookup of ${name} failed: ${error.message}`);
-            return [];
+            this.log.warn(`lookup of ${name} with "${template}" failed: ${error.message}`);
+            return null;
+        }
+    }
+
+    // Asks the configured command, falls back to the other one when the first
+    // gives back no address, and parses whatever fields came with it.
+    async query(name) {
+        let source = this.template;
+        let output = await this.runLookup(this.template, name);
+        let ips = parseIps(output || '');
+
+        if (!ips.length && this.fallback && this.fallback !== this.template) {
+            const alternative = await this.runLookup(this.fallback, name);
+            if (alternative) {
+                const altIps = parseIps(alternative);
+                if (altIps.length || !output) {
+                    source = this.fallback;
+                    output = alternative;
+                    ips = altIps;
+                }
+            }
         }
 
-        // The same reply usually names the account's uuid; keep it if the tab
-        // list never gave us one.
-        const uuid = parseUuid(output || '');
+        const fields = parseWhois(output || '');
+        // The whois parser normalises the address, so it is authoritative.
+        if (fields.ip && !ips.includes(fields.ip)) ips.push(fields.ip);
+
+        const result = { output, ips, fields, source, at: Date.now() };
+        this.record(name, result);
+        return result;
+    }
+
+    // The uuid and the addresses a reply carries are worth keeping.
+    record(name, { ips, fields }) {
+        const uuid = fields.uuid || parseUuid('');
         if (uuid && typeof this.store.getPlayer === 'function' && !this.store.getPlayer(name)?.uuid) {
             this.store.linkPlayer(name, uuid);
         }
 
-        const ips = parseIps(output || '');
-        if (!ips.length) {
-            this.log.debug(`ip lookup of ${name} found nothing in: ${JSON.stringify(output)}`);
-            return [];
-        }
-
+        if (!ips.length) return;
         const knownUuid = uuid ?? (typeof this.bot.uuidFor === 'function' ? this.bot.uuidFor(name) : null);
         for (const ip of ips) this.store.recordIp(name, ip, knownUuid);
         this.log.info(`ip lookup of ${name}: ${ips.join(', ')}`);
+    }
+
+    async ask(name) {
+        const { ips } = await this.query(name);
+        if (!ips.length) this.log.debug(`lookup of ${name} found no address`);
         return ips;
+    }
+
+    // Same query, but kept for display: the whois fields a command wants to show.
+    async details(name) {
+        const key = this.keyFor(name);
+        const cached = this.detailsCache.get(key);
+        if (cached && Date.now() - cached.at < this.cacheMs) return cached;
+
+        const result = await this.query(name);
+        this.detailsCache.set(key, result);
+        return result;
     }
 
     // Background lookup, one at a time: a join should not fire eight commands.
@@ -201,6 +243,7 @@ class IpLookup {
         this.timer = null;
         this.rescanTimer = null;
         this.cache.clear();
+        this.detailsCache.clear();
     }
 }
 

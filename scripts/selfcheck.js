@@ -896,7 +896,7 @@ async function main() {
             parsed: { username: 'Steve', message: 'v:identity Alex' },
             verified: false
         });
-        assert.match(sent[0], /Alex — 069a79f4/);
+        assert.match(decodeReply(sent[0]), /Alex — 069a79f4/);
 
         // trustUnsigned: false keeps unsigned chat out even without signing.
         const strict = loadConfig(examplePath);
@@ -917,6 +917,43 @@ async function main() {
             verified: false
         });
         assert.match(sent[0], /needs a trusted token/);
+    });
+
+    await check('identity shows the whois fields in colour', async () => {
+        const lookup = {
+            usable: true,
+            details: async () => ({
+                ips: ['246.37.222.31'],
+                source: 'whois {player}',
+                fields: {
+                    nick: 'VojtaV12',
+                    uuid: '2f1d16b9-7337-31d7-997f-acaa527152d9',
+                    gamemode: 'creative',
+                    health: '20/20',
+                    ip: '246.37.222.31',
+                    op: 'true'
+                }
+            })
+        };
+
+        sent.length = 0;
+        await registry.dispatch({
+            bot: { ...fakeBot, ipLookup: lookup },
+            parsed: parseChatLine('<Steve> v:identity VojtaV12')
+        });
+        const parts = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        const text = parts.map(part => part.text).join('');
+
+        assert.match(text, /VojtaV12 — 2f1d16b9/);
+        assert.match(text, /whois/);
+        assert.match(text, /ip: 246\.37\.222\.31/);
+        assert.match(text, /gamemode: creative/);
+
+        // Values carry colour, and a true flag is red rather than green.
+        const ip = parts.find(part => part.text === '246.37.222.31');
+        assert.strictEqual(ip.color, 'aqua');
+        const op = parts.find(part => part.text === 'true');
+        assert.strictEqual(op.color, 'red');
     });
 
     await check('trusted commands respond with identity data', async () => {
@@ -1222,6 +1259,67 @@ async function main() {
         assert.strictEqual(lookupCommand('seen {player}', 'Steve'), 'seen Steve');
         assert.strictEqual(lookupCommand('/seen {PLAYER}', 'Steve'), 'seen Steve');
         assert.strictEqual(lookupCommand('', 'Steve'), null);
+    });
+
+    await check('whois fields are read, and seen is the fallback', async () => {
+        const { parseWhois } = require('../src/ip');
+        const { IpLookup } = require('../src/iplookup');
+
+        const whoisText = [
+            '----- Whois: VojtaV12 -----',
+            '- Nick: VojtaV12',
+            '- UUID: 2f1d16b9-7337-31d7-997f-acaa527152d9',
+            '- Health: 20/20',
+            '- Hunger: 20/20 (+4 saturation)',
+            '- Exp: 0 (Level 0)',
+            '- Playtime: now',
+            '- Money: $0',
+            '- IP Address: /246.37.222.31',
+            '- Gamemode: creative',
+            '- God mode: false',
+            '- OP: true',
+            '- Fly mode: true (not flying)',
+            '- Speed: 0.2',
+            '- AFK: false',
+            '- Muted: false',
+            '- Location: (world, 29,999,955.1, 29,999,938)'
+        ].join('\n');
+
+        const fields = parseWhois(whoisText);
+        assert.strictEqual(fields.nick, 'VojtaV12');
+        assert.strictEqual(fields.ip, '246.37.222.31');
+        assert.strictEqual(fields.gamemode, 'creative');
+        assert.strictEqual(fields.hunger, '20/20 (+4 saturation)');
+        assert.strictEqual(fields.op, 'true');
+        assert.strictEqual(fields.uuid, '2f1d16b9-7337-31d7-997f-acaa527152d9');
+        assert.ok(!('bad' in parseWhois('- Something else: 1')));
+
+        // whois answers nothing, so seen is asked instead.
+        const asked = [];
+        const bot = {
+            state: 'ready',
+            online: new Map(),
+            uuidFor: () => null,
+            core: {
+                ready: true,
+                runTracked: async command => {
+                    asked.push(command);
+                    return command.startsWith('whois') ? null : 'FallbackGuy is 1.2.3.4';
+                }
+            }
+        };
+        const lookup = new IpLookup({
+            bot,
+            store,
+            config: { lookupCommand: 'whois {player}', fallbackCommand: 'seen {player}' },
+            logger
+        });
+
+        const result = await lookup.query('FallbackGuy');
+        assert.deepStrictEqual(asked, ['whois FallbackGuy', 'seen FallbackGuy']);
+        assert.deepStrictEqual(result.ips, ['1.2.3.4']);
+        assert.strictEqual(result.source, 'seen {player}');
+        lookup.destroy();
     });
 
     await check('every online player is rescanned on an interval', async () => {
