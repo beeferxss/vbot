@@ -616,26 +616,33 @@ class Core {
     startWatchdog() {
         if (this.watchdog || !this.enabled || !this.refillEnabled) return;
         this.watchdog = setInterval(() => {
-            if (!this.enabled || this.refilling) return;
-            const standing = this.survivor() !== null;
-            // Only a fill we know was refused counts as unfinished; a fill that
-            // changed nothing is a core that is already in place.
-            const filled = this.lastFill?.ok !== false;
-            if (this.ready && standing && filled) return;
+            if (!this.enabled || this.refilling || this.spamTimer) return;
             if (this.origin.x === null && !this.reset()) return;
 
+            const standing = this.aliveCount();
+            // Only rebuild when the core is not usable. Readiness alone is not a
+            // reason: a fill the server answered with "nothing changed" must not
+            // keep the watchdog filling through chat forever.
+            if (this.ready && standing > 0) return;
+
             // A server that keeps refusing needs backoff, not a fill every tick.
-            if (!filled && this.fillFailures >= 3 && Date.now() - (this.lastFill?.at || 0) < 30000) {
+            if (standing === 0 && this.fillFailures >= 2 && Date.now() - (this.lastRefillAt || 0) < 10000) {
                 return;
             }
 
             this.logEvery('watchdog-rebuild', 10000, 'debug',
-                `core missing or incomplete (${standing ? 'blocks standing' : 'no blocks'}, ` +
-                `${filled ? 'fill ok' : 'fill incomplete'}); rebuilding`);
-            // The watchdog is the safety net, so it is allowed past the rate limit.
-            this.refill('watchdog', { viaChat: !filled, force: true });
+                `core missing or incomplete (${standing} block(s) standing); rebuilding`);
+            // Reuse a survivor when one is standing; with nothing left the fill
+            // has to go through chat.
+            this.refill('watchdog', { force: standing === 0, viaChat: standing === 0 });
         }, this.watchdogMs);
         this.watchdog.unref?.();
+    }
+
+    aliveCount() {
+        let alive = 0;
+        for (const value of this.blocks.values()) if (value) alive += 1;
+        return alive;
     }
 
     // Core blocks can change often while commands are written into them.
