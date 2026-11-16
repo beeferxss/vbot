@@ -60,7 +60,7 @@ async function main() {
     logger.info(`vbot started with ${bots.length} bot(s)`);
 
     const consoleUI = attachConsole({ manager, config, logger });
-    const discord = createDiscordBridge({ config, manager, logger });
+    const discord = createDiscordBridge({ config, manager, logger, registry });
     if (discord) discord.start();
 
     let stopping = false;

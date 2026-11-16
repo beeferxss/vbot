@@ -2060,6 +2060,54 @@ async function main() {
         assert.strictEqual(bridge.start(), false, 'no token means no client');
     });
 
+    await check('discord roles decide which commands run', async () => {
+        const { DiscordBridge } = require('../src/discord');
+
+        const member = roles => ({ roles: { cache: new Map(roles.map(role => [role, {}])) } });
+        const bridge = new DiscordBridge({
+            config: { bot: {}, discord: { trustedId: 'T', adminId: 'A', adminIds: ['U'] } },
+            manager: null,
+            logger
+        });
+
+        assert.strictEqual(bridge.rankFor(member([])), LEVEL.PUBLIC);
+        assert.strictEqual(bridge.rankFor(member(['T'])), LEVEL.ADMIN);
+        assert.strictEqual(bridge.rankFor(member(['A'])), LEVEL.OWNER);
+        assert.strictEqual(bridge.rankFor({ roles: { cache: new Map() }, user: { id: 'U' } }), LEVEL.OWNER);
+        assert.strictEqual(bridge.rankFor(null), LEVEL.PUBLIC);
+
+        const registry = {
+            manager: { bots: new Map() },
+            store: {},
+            permissions: {},
+            find: label => ({
+                filter: { name: 'filter', level: LEVEL.ADMIN, execute: async ctx => ctx.reply(`filter ${ctx.argString}`) },
+                servers: { name: 'servers', level: LEVEL.PUBLIC, execute: async ctx => ctx.reply([{ text: 'ok' }, { text: '!' }]) }
+            })[label] || null,
+            runCommand: () => true
+        };
+        const runner = new DiscordBridge({
+            config: { bot: { prefixes: ['v\\'] }, discord: { trustedId: 'T', adminId: 'A' } },
+            manager: null,
+            logger,
+            registry
+        });
+        const bot = { id: 'kbpw', state: 'ready', server: {}, online: new Map(), client: {}, chat: () => true };
+
+        const denied = await runner.executeCommand(bot, member([]), 'filter add Steve');
+        assert.strictEqual(denied.ok, false);
+        assert.match(denied.text, /needs admin/);
+
+        const allowed = await runner.executeCommand(bot, member(['T']), 'filter add Steve');
+        assert.strictEqual(allowed.text, 'filter add Steve');
+
+        const publicOnly = await runner.executeCommand(bot, member([]), 'v\\servers');
+        assert.strictEqual(publicOnly.text, 'ok!');
+
+        const unknown = await runner.executeCommand(bot, member(['A']), 'nope');
+        assert.strictEqual(unknown.ok, false);
+    });
+
     store.close();
 
     console.log(results.join('\n'));

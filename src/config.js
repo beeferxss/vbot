@@ -92,6 +92,8 @@ function defaults() {
             guildId: '',
             commandPrefix: '!',
             channels: {},
+            trustedId: '',
+            adminId: '',
             adminIds: [],
             relay: {
                 chat: true,

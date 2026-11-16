@@ -15,6 +15,7 @@
 // the dependency or the token is missing.
 
 const tellraw = require('./minecraft/tellraw');
+const { LEVEL, levelName } = require('./permissions');
 
 const RELAY_INTERVAL_MS = 900;
 const RELAY_MAX_BUFFER = 50;
@@ -62,10 +63,11 @@ function onlineNames(bot) {
 }
 
 class DiscordBridge {
-    constructor({ config, manager, logger }) {
+    constructor({ config, manager, logger, registry }) {
         this.root = config;
         this.config = config?.discord || {};
         this.manager = manager;
+        this.registry = registry;
         this.log = logger;
         this.client = null;
         this.discord = null;
@@ -315,9 +317,20 @@ class DiscordBridge {
                     .setRequired(false)),
             new SlashCommandBuilder()
                 .setName('say')
-                .setDescription('Send a message into Minecraft')
+                .setDescription('Send a message into Minecraft (Trusted)')
                 .addStringOption(option => option.setName('server').setDescription('Server id, or all').setRequired(true))
-                .addStringOption(option => option.setName('message').setDescription('What to say').setRequired(true))
+                .addStringOption(option => option.setName('message').setDescription('What to say').setRequired(true)),
+            new SlashCommandBuilder()
+                .setName('mc')
+                .setDescription('Run a vbot command with your Discord rank')
+                .addStringOption(option => option
+                    .setName('command')
+                    .setDescription('For example: filter list, whitelist add Steve')
+                    .setRequired(true))
+                .addStringOption(option => option
+                    .setName('server')
+                    .setDescription('Server id (default: the one linked to this channel)')
+                    .setRequired(false))
         ].map(command => command.toJSON());
 
         try {
@@ -337,10 +350,96 @@ class DiscordBridge {
         return typeof this.manager.list === 'function' ? this.manager.list() : [];
     }
 
+    // Discord ranks replace the in-game ones for anything run from here. The
+    // Trusted role maps to vbot's admin level so those members can moderate
+    // (filter, whitelist, punish); the Admin role maps to owner, which is every
+    // command. A user id in discord.adminIds always counts as owner.
+    rankFor(member) {
+        const hasRole = id => Boolean(id) && Boolean(member?.roles?.cache?.has?.(String(id)));
+        if (hasRole(this.config.adminId)) return LEVEL.OWNER;
+
+        const userId = String(member?.user?.id ?? member?.id ?? '');
+        if (userId && (this.config.adminIds || []).map(String).includes(userId)) return LEVEL.OWNER;
+        if (hasRole(this.config.trustedId)) return LEVEL.ADMIN;
+        return LEVEL.PUBLIC;
+    }
+
+    // Runs a command from the same registry the game uses, with the Discord
+    // rank instead of the player's stored rank. Replies are collected instead
+    // of being sent into the server.
+    async executeCommand(bot, member, text, rank = this.rankFor(member)) {
+        const registry = this.registry;
+        if (!registry || typeof registry.find !== 'function') {
+            return { ok: false, text: 'Commands are not loaded.' };
+        }
+
+        let body = String(text || '').trim();
+        const prefixes = (this.root?.bot?.prefixes || []).slice()
+            .sort((a, b) => String(b).length - String(a).length);
+        for (const prefix of prefixes) {
+            if (body.toLowerCase().startsWith(String(prefix).toLowerCase())) {
+                body = body.slice(String(prefix).length);
+                break;
+            }
+        }
+        body = body.replace(/^[!/ ]+/, '').trim();
+
+        const [label, ...args] = body.split(/\s+/);
+        if (!label) return { ok: false, text: 'Give a command, for example: filter list' };
+
+        const command = registry.find(label);
+        if (!command) return { ok: false, text: `Unknown command "${label}".` };
+        if (command.level > rank) {
+            return {
+                ok: false,
+                text: `${command.name} needs ${levelName(command.level)}; your Discord rank is ${levelName(rank)}.`
+            };
+        }
+
+        const lines = [];
+        const reply = value => {
+            const line = plainText(value);
+            if (line) lines.push(line);
+        };
+
+        const ctx = {
+            bot,
+            bots: registry.manager?.bots ?? this.manager?.bots ?? new Map([[bot.id, bot]]),
+            client: bot.client,
+            config: this.root,
+            store: registry.store,
+            permissions: registry.permissions,
+            tokens: null,
+            logger: bot.log ?? this.log,
+            username: member?.displayName || member?.user?.username || 'discord',
+            uuid: null,
+            verified: false,
+            trustedName: true,
+            level: rank,
+            levelName: levelName(rank),
+            args,
+            argString: args.join(' '),
+            prefix: this.config.commandPrefix || '!',
+            reply,
+            replyPrivate: reply,
+            clickToken: () => null,
+            run: commandText => registry.runCommand(bot, commandText),
+            source: 'discord'
+        };
+
+        try {
+            await command.execute(ctx);
+        } catch (error) {
+            return { ok: false, text: `${command.name} failed: ${error.message}` };
+        }
+
+        return { ok: true, text: lines.join('\n') || `${command.name}: done.` };
+    }
+
     async handleInteraction(interaction) {
         if (!interaction?.isChatInputCommand?.() || !this.ready) return;
 
-        const { MessageFlags, PermissionFlagsBits } = this.discord;
+        const { MessageFlags } = this.discord;
         const ephemeral = MessageFlags?.Ephemeral ?? 64;
         const reply = content => interaction.reply({ content, flags: ephemeral });
 
@@ -378,9 +477,9 @@ class DiscordBridge {
         }
 
         if (interaction.commandName === 'say') {
-            const allowed = interaction.memberPermissions?.has?.(PermissionFlagsBits.ManageGuild)
-                || (this.config.adminIds || []).includes(interaction.user.id);
-            if (!allowed) return reply('You need Manage Server to use /say.');
+            if (this.rankFor(interaction.member) < LEVEL.TRUSTED) {
+                return reply('The Trusted role is required for /say.');
+            }
 
             const server = String(interaction.options.getString('server') || 'all').toLowerCase();
             const message = interaction.options.getString('message') || '';
@@ -397,6 +496,30 @@ class DiscordBridge {
                 }
             }
             return reply(sent ? `Sent to ${sent} server(s).` : 'No connected server could take it.');
+        }
+
+        if (interaction.commandName === 'mc') {
+            // /mc is a staff tool: a public-level command such as `cb` would
+            // otherwise hand raw server commands to every member.
+            if (this.rankFor(interaction.member) < LEVEL.TRUSTED) {
+                return reply('The Trusted role is required for /mc.');
+            }
+
+            const text = interaction.options.getString('command') || '';
+            const wanted = interaction.options.getString('server');
+            const linked = this.channelBots.get(interaction.channelId);
+            const bot = wanted
+                ? this.bots().find(candidate => candidate.id.toLowerCase() === wanted.toLowerCase())
+                : linked;
+
+            if (!bot) {
+                return reply(wanted
+                    ? `No server "${wanted}". Available: ${this.bots().map(candidate => candidate.id).join(', ')}`
+                    : 'This channel is not linked to a server; pass the server option.');
+            }
+
+            const result = await this.executeCommand(bot, interaction.member, text);
+            return reply(result.text.slice(0, 1900));
         }
     }
 
@@ -416,9 +539,17 @@ class DiscordBridge {
     }
 }
 
-function createDiscordBridge({ config, manager, logger }) {
+function plainText(value) {
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) return value.map(plainText).join('');
+    if (!value || typeof value !== 'object') return '';
+    const own = typeof value.text === 'string' ? value.text : '';
+    return own + plainText(value.extra || []);
+}
+
+function createDiscordBridge({ config, manager, logger, registry }) {
     if (config?.discord?.enabled !== true) return null;
-    return new DiscordBridge({ config, manager, logger });
+    return new DiscordBridge({ config, manager, logger, registry });
 }
 
 module.exports = {

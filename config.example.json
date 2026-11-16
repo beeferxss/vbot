@@ -144,6 +144,8 @@
     "guildId": "",
     "commandPrefix": "!",
     "channels": {},
+    "trustedId": "1450509583360725002",
+    "adminId": "1450487330409287832",
     "adminIds": [],
     "relay": {
       "chat": true,
