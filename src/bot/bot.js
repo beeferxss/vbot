@@ -29,6 +29,7 @@ class Bot extends EventEmitter {
         // Set once a signed player chat packet arrives: until then the server may
         // simply not support chat signing, so unsigned chat is all there is.
         this.signedChatSeen = false;
+        this.nickSent = false;
     }
 
     get connection() {
@@ -82,6 +83,7 @@ class Bot extends EventEmitter {
             this.disconnectReason = null;
             this.log.info(`connected as ${this.server.username}`);
             this.emit('ready');
+            this.applyNick();
         });
 
         for (const event of ['player_info', 'player_info_update']) {
@@ -110,6 +112,7 @@ class Bot extends EventEmitter {
             this.state = 'offline';
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
             this.emit('disconnect', this.disconnectReason);
+            this.nickSent = false;
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
         });
     }
@@ -176,6 +179,25 @@ class Bot extends EventEmitter {
 
         if (this.server.auth === 'offline') return offlineUuid(name);
         return null;
+    }
+
+    // The server keeps the nickname, so it only has to be set once per session.
+    nickName() {
+        const nick = this.server.nick ?? this.config.bot?.nick;
+        if (typeof nick !== 'string') return null;
+        const trimmed = nick.trim();
+        return trimmed || null;
+    }
+
+    applyNick() {
+        const nick = this.nickName();
+        if (!nick || this.nickSent) return;
+        this.nickSent = true;
+        setTimeout(() => {
+            if (this.state !== 'ready') return;
+            this.log.info(`setting nickname to ${nick}`);
+            this.chat(`/nick ${nick}`);
+        }, 1000).unref?.();
     }
 
     chat(message) {

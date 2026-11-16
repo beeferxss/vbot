@@ -245,6 +245,25 @@ async function main() {
         assert.strictEqual(store.getPlayer('Alex').uuid, uuid);
     });
 
+    await check('the nickname is taken from config, per server wins', () => {
+        assert.strictEqual(bot.nickName(), config.bot.nick);
+        assert.strictEqual(bot.nickName(), 'vbot');
+
+        const perServer = new Bot({
+            server: { id: 'nick', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline', nick: 'other' },
+            config,
+            store,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        assert.strictEqual(perServer.nickName(), 'other');
+
+        config.bot.nick = null;
+        assert.strictEqual(bot.nickName(), null);
+        config.bot.nick = 'vbot';
+    });
+
     // --- commands -----------------------------------------------------------
     await check('database stores only identity and ranks', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-schema-'));
