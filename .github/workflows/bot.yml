@@ -38,7 +38,6 @@ jobs:
           BOT_ADMIN_KEY: ${{ secrets.BOT_ADMIN_KEY }}
           BOT_TRUSTED_KEY: ${{ secrets.BOT_TRUSTED_KEY }}
           BOT_PREFIXES: ${{ vars.VBOT_PREFIXES }}
-          BOT_DISCORD_WEBHOOK: ${{ secrets.BOT_DISCORD_WEBHOOK }}
         shell: bash
         run: |
           set -euo pipefail

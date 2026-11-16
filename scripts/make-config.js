@@ -32,13 +32,6 @@ if (process.env.BOT_PREFIXES) {
     config.bot.prefixes = process.env.BOT_PREFIXES.split(',').map(value => value.trim()).filter(Boolean);
 }
 
-// The Discord webhook is a secret: it is a channel's posting URL, so it can never
-// be committed. Without it the bridge simply stays off.
-if (process.env.BOT_DISCORD_WEBHOOK) {
-    config.discord.webhookUrl = process.env.BOT_DISCORD_WEBHOOK.trim();
-    if (process.env.BOT_DISCORD_CHAT === 'false') config.discord.chat = false;
-}
-
 fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
 
 console.log(`config.json written: ${enabled.length} server(s) enabled`);

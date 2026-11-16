@@ -1034,7 +1034,7 @@ async function main() {
         assert.match(output, /trusted: identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
-        assert.match(output, /admin: discord refill/);
+        assert.match(output, /admin: refill/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
@@ -1195,86 +1195,6 @@ async function main() {
     });
 
     await check('the refill command toggles spam refills', refillCommandCheck);
-
-    await check('discord posts chat to a webhook and skips the bot plumbing', async () => {
-        const { DiscordBridge, isWebhookUrl, shouldRelay, formatChat, splitContent } = require('../src/discord');
-
-        assert.strictEqual(isWebhookUrl('https://discord.com/api/webhooks/123/abc-DEF'), true);
-        assert.strictEqual(isWebhookUrl('https://discordapp.com/api/v10/webhooks/1/x'), true);
-        assert.strictEqual(isWebhookUrl('https://discord.com/channels/1/2'), false);
-        assert.strictEqual(isWebhookUrl(''), false);
-
-        // Chat belongs in the channel; the bot's own command traffic does not.
-        assert.strictEqual(shouldRelay('<Steve> hi'), true);
-        assert.strictEqual(shouldRelay('[PLAYER_LIST] Steve'), false);
-        assert.strictEqual(shouldRelay('commands.fill.success: Successfully filled 1 block'), false);
-        assert.strictEqual(shouldRelay('vbot issued server command: /tellraw vbot {"text":"hi"}'), false);
-        assert.strictEqual(formatChat('<Steve> hi there'), '**Steve**: hi there');
-        assert.strictEqual(formatChat('Steve joined the game'), 'Steve joined the game');
-        assert.ok(splitContent('x'.repeat(4000)).every(part => part.length <= 1900));
-
-        const posts = [];
-        const bridge = new DiscordBridge({
-            url: 'https://discord.com/api/webhooks/123/token',
-            username: 'vbot',
-            gapMs: 0,
-            fetchImpl: async (url, options) => {
-                posts.push(JSON.parse(options.body));
-                return { ok: true, status: 204 };
-            }
-        });
-        assert.strictEqual(bridge.enabled, true);
-        assert.strictEqual(await bridge.chat('<Steve> hello'), true);
-        assert.strictEqual(posts.length, 1);
-        assert.strictEqual(posts[0].content, '**Steve**: hello');
-        assert.strictEqual(posts[0].username, 'vbot');
-        assert.deepStrictEqual(posts[0].allowed_mentions, { parse: [] }, 'game chat never pings discord');
-
-        assert.strictEqual(await bridge.chat('[PLAYER_LIST] Steve'), false);
-        assert.strictEqual(posts.length, 1, 'the scan output is not relayed');
-
-        // A broken webhook is a warning, not a crash.
-        const broken = new DiscordBridge({
-            url: 'https://discord.com/api/webhooks/1/t',
-            gapMs: 0,
-            fetchImpl: async () => { throw new Error('boom'); }
-        });
-        assert.strictEqual(await broken.event('x'), false);
-        assert.strictEqual(broken.status().failed, 1);
-        assert.strictEqual(new DiscordBridge({ fetchImpl: async () => ({ ok: true }) }).enabled, false);
-    });
-
-    await check('the discord command reports and tests the bridge', async () => {
-        const status = { enabled: true, queued: 0, sent: 3, failed: 1, dropped: 0, lastError: 'http 404' };
-        let tested = false;
-        const discordBot = {
-            ...fakeBot,
-            discord: {
-                enabled: true,
-                status: () => status,
-                event: async () => {
-                    tested = true;
-                    return true;
-                }
-            }
-        };
-
-        sent.length = 0;
-        await registry.dispatch({ bot: discordBot, parsed: parseChatLine('<VojtaV12> v:discord status') });
-        assert.strictEqual(decodeReply(sent[0]), 'Discord: 3 sent, 1 failed, 0 queued (last error: http 404)');
-
-        sent.length = 0;
-        await registry.dispatch({ bot: discordBot, parsed: parseChatLine('<VojtaV12> v:discord test') });
-        assert.strictEqual(tested, true);
-        assert.strictEqual(decodeReply(sent[0]), 'Posted a test message to Discord.');
-
-        sent.length = 0;
-        await registry.dispatch({
-            bot: { ...fakeBot, discord: null },
-            parsed: parseChatLine('<VojtaV12> v:discord status')
-        });
-        assert.match(decodeReply(sent[0]), /No Discord webhook is configured/);
-    });
 
     await check('trusted commands respond with identity data', async () => {
         const output = await run('<Steve> v:identity Alex');
@@ -1920,6 +1840,56 @@ async function main() {
         assert.match(await run('<Steve> v:uuid Notch'), /offline: [0-9a-f-]{36}/);
         assert.match(await run('<Steve> v:whoami'), /You are admin/);
         assert.match(await run('<Steve> v:ping'), /pong/);
+    });
+
+
+    await check('a core block broken to air is refilled at once', () => {
+        const sent = [];
+        const bot = {
+            client: { write: (name, packet) => sent.push({ name, packet }) },
+            chat: () => false,
+            position: { x: 0, y: 64, z: 0 }
+        };
+        const core = new Core({
+            bot,
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true, intervalMs: 60_000 } },
+            logger
+        });
+        core.origin = { x: 1, y: 64, z: 1 };
+        core.bounds = { x: 9, y: 72, z: 9 };
+        core.blocks.set('1:64:1', true);
+
+        assert.strictEqual(core.onBlockChange({ location: { x: 1, y: 64, z: 1 }, type: 0 }), true);
+        assert.strictEqual(core.damageTimer, null, 'air is an instant refill, not a delayed damage refill');
+        const wrote = sent.some(write => write.name === 'update_command_block') || core.refilling;
+        assert.ok(wrote, 'a refill was started right away');
+    });
+
+    await check('spam refill stays off unless auto is turned on', () => {
+        const make = (auto) => {
+            const bot = {
+                client: { write: () => {} },
+                chat: () => false,
+                position: { x: 0, y: 64, z: 0 }
+            };
+            const core = new Core({
+                bot,
+                config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true, auto } },
+                logger
+            });
+            core.origin = { x: 1, y: 64, z: 1 };
+            core.startWatchdog = () => {};
+            core.refill = () => true;
+            return core;
+        };
+
+        const off = make(false);
+        off.onReady();
+        assert.strictEqual(off.spamTimer, null);
+
+        const implicit = make(undefined);
+        implicit.onReady();
+        assert.strictEqual(implicit.spamTimer, null);
     });
 
     store.close();

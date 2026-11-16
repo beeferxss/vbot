@@ -120,15 +120,6 @@
   "storage": {
     "path": "data/vbot.sqlite"
   },
-  "discord": {
-    "enabled": true,
-    "webhookUrl": "",
-    "username": null,
-    "avatarUrl": null,
-    "chat": true,
-    "events": true,
-    "gapMs": 1000
-  },
   "logging": {
     "level": "info",
     "chat": true

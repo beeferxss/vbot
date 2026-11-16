@@ -513,8 +513,8 @@ class Core {
         if (this.origin.x === null) this.reset();
         if (this.origin.x !== null) this.refill('startup');
         this.startWatchdog();
-        // Spam refills are the default way of keeping the core up.
-        if (this.config.refill?.auto !== false) {
+        // Spam refills run on their own only when explicitly turned on.
+        if (this.config.refill?.auto === true) {
             setTimeout(() => {
                 if (this.enabled && this.refillEnabled && this.origin.x !== null) this.startSpam();
             }, 1000).unref?.();
@@ -557,11 +557,22 @@ class Core {
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;
         if (this.isOwn(location)) return false;
+
+        // A core block that became air was broken outright, which no fill of ours
+        // ever does: rebuild at once instead of waiting out the damage delay.
+        const broken = isAir(packet);
+
         // Changes made by our own fill are not damage.
-        if (this.refilling || Date.now() < this.graceUntil) return false;
-        if (Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
+        if (!broken && (this.refilling || Date.now() < this.graceUntil)) return false;
+        if (!broken && Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
 
         this.blocks.set(keyOf(location), false);
+
+        if (broken) {
+            this.log.debug(`core block ${location.x} ${location.y} ${location.z} went to air; refilling`);
+            this.refill('broken', { force: true });
+            return true;
+        }
 
         if (this.damageTimer) return false;
         this.damageTimer = setTimeout(() => {
@@ -673,6 +684,15 @@ function parseLastOutput(nbt) {
 
 function keyOf({ x, y, z }) {
     return `${x}:${y}:${z}`;
+}
+
+// A block change packet carries either a block state number or, on servers that
+// name blocks, the block itself. Air is state 0 in every version.
+function isAir(packet) {
+    const state = packet?.type ?? packet?.state ?? packet?.blockId;
+    if (state === 0 || state === 'minecraft:air' || state === 'air') return true;
+    const name = packet?.name ?? packet?.block;
+    return name === 'minecraft:air' || name === 'air';
 }
 
 function positive(value, fallback) {

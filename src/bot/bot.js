@@ -9,7 +9,6 @@ const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
 const { IpLookup } = require('../iplookup');
-const { DiscordBridge } = require('../discord');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -44,17 +43,6 @@ class Bot extends EventEmitter {
             config: config.alts || {},
             logger: this.log
         });
-
-        const discord = config.discord || {};
-        this.discord = discord.enabled === false || !discord.webhookUrl
-            ? null
-            : new DiscordBridge({
-                url: discord.webhookUrl,
-                username: discord.username || server.username,
-                avatarUrl: discord.avatarUrl || null,
-                gapMs: discord.gapMs,
-                logger: this.log
-            });
 
         this.client = null;
         this.position = null;
@@ -135,7 +123,6 @@ class Bot extends EventEmitter {
                 `(protocol ${client.version ?? 'unknown'}, gamemode ${packet.gameMode ?? '?'})`
             );
             this.selfCare?.onLoginPacket(packet);
-            this.discordEvent(`\u{1F7E2} **${this.server.username}** connected to \`${this.server.host}\``);
             this.emit('ready');
             this.applyNick();
             this.applyPrefixTag();
@@ -186,9 +173,6 @@ class Bot extends EventEmitter {
             this.client = null;
             this.state = 'offline';
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
-            this.discordEvent(
-                `\u{1F534} **${this.server.username}** disconnected: ${this.disconnectReason || 'socket closed'}`
-            );
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
             this.prefixSent = false;
@@ -222,10 +206,6 @@ class Bot extends EventEmitter {
         if (this.config.logging?.chat) {
             this.log.info(`${chat.verified ? '' : '(system) '}${chat.line}`);
         }
-
-        // The bridge drops the bot's own scan/fill plumbing itself, so the raw
-        // line is what it gets.
-        if (this.config.discord?.chat !== false) this.discord?.chat(chat.line);
 
         // A button was clicked: the matching /random line names the clicker and
         // the action, and never needs to be dispatched as a command.
@@ -592,15 +572,7 @@ class Bot extends EventEmitter {
         this.clickTokens?.destroy();
         this.selfCare?.destroy();
         this.ipLookup?.destroy();
-        this.discord?.destroy();
         this.removeAllListeners();
-    }
-
-    // Connection events are optional: a busy server reconnecting all night should
-    // not fill a channel on its own.
-    discordEvent(text) {
-        if (this.config.discord?.events === false) return;
-        this.discord?.event(text);
     }
 }
 
