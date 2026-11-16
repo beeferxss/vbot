@@ -46,6 +46,10 @@ class Core {
         // key -> alive. Populated when a fill lands, then pruned by block changes.
         this.blocks = new Map();
         this.graceUntil = 0;
+        // Last block update seen inside the area. A fill that never reached the
+        // world sends none, which is how an item refill is checked.
+        this.lastChangeAt = 0;
+        this.verifyTimer = null;
         this.watchdog = null;
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
         // A burst of refills through the blocks, for when the area has to be back
@@ -215,14 +219,6 @@ class Core {
 
         const command = this.fillCommand();
 
-        // Plain chat, never routed back into the core: a fill must reach the
-        // server even when the core is the thing that is broken.
-        const send = text => {
-            if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(text);
-            if (typeof this.bot.client?.chat === 'function') return this.bot.client.chat(text);
-            return this.bot.chat(text);
-        };
-
         // Whatever is left of the core refills it: writing the fill into a
         // surviving block needs no item and no chat. Try all known survivors
         // before falling back. Explicit refill commands (viaChat) skip this.
@@ -250,14 +246,17 @@ class Core {
             }
         }
 
-        // Next: place a command block item carrying the fill.
-        const viaItem = !viaChat && !viaCore && this.placeFill(command);
+        // Next: place a command block item carrying the fill. That only happens
+        // once the core has worked before: the very first fill has nothing to
+        // fall back on, and a packet write cannot confirm that a block was
+        // actually placed, so the first build goes out as chat.
+        const viaItem = !viaChat && !viaCore && this.everReady && this.placeFill(command);
         if (viaItem) viaCore = true;
 
         // Chat is the last resort, never a second attempt on top of a block: a
         // server that silences command block output would otherwise get every
         // fill twice. Explicit refill commands request chat directly.
-        if (!viaCore) send(`/${command}`);
+        if (!viaCore) this.sendFill(command);
 
         this.refilling = true;
         // Keep the core usable across rebuilds once it has worked at least once.
@@ -273,6 +272,11 @@ class Core {
             this.log.debug(`core refill (${reason}) via ${place}`);
         }
 
+        // An item refill is the only path that cannot report failure: every
+        // packet is accepted even when the server refuses the placement. Check
+        // for a real block update and send the fill as chat if nothing changed.
+        if (viaItem) this.verifyItemFill(command);
+
         setTimeout(() => {
             this.refilling = false;
             this.ready = true;
@@ -282,6 +286,38 @@ class Core {
         }, REFILL_SETTLE_MS).unref?.();
 
         return true;
+    }
+
+    // Plain chat, never routed back into the core: a fill has to reach the
+    // server even when the core itself is the thing that is broken.
+    sendFill(command) {
+        const text = String(command || '').trim();
+        if (!text) return false;
+        const withSlash = text.startsWith('/') ? text : `/${text}`;
+        if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(withSlash) !== false;
+        if (typeof this.bot.client?.chat === 'function') {
+            this.bot.client.chat(withSlash);
+            return true;
+        }
+        if (typeof this.bot.chat === 'function') return this.bot.chat(withSlash) !== false;
+        return false;
+    }
+
+    verifyItemFill(command) {
+        if (this.verifyTimer) clearTimeout(this.verifyTimer);
+        const startedAt = Date.now();
+        const wait = Math.max(700, (this.fillItem?.breakDelayMs || 250) + 450);
+        this.verifyTimer = setTimeout(() => {
+            this.verifyTimer = null;
+            if (!this.enabled || this.bot.destroyed) return;
+            // Any block update inside the area means the fill reached the world.
+            if (this.lastChangeAt >= startedAt) return;
+            this.fillFailures += 1;
+            this.logEvery('item-fill-unconfirmed', 10000, 'warn',
+                'the refill item did not fill the core (placement refused?); sending the fill as chat');
+            this.sendFill(command);
+        }, wait);
+        this.verifyTimer.unref?.();
     }
 
     // Places the fill as a command block item and breaks only that block. False
@@ -611,8 +647,12 @@ class Core {
         const location = packet?.location;
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;
+        this.lastChangeAt = Date.now();
         if (this.isOwn(location)) return false;
-        if (this.refilling || Date.now() < this.graceUntil) return false;
+        // Only a core that is actually standing can be damaged. Reacting before
+        // the first fill lands (or while a fill is in flight) turned the fill's
+        // own updates into endless rebuilds.
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
 
         const k = keyOf(location);
 
@@ -624,9 +664,10 @@ class Core {
             return true;
         }
 
-        // External/non-own change: mark damaged and coalesce refill.
+        // External/non-own change: mark damaged and coalesce refill. Readiness
+        // is deliberately left alone: the rest of the core still runs commands,
+        // and a false "not ready" made every routed command fall back to chat.
         this.blocks.set(k, false);
-        this.ready = false;
         if (Date.now() - this.lastRefillAt < REFILL_MIN_INTERVAL_MS) return true;
         if (this.damageTimer) clearTimeout(this.damageTimer);
         this.damageTimer = setTimeout(() => {
@@ -640,6 +681,10 @@ class Core {
 
     destroy() {
         this.fillItem?.destroy();
+        if (this.verifyTimer) {
+            clearTimeout(this.verifyTimer);
+            this.verifyTimer = null;
+        }
         if (this.spamTimer) {
             clearInterval(this.spamTimer);
             this.spamTimer = null;
@@ -660,7 +705,14 @@ class Core {
             this.watchdog = null;
         }
         this.ownChanges.clear();
+        // A reconnect rebuilds the core: the old blocks may be gone, and a stale
+        // "alive" map would send commands into nothing.
+        this.blocks.clear();
+        this.everReady = false;
         this.ready = false;
+        this.refilling = false;
+        this.lastFill = null;
+        this.fillFailures = 0;
     }
 }
 

@@ -662,6 +662,9 @@ async function main() {
             logger
         });
         core.reset();
+        // Only a core that has worked before rebuilds through an item: the first
+        // build has no fallback if the placement is refused, so it goes as chat.
+        core.everReady = true;
         core.fillItem = { usable: true, run: command => (used.push(command), true), destroy: () => {} };
 
         assert.strictEqual(core.refill('damaged', { force: true }), true);
@@ -1865,6 +1868,8 @@ async function main() {
         core.origin = { x: 1, y: 64, z: 1 };
         core.bounds = { x: 9, y: 72, z: 9 };
         core.blocks.set('1:64:1', true);
+        // A standing core: the fill has landed, so a break is real damage.
+        core.ready = true;
 
         assert.strictEqual(core.onBlockChange({ location: { x: 1, y: 64, z: 1 }, type: 0 }), true);
         assert.strictEqual(core.damageTimer, null, 'air is an instant refill, not a delayed damage refill');

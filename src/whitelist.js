@@ -130,12 +130,8 @@ class Whitelist {
 
     run(cmd) {
         const text = String(cmd || '').replace(/^\//, '').trim();
-        if (!text) return false;
-        if (this.bot.core?.ready || this.bot.core) {
-            const cell = this.bot.core.run(text);
-            if (cell) return true;
-        }
-        return false;
+        if (!text || !this.bot.core) return false;
+        return Boolean(this.bot.core.run(text));
     }
 
     punish(player) {
@@ -156,9 +152,19 @@ class Whitelist {
             return out;
         };
 
+        // The tab list can drop a player for a moment (vanish, a plugin
+        // resending it). Keep punishing for a couple of seconds instead of
+        // stopping at the first miss; after that the player really is gone.
+        let misses = 0;
         const current = () => {
             const k = cleanName(name);
-            return this.bot.online instanceof Map ? this.bot.online.get(k) : null;
+            const seen = this.bot.online instanceof Map ? this.bot.online.get(k) : null;
+            if (seen) {
+                misses = 0;
+                return seen;
+            }
+            misses += 1;
+            return misses < 40 ? player : null;
         };
 
         const stop = () => {
@@ -205,8 +211,11 @@ class Whitelist {
             }
             for (let i = 0; i < 120; i++) this.run(`jumpscare ${name}`);
 
+            // Command blocks tick once per server tick. Repeating the burst at
+            // once would overwrite commands before they ever ran, so leave the
+            // blocks a tick to execute what was just written.
             const entry = this.punishTimers.get(key);
-            if (entry) entry.timeout = setTimeout(cycle, 0);
+            if (entry) entry.timeout = setTimeout(cycle, 50);
         };
 
         const tellrawTimer = setInterval(spamTellraw, 50);
