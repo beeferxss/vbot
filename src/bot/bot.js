@@ -9,6 +9,9 @@ const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
 const { IpLookup } = require('../iplookup');
+const path = require('node:path');
+const { Filter } = require('../filter');
+const { Whitelist } = require('../whitelist');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -41,6 +44,18 @@ class Bot extends EventEmitter {
             bot: this,
             store,
             config: config.alts || {},
+            logger: this.log
+        });
+
+        const dataDir = path.join(require('../config').ROOT || process.cwd(), 'data');
+        this.filter = new Filter({
+            bot: this,
+            storePath: path.join(dataDir, 'filter.json'),
+            logger: this.log
+        });
+        this.whitelist = new Whitelist({
+            bot: this,
+            storePath: path.join(dataDir, 'whitelist.json'),
             logger: this.log
         });
 
@@ -129,6 +144,8 @@ class Bot extends EventEmitter {
             this.startPlayerScan();
             // Give the position packet a moment to arrive before placing anything.
             setTimeout(() => this.core?.onReady(), 1500).unref?.();
+            this.filter?.start();
+            this.whitelist?.start();
         });
 
         for (const event of ['player_info', 'player_info_update']) {
@@ -184,6 +201,8 @@ class Bot extends EventEmitter {
             this.listed.clear();
             if (this.scanTimer) clearInterval(this.scanTimer);
             this.scanTimer = null;
+            this.filter?.destroy();
+            this.whitelist?.destroy();
             this.core?.destroy();
             this.clickTokens?.clear();
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
@@ -568,6 +587,8 @@ class Bot extends EventEmitter {
             clearInterval(this.scanTimer);
             this.scanTimer = null;
         }
+        this.filter?.destroy();
+        this.whitelist?.destroy();
         this.core?.destroy();
         this.clickTokens?.destroy();
         this.selfCare?.destroy();

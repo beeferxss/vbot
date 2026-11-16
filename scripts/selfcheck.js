@@ -1034,7 +1034,7 @@ async function main() {
         assert.match(output, /trusted: identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
-        assert.match(output, /admin: refill/);
+        assert.match(output, /admin: filter refill whitelist/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
