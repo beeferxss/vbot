@@ -302,9 +302,11 @@ async function main() {
         assert.match(await run('<Unranked> v:identity'), /needs a trusted token/);
     });
 
-    await check('a stored rank cannot be borrowed by forged chat', async () => {
+    await check('a stored rank cannot be borrowed by forged chat on a signing server', async () => {
         // Steve is admin in the store, but this line did not arrive as signed
-        // player chat, so it must not inherit that rank.
+        // player chat and the server has proven it can sign, so it must not
+        // inherit that rank.
+        fakeBot.signedChatSeen = true;
         sent.length = 0;
         await registry.dispatch({
             bot: fakeBot,
@@ -317,6 +319,37 @@ async function main() {
         const token = tokens.issue(LEVEL.TRUSTED).token;
         const output = await run(`<Unranked> v:identity ${token} Alex`);
         assert.match(output, /Alex — 069a79f4/);
+    });
+
+    await check('servers without chat signing still apply ranks', async () => {
+        fakeBot.signedChatSeen = false;
+        sent.length = 0;
+        await registry.dispatch({
+            bot: fakeBot,
+            parsed: { username: 'Steve', message: 'v:identity Alex' },
+            verified: false
+        });
+        assert.match(sent[0], /Alex — 069a79f4/);
+
+        // trustUnsigned: false keeps unsigned chat out even without signing.
+        const strict = loadConfig(examplePath);
+        strict.bot.prefixes = ['v:'];
+        strict.chat = { trustUnsigned: false };
+        const strictRegistry = new CommandRegistry({
+            dir: path.join(ROOT, 'src', 'commands'),
+            config: strict,
+            permissions,
+            store,
+            logger,
+            tokens
+        }).loadAll();
+        sent.length = 0;
+        await strictRegistry.dispatch({
+            bot: { ...fakeBot, signedChatSeen: false },
+            parsed: { username: 'Steve', message: 'v:identity Alex' },
+            verified: false
+        });
+        assert.match(sent[0], /needs a trusted token/);
     });
 
     await check('trusted commands respond with identity data', async () => {

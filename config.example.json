@@ -93,5 +93,8 @@
   "logging": {
     "level": "info",
     "chat": true
+  },
+  "chat": {
+    "trustUnsigned": "auto"
   }
 }

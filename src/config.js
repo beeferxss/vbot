@@ -39,6 +39,11 @@ function defaults() {
         logging: {
             level: 'info',
             chat: true
+        },
+        chat: {
+            // "auto" trusts unsigned chat until the server proves it signs
+            // player chat; true always trusts it; false never does.
+            trustUnsigned: 'auto'
         }
     };
 }

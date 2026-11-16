@@ -93,10 +93,20 @@ class CommandRegistry {
         }
 
         // A name is only worth as much as the packet that carried it. System
-        // chat can be printed by anyone ( /sudo, a plugin, a rank prefix ), so
-        // a stored rank or config list only counts for signed player chat.
+        // chat can be printed by anyone ( /sudo, a plugin, a rank prefix ), so a
+        // stored rank only counts for signed player chat - unless the server
+        // never signs anything, which free-op and offline-mode servers do not.
+        // "auto" trusts unsigned text until the first signed packet proves the
+        // server is able to sign; on servers without signing that never happens
+        // and ranks keep working.
+        const trustSetting = this.config.chat?.trustUnsigned ?? 'auto';
+        const trustUnsigned = trustSetting === 'auto'
+            ? !bot.signedChatSeen
+            : trustSetting === true;
+        const trustedName = verified || trustUnsigned;
+
         let level = this.permissions.levelFor({
-            name: verified ? parsed.username : null,
+            name: trustedName ? parsed.username : null,
             uuid: parsed.uuid
         });
 
@@ -129,6 +139,7 @@ class CommandRegistry {
             username: parsed.username,
             uuid: parsed.uuid ?? (typeof bot.uuidFor === 'function' ? bot.uuidFor(parsed.username) : null),
             verified,
+            trustedName,
             level,
             levelName: levelName(level),
             args,

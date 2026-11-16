@@ -26,6 +26,9 @@ class Bot extends EventEmitter {
         this.destroyed = false;
         this.disconnectReason = null;
         this.known = new Map();
+        // Set once a signed player chat packet arrives: until then the server may
+        // simply not support chat signing, so unsigned chat is all there is.
+        this.signedChatSeen = false;
     }
 
     get connection() {
@@ -118,6 +121,8 @@ class Bot extends EventEmitter {
 
         // A signed chat packet is the only place a name and uuid are worth
         // trusting, and it also keeps the identity cache warm between logins.
+        if (chat.verified) this.signedChatSeen = true;
+
         if (chat.verified && chat.username && chat.uuid) {
             this.known.set(chat.username.toLowerCase(), chat.uuid);
             this.store.linkPlayer(chat.username, chat.uuid);
