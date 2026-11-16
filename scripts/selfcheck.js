@@ -521,7 +521,12 @@ async function main() {
         assert.strictEqual(modern.present, true);
         assert.strictEqual(modern.itemCount, 1);
         assert.strictEqual(modern.itemId, 418);
-        assert.deepStrictEqual(modern.components.map(c => c.type), ['block_entity_data', 'custom_data']);
+        assert.deepStrictEqual(modern.components.map(c => c.type), ['block_entity_data']);
+        assert.strictEqual(
+            modern.components[0].data.value.id.value,
+            'minecraft:command_block',
+            'the tag has to name its block entity'
+        );
         assert.strictEqual(
             modern.components[0].data.value.Command.value,
             'fill 1 2 3 4 5 6 minecraft:command_block replace'
@@ -566,6 +571,37 @@ async function main() {
         assert.strictEqual(writes[2].payload.direction, 1, 'placed on its top face');
 
         await new Promise(resolve => setTimeout(resolve, 90));
+
+        // Every protocol the bot can speak has to encode the item and the two
+        // block packets, or the placement never leaves the client.
+        const mc = require('minecraft-protocol');
+        for (const version of ['1.20.1', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
+            const data = require('minecraft-data')(version);
+            const item = commandBlockItem({
+                version,
+                itemId: data.itemsByName.command_block.id,
+                command: 'fill 1 2 3 4 5 6 minecraft:command_block replace'
+            });
+            const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
+            assert.ok(
+                serializer.createPacketBuffer({ name: 'set_creative_slot', params: { slot: 36, item } }).length > 0,
+                `${version} should encode the item`
+            );
+            assert.ok(serializer.createPacketBuffer({
+                name: 'block_place',
+                params: {
+                    hand: 0,
+                    location: { x: 1, y: 2, z: 3 },
+                    direction: 1,
+                    cursorX: 0.5,
+                    cursorY: 1,
+                    cursorZ: 0.5,
+                    insideBlock: false,
+                    worldBorderHit: false,
+                    sequence: 1
+                }
+            }).length > 0, `${version} should encode the placement`);
+        }
 
         const dig = writes.find(write => write.name === 'block_dig');
         assert.ok(dig, 'the placed block has to be broken again');

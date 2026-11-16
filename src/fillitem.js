@@ -48,9 +48,12 @@ function componentData(value, version) {
 }
 
 // BlockEntityTag is where a command block keeps its command (and `auto`, the
-// "always active" flag that makes it run as it is placed).
+// "always active" flag that makes it run as it is placed). The `id` is not
+// optional in the modern block_entity_data component: vanilla wants to know
+// which block entity this tag belongs to, and drops an item without it.
 function blockEntityTag(command) {
     return nbt.comp({
+        id: nbt.string('minecraft:command_block'),
         Command: nbt.string(command),
         auto: nbt.byte(1),
         TrackOutput: nbt.byte(1)
@@ -65,15 +68,9 @@ function commandBlockItem({ version, itemId, command }) {
             present: true,
             itemCount: 1,
             itemId,
-            addedComponentCount: 2,
+            addedComponentCount: 1,
             removedComponentCount: 0,
-            components: [
-                { type: 'block_entity_data', data: componentData(tag, version) },
-                {
-                    type: 'custom_data',
-                    data: componentData(nbt.comp({ BlockEntityTag: tag }), version)
-                }
-            ],
+            components: [{ type: 'block_entity_data', data: componentData(tag, version) }],
             removeComponents: []
         };
     }
