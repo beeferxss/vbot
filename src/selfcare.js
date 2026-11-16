@@ -98,6 +98,15 @@ class SelfCare {
         return this.bot.chat(`/${text}`);
     }
 
+    // Plain chat command (never routed through core). Used for urgent selfcare
+    // recovery (re-op, re-creative) so it still works even if core routing is bad.
+    runChat(command) {
+        const text = String(command ?? '').replace(/^\//, '').trim();
+        if (!text) return false;
+        if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(`/${text}`);
+        return this.bot.chat(`/${text}`);
+    }
+
     // Command spy and vanish need the core: a chat line would make the bot
     // visible, which is the opposite of what vanish is for.
     runWithCore(command, attempts = 10) {
@@ -135,24 +144,33 @@ class SelfCare {
         const level = status - 24;
         if (level === 0) {
             this.opLevel = 0;
-            if (this.opRequested) return;
-            this.askOp();
+            // Deopped: recover immediately via chat with no delay.
+            this.opRequested = false;
+            this.askOp({ immediate: true });
             return;
         }
 
         this.opLevel = level;
         this.opRequested = false;
         if (this.ready && this.gamemode !== null && this.gamemode !== 1) {
-            this.later(() => this.ensureCreative(), 300);
+            this.ensureCreative({ immediate: true });
         }
     }
 
-    askOp() {
-        if (!this.ready || this.opLevel !== 0 || this.opRequested || !this.creative) return;
+    askOp({ immediate = false } = {}) {
+        if (!this.ready || this.opLevel !== 0 || !this.creative) return;
+        if (!immediate && this.opRequested) return;
 
         this.opRequested = true;
         this.log.info('no op: asking for it');
-        this.run('/op @s[type=player]');
+        this.runChat('op @s[type=player]');
+
+        if (immediate) {
+            // Allow an immediate re-fire if deopped again; keep a short guard
+            // against tight duplicate sends from the same state.
+            this.later(() => { this.opRequested = false; }, 100);
+            return;
+        }
 
         this.later(() => {
             this.opRequested = false;
@@ -164,21 +182,27 @@ class SelfCare {
         }, RETRY_MS);
     }
 
-    ensureCreative() {
+    ensureCreative({ immediate = false } = {}) {
         if (!this.ready || !this.creative || this.gamemode === null) return;
         if (this.gamemode === 1) {
             this.creativeRequested = false;
             return;
         }
-        if (this.creativeRequested) return;
+        if (!immediate && this.creativeRequested) return;
 
         if (this.opLevel === 0) {
-            if (!this.opRequested) this.askOp();
+            if (!this.opRequested) this.askOp({ immediate });
             return;
         }
 
         this.creativeRequested = true;
-        this.run('/gamemode creative');
+        this.runChat('gamemode creative');
+
+        if (immediate) {
+            this.later(() => { this.creativeRequested = false; }, 100);
+            return;
+        }
+
         this.later(() => {
             this.creativeRequested = false;
             if (this.ready && this.gamemode !== 1) this.ensureCreative();
@@ -297,14 +321,14 @@ class SelfCare {
         if (!Number.isFinite(mode) || mode === this.gamemode) return;
         this.gamemode = mode;
         this.creativeRequested = false;
-        if (this.ready && mode !== 1) this.ensureCreative();
+        if (this.ready && mode !== 1) this.ensureCreative({ immediate: true });
     }
 
     onGameStateChange(packet) {
         if (!packet || packet.reason !== 'change_game_mode') return;
         this.gamemode = Number(packet.gameMode);
         this.creativeRequested = false;
-        if (this.gamemode !== 1) this.ensureCreative();
+        if (this.gamemode !== 1) this.ensureCreative({ immediate: true });
     }
 
     onRespawn(packet) {
@@ -315,7 +339,7 @@ class SelfCare {
         this.vanishRequested = false;
         this.nickSent = false;
         this.usernameSent = false;
-        this.ensureCreative();
+        this.ensureCreative({ immediate: true });
         if (this.vanish) this.later(() => this.ensureVanish(), 1000);
     }
 
