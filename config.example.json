@@ -146,6 +146,7 @@
     "channels": {},
     "trustedId": "1450509583360725002",
     "adminId": "1450487330409287832",
+    "ownerId": "1450509314648178908",
     "adminIds": [],
     "relay": {
       "chat": true,

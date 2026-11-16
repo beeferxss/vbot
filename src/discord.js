@@ -350,17 +350,18 @@ class DiscordBridge {
         return typeof this.manager.list === 'function' ? this.manager.list() : [];
     }
 
-    // Discord ranks replace the in-game ones for anything run from here. The
-    // Trusted role maps to vbot's admin level so those members can moderate
-    // (filter, whitelist, punish); the Admin role maps to owner, which is every
-    // command. A user id in discord.adminIds always counts as owner.
+    // Discord ranks map straight onto vbot's: the Trusted role is trusted, the
+    // Admin role is admin, and the Owner role is owner. A user id in
+    // discord.adminIds is treated as owner too, for the odd person who has to
+    // run something without a role.
     rankFor(member) {
         const hasRole = id => Boolean(id) && Boolean(member?.roles?.cache?.has?.(String(id)));
-        if (hasRole(this.config.adminId)) return LEVEL.OWNER;
+        if (hasRole(this.config.ownerId)) return LEVEL.OWNER;
 
         const userId = String(member?.user?.id ?? member?.id ?? '');
         if (userId && (this.config.adminIds || []).map(String).includes(userId)) return LEVEL.OWNER;
-        if (hasRole(this.config.trustedId)) return LEVEL.ADMIN;
+        if (hasRole(this.config.adminId)) return LEVEL.ADMIN;
+        if (hasRole(this.config.trustedId)) return LEVEL.TRUSTED;
         return LEVEL.PUBLIC;
     }
 

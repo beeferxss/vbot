@@ -2065,14 +2065,15 @@ async function main() {
 
         const member = roles => ({ roles: { cache: new Map(roles.map(role => [role, {}])) } });
         const bridge = new DiscordBridge({
-            config: { bot: {}, discord: { trustedId: 'T', adminId: 'A', adminIds: ['U'] } },
+            config: { bot: {}, discord: { trustedId: 'T', adminId: 'A', ownerId: 'O', adminIds: ['U'] } },
             manager: null,
             logger
         });
 
         assert.strictEqual(bridge.rankFor(member([])), LEVEL.PUBLIC);
-        assert.strictEqual(bridge.rankFor(member(['T'])), LEVEL.ADMIN);
-        assert.strictEqual(bridge.rankFor(member(['A'])), LEVEL.OWNER);
+        assert.strictEqual(bridge.rankFor(member(['T'])), LEVEL.TRUSTED);
+        assert.strictEqual(bridge.rankFor(member(['A'])), LEVEL.ADMIN);
+        assert.strictEqual(bridge.rankFor(member(['O'])), LEVEL.OWNER);
         assert.strictEqual(bridge.rankFor({ roles: { cache: new Map() }, user: { id: 'U' } }), LEVEL.OWNER);
         assert.strictEqual(bridge.rankFor(null), LEVEL.PUBLIC);
 
@@ -2082,12 +2083,13 @@ async function main() {
             permissions: {},
             find: label => ({
                 filter: { name: 'filter', level: LEVEL.ADMIN, execute: async ctx => ctx.reply(`filter ${ctx.argString}`) },
+                cloop: { name: 'cloop', level: LEVEL.TRUSTED, execute: async ctx => ctx.reply('cloop ok') },
                 servers: { name: 'servers', level: LEVEL.PUBLIC, execute: async ctx => ctx.reply([{ text: 'ok' }, { text: '!' }]) }
             })[label] || null,
             runCommand: () => true
         };
         const runner = new DiscordBridge({
-            config: { bot: { prefixes: ['v\\'] }, discord: { trustedId: 'T', adminId: 'A' } },
+            config: { bot: { prefixes: ['v\\'] }, discord: { trustedId: 'T', adminId: 'A', ownerId: 'O' } },
             manager: null,
             logger,
             registry
@@ -2098,7 +2100,16 @@ async function main() {
         assert.strictEqual(denied.ok, false);
         assert.match(denied.text, /needs admin/);
 
-        const allowed = await runner.executeCommand(bot, member(['T']), 'filter add Steve');
+        // Trusted is exactly vbot's trusted level: trusted commands pass,
+        // admin-only commands do not.
+        const trustedFilter = await runner.executeCommand(bot, member(['T']), 'filter add Steve');
+        assert.strictEqual(trustedFilter.ok, false);
+        assert.match(trustedFilter.text, /needs admin/);
+
+        const trustedLoop = await runner.executeCommand(bot, member(['T']), 'cloop list');
+        assert.strictEqual(trustedLoop.text, 'cloop ok');
+
+        const allowed = await runner.executeCommand(bot, member(['A']), 'filter add Steve');
         assert.strictEqual(allowed.text, 'filter add Steve');
 
         const publicOnly = await runner.executeCommand(bot, member([]), 'v\\servers');

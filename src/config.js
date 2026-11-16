@@ -94,6 +94,7 @@ function defaults() {
             channels: {},
             trustedId: '',
             adminId: '',
+            ownerId: '',
             adminIds: [],
             relay: {
                 chat: true,
