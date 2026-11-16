@@ -99,6 +99,8 @@ function defaults() {
                 intervalMs: 1000,
                 // How fast "refill" spams fills through the core blocks.
                 spamMs: 1,
+                // Start the spam refill by itself once the core is placed.
+                auto: true,
                 // Refill by placing a command block item and breaking it again:
                 // the fill runs on placement and the core is never written to.
                 item: true,

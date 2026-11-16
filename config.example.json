@@ -135,6 +135,7 @@
       "mode": "replace",
       "intervalMs": 1000,
       "spamMs": 1,
+      "auto": true,
       "item": true,
       "breakDelayMs": 250
     }

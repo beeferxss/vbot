@@ -12,9 +12,6 @@ const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
 const DEFAULT_SPAM_MS = 1;
-const DEFAULT_SPAM_SECONDS = 10;
-// A fill written into a block should answer within a tick or two.
-const FILL_CONFIRM_MS = 1500;
 // A fill's own block updates can arrive a second or more later, and a refill
 // twice in a row is never useful, so both the grace and the rate limit are
 // generous. Without them one slow update looped refills forever.
@@ -231,19 +228,10 @@ class Core {
         const viaItem = !viaChat && !viaCore && this.placeFill(command);
         if (viaItem) viaCore = true;
 
+        // Chat is the last resort, never a second attempt on top of a block: a
+        // server that silences command block output would otherwise get every
+        // fill twice.
         if (!viaCore) send(`/${command}`);
-
-        // Nothing came back means it never ran: send the same fill as chat, which
-        // always reaches the server, rather than sit there doing nothing.
-        if (viaCore) {
-            const startedAt = Date.now();
-            setTimeout(() => {
-                if (this.lastFill && this.lastFill.at >= startedAt) return;
-                if (viaItem) this.fillItem.broken = true;
-                this.log.warn('the fill did not run through the block; sending it as chat instead');
-                send(`/${command}`);
-            }, FILL_CONFIRM_MS).unref?.();
-        }
 
         this.refilling = true;
         this.ready = false;
@@ -289,7 +277,8 @@ class Core {
         if (this.origin.x === null && !this.reset()) return false;
 
         const every = positive(intervalMs, this.spamMs);
-        const total = positive(durationMs, DEFAULT_SPAM_SECONDS * 1000);
+        // No duration means it runs until it is switched off.
+        const total = Number(durationMs) > 0 ? Number(durationMs) : Infinity;
         this.spam = { startedAt: Date.now(), count: 0, intervalMs: every, durationMs: total };
 
         this.spamTimer = setInterval(() => {
@@ -305,7 +294,11 @@ class Core {
         }, every);
         this.spamTimer.unref?.();
 
-        this.log.info(`core spam refill: every ${every}ms for ${total}ms`);
+        this.log.info(
+            total === Infinity
+                ? `core spam refill: every ${every}ms until stopped`
+                : `core spam refill: every ${every}ms for ${total}ms`
+        );
         return true;
     }
 
@@ -330,7 +323,9 @@ class Core {
             running: true,
             intervalMs: this.spam.intervalMs,
             count: this.spam.count,
-            leftMs: Math.max(0, this.spam.durationMs - (Date.now() - this.spam.startedAt))
+            leftMs: Number.isFinite(this.spam.durationMs)
+                ? Math.max(0, this.spam.durationMs - (Date.now() - this.spam.startedAt))
+                : null
         };
     }
 
@@ -518,6 +513,12 @@ class Core {
         if (this.origin.x === null) this.reset();
         if (this.origin.x !== null) this.refill('startup');
         this.startWatchdog();
+        // Spam refills are the default way of keeping the core up.
+        if (this.config.refill?.auto !== false) {
+            setTimeout(() => {
+                if (this.enabled && this.refillEnabled && this.origin.x !== null) this.startSpam();
+            }, 1000).unref?.();
+        }
     }
 
     // Nothing guarantees the fill landed: the bot may not be opped yet, a chunk

@@ -422,7 +422,7 @@ async function main() {
     });
 
     const refillCommandCheck = async () => {
-        const spam = { started: null, running: false };
+        const spam = { started: null, running: false, intervalMs: 1 };
         const botCore = {
             startSpam: options => {
                 if (spam.running) return false;
@@ -436,22 +436,31 @@ async function main() {
                 return was;
             },
             spamStatus: () => (spam.running
-                ? { running: true, intervalMs: 250, count: 3, leftMs: 4000 }
-                : { running: false, intervalMs: 250 })
+                ? { running: true, intervalMs: 1, count: 3, leftMs: null }
+                : { running: false, intervalMs: 1 })
         };
         const spamBot = { ...fakeBot, core: botCore };
 
+        // On is a toggle: no duration, it keeps going until it is switched off.
         sent.length = 0;
-        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill 5') });
-        assert.strictEqual(spam.started.durationMs, 5000);
-        assert.strictEqual(decodeReply(sent[0]), 'Spam refilling for 5s, every 250ms.');
+        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill on') });
+        assert.strictEqual(spam.started.durationMs, undefined);
+        assert.match(decodeReply(sent[0]), /Refilling every 1ms until .*refill off/);
 
         sent.length = 0;
-        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill stop') });
+        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill status') });
+        assert.strictEqual(decodeReply(sent[0]), 'Refilling every 1ms, 3 fill(s) so far, until stopped.');
+
+        sent.length = 0;
+        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill off') });
         assert.strictEqual(spam.running, false);
-        assert.strictEqual(decodeReply(sent[0]), 'Spam refill stopped.');
-    };
+        assert.strictEqual(decodeReply(sent[0]), 'Refilling stopped.');
 
+        // Switched off twice is not an error, just nothing to stop.
+        sent.length = 0;
+        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill off') });
+        assert.strictEqual(decodeReply(sent[0]), 'Refilling was not running.');
+    };
     await check('core blocks can be named from config', () => {
         const named = [];
         const fake = version => ({
@@ -1185,7 +1194,7 @@ async function main() {
         assert.strictEqual(op.color, 'red');
     });
 
-    await check('the refill command starts and stops spam refills', refillCommandCheck);
+    await check('the refill command toggles spam refills', refillCommandCheck);
 
     await check('trusted commands respond with identity data', async () => {
         const output = await run('<Steve> v:identity Alex');

@@ -1,19 +1,17 @@
 'use strict';
 
-// Spam refills: the same fill, written into a core block again and again, so a
-// wrecked area is back in a second or two instead of waiting for the watchdog.
+// Spam refills: the same fill written into the core's own blocks over and over,
+// as fast as the bot can send them. Switched on, it stays on until it is
+// switched off, and it starts by itself when the bot logs in.
 //
-// Separate from "core refill", which sends one fill as chat on purpose - this
-// one is for speed, so it only uses blocks and never touches chat.
-
-const DEFAULT_SECONDS = 10;
-const MAX_SECONDS = 120;
+// Separate from "core refill", which sends one fill as chat on purpose - this one
+// never touches chat.
 
 module.exports = {
     name: 'refill',
     aliases: ['spamrefill'],
-    description: 'Refill the core in a fast burst through its command blocks',
-    usage: 'refill [seconds|stop|status]',
+    description: 'Keep refilling the core through its own blocks',
+    usage: 'refill [on|off|status]',
     level: 'admin',
 
     async execute(ctx) {
@@ -23,43 +21,35 @@ module.exports = {
             return;
         }
 
-        const first = String(ctx.args[0] || '').toLowerCase();
+        const first = String(ctx.args[0] || 'on').toLowerCase();
 
-        if (first === 'stop') {
+        if (first === 'off' || first === 'stop') {
             const stopped = core.stopSpam('stopped');
-            ctx.reply(stopped ? 'Spam refill stopped.' : 'No spam refill is running.');
+            ctx.reply(stopped ? 'Refilling stopped.' : 'Refilling was not running.');
             return;
         }
 
         if (first === 'status') {
             const status = core.spamStatus();
-            const item = core.fillItem;
-            const how = item?.usable
-                ? 'place a command block item'
-                : `write into core blocks (${item?.broken ? 'items refused by this server or not in creative' : 'item path unavailable'})`;
             ctx.reply(status.running
-                ? `Spam refill: every ${status.intervalMs}ms, ${status.count} fill(s), ` +
-                  `${Math.ceil(status.leftMs / 1000)}s left, ${how}.`
-                : `Spam refill is not running (would use every ${status.intervalMs}ms, ${how}).`);
+                ? `Refilling every ${status.intervalMs}ms, ${status.count} fill(s) so far, until stopped.`
+                : `Refilling is off (it would use every ${status.intervalMs}ms).`);
             return;
         }
 
-        const asked = Number.parseInt(first, 10);
-        const seconds = Math.min(
-            Math.max(Number.isFinite(asked) ? asked : DEFAULT_SECONDS, 1),
-            MAX_SECONDS
-        );
+        if (first !== 'on' && first !== 'start') {
+            ctx.reply(`Usage: ${ctx.prefix}refill [on|off|status]`);
+            return;
+        }
 
         const intervalMs = Number(ctx.config?.core?.refill?.spamMs) || undefined;
-        const started = core.startSpam({ intervalMs, durationMs: seconds * 1000 });
-        if (!started) {
+        if (!core.startSpam({ intervalMs })) {
             ctx.reply(core.spamStatus().running
-                ? 'Spam refill is already running; use refill stop first.'
-                : 'Spam refill needs a placed core and refills enabled.');
+                ? 'Refilling is already on; use refill off first.'
+                : 'Refilling needs a placed core and refills enabled.');
             return;
         }
 
-        const every = core.spamStatus().intervalMs;
-        ctx.reply(`Spam refilling for ${seconds}s, every ${every}ms.`);
+        ctx.reply(`Refilling every ${core.spamStatus().intervalMs}ms until "${ctx.prefix}refill off".`);
     }
 };
