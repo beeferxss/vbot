@@ -100,6 +100,7 @@
   },
   "core": {
     "enabled": true,
+    "name": "{\"text\":\"vbot\",\"color\":\"green\"}",
     "area": {
       "size": 9,
       "y": 64

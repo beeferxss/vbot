@@ -52,6 +52,9 @@ function defaults() {
         },
         core: {
             enabled: true,
+            // Raw SNBT component for the blocks' CustomName, or null for none.
+            // Example: {"text":"vbot","color":"green"}
+            name: null,
             area: { size: 9, y: 64 },
             refill: { enabled: true, block: 'minecraft:repeating_command_block', mode: 'replace' }
         }

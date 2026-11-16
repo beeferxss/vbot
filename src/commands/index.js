@@ -185,11 +185,14 @@ class CommandRegistry {
         return bot.chat(`/${text}`);
     }
 
-    // Commands visible to a rank, for the help listing.
+    // Commands a rank may run.
     listFor(level) {
-        return [...this.commands.values()]
-            .filter(command => command.level <= level)
-            .sort((a, b) => a.name.localeCompare(b.name));
+        return this.listAll().filter(command => command.level <= level);
+    }
+
+    // Every loaded command, for a help listing that does not hide anything.
+    listAll() {
+        return [...this.commands.values()].sort((a, b) => a.name.localeCompare(b.name));
     }
 }
 

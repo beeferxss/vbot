@@ -18,6 +18,9 @@ class Core {
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
         this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
+        // Optional display name, as raw SNBT component text, for example
+        // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
+        this.name = this.config.name ? String(this.config.name) : null;
         this.mode = String(this.config.refill?.mode || 'replace');
         this.refillEnabled = this.config.refill?.enabled !== false;
 
@@ -43,7 +46,8 @@ class Core {
         if (this.origin.x === null) return 'core not placed yet (no position seen)';
         const { origin, bounds } = this;
         return `core ${this.size}^3 at ${origin.x} ${origin.y} ${origin.z}..${bounds.x} ${bounds.y} ${bounds.z}, ` +
-            `${this.ready ? 'ready' : this.refilling ? 'refilling' : 'not ready'}, cursor ${this.cursor}/${this.volume}`;
+            `${this.ready ? 'ready' : this.refilling ? 'refilling' : 'not ready'}, cursor ${this.cursor}/${this.volume}, ` +
+            `name ${this.name ? this.name : 'none'}`;
     }
 
     // Grid-aligned to the bot's chunk so the core stays put while it walks.
@@ -69,8 +73,9 @@ class Core {
         if (this.origin.x === null && !this.reset()) return false;
 
         const { origin, bounds } = this;
+        const block = this.blockSpec();
         const command =
-            `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${this.block} ${this.mode}`;
+            `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${block} ${this.mode}`;
 
         // Reuse a block that is still standing: writing the fill into it rebuilds
         // the whole area without a chat command. Only when every block is gone
@@ -140,6 +145,12 @@ class Core {
 
         this.log.warn('no core block accepted the command');
         return null;
+    }
+
+    // The block as written in the fill command, with the configured name.
+    blockSpec() {
+        if (!this.name) return this.block;
+        return `${this.block}{CustomName:'${this.name.replace(/'/g, "\\'")}'}`;
     }
 
     markAllAlive() {

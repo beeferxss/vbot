@@ -343,6 +343,42 @@ async function main() {
         core.destroy();
     });
 
+    await check('core blocks can be named from config', () => {
+        const named = [];
+        const core = new Core({
+            bot: { position: { x: 0, y: 70, z: 0 }, chat: c => named.push(c), write: () => true, log: logger },
+            config: {
+                enabled: true,
+                name: '{"text":"vbot","color":"green"}',
+                area: { size: 9, y: 64 },
+                refill: { enabled: true }
+            },
+            logger
+        });
+        core.reset();
+        core.refill('test');
+
+        const expected = 'fill 0 64 0 8 72 8 ' +
+            'minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace';
+        assert.strictEqual(named[0], `/${expected}`);
+        assert.match(core.status(), /name \{"text"/);
+
+        // Without a name the fill stays plain.
+        const plainCore = new Core({
+            bot: { position: { x: 0, y: 70, z: 0 }, chat: c => named.push(c), write: () => true, log: logger },
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        plainCore.reset();
+        plainCore.refill('test');
+        assert.strictEqual(
+            named[1],
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block replace'
+        );
+        core.destroy();
+        plainCore.destroy();
+    });
+
     await check('core refills itself when a block is damaged', async () => {
         const sent = [];
         const coreBot = {
@@ -523,10 +559,33 @@ async function main() {
         assert.strictEqual(registry.find('whoami').name, 'whoami');
     });
 
-    await check('help only lists commands the caller can use', async () => {
-        const output = await run('<Unranked> v:help');
-        assert.match(output, /Commands for public/);
-        assert.ok(!output.includes('identity'), 'trusted command leaked to public help');
+    await check('help lists every rank and marks the ones you cannot use', async () => {
+        sent.length = 0;
+        await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
+        const output = decodeReply(sent[0]);
+        assert.match(output, /^Commands \(\d+\)/);
+        assert.match(output, /public: .*help/);
+        assert.match(output, /trusted: identity/);
+        assert.match(output, /admin: core/);
+
+        const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        const identity = listing.find(part => part.text === 'identity');
+        assert.ok(identity, 'trusted commands are still listed to a public player');
+        assert.strictEqual(identity.color, 'dark_gray');
+        assert.ok(!identity.clickEvent, 'a command you cannot use must not be clickable');
+    });
+
+    await check('an owner sees every rank of command as usable', async () => {
+        config.permissions.owner = ['VojtaV12'];
+        sent.length = 0;
+        await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<VojtaV12> v:help') });
+        const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        for (const name of ['help', 'identity', 'core']) {
+            const part = listing.find(entry => entry.text === name);
+            assert.ok(part, `${name} should be listed`);
+            assert.ok(part.clickEvent, `${name} should be clickable for an owner`);
+        }
+        assert.ok(listing.filter(part => part.clickEvent).length >= 7);
     });
 
     await check('help is coloured and clickable', async () => {
@@ -617,7 +676,7 @@ async function main() {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
         assert.match(sent[0], /^\/tellraw Unranked [[{]/);
-        assert.match(decodeReply(sent[0]), /Commands for public/);
+        assert.match(decodeReply(sent[0]), /Commands \(\d+\)/);
 
         const chatConfig = loadConfig(examplePath);
         chatConfig.bot.prefixes = ['v:'];
