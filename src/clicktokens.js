@@ -50,12 +50,16 @@ class ClickTokens {
         return command;
     }
 
-    // Returns the command to put in a run_command click event.
-    register(source, action) {
+    // Returns the command to put in a run_command click event. When the button
+    // was sent to one player, "player" pins it to them: the echo line names the
+    // clicker, and a token only works for the player it was issued to. That is
+    // what makes the clicker's identity good enough to trust their rank.
+    register(source, action, { player = null } = {}) {
         this.prune();
         const command = this.makeToken();
         this.tokens.set(command, {
             source: String(source || 'unknown').toLowerCase(),
+            player: player ? String(player).toLowerCase() : null,
             action,
             createdAt: Date.now()
         });
@@ -75,9 +79,9 @@ class ClickTokens {
 
     // Turns every suggest_command into a real button automatically, so nothing
     // has to be wired up per command: clicking runs the command as the clicker.
-    transform(component, source = 'reply') {
+    transform(component, source = 'reply', { player = null } = {}) {
         if (Array.isArray(component)) {
-            return component.map(part => this.transform(part, source));
+            return component.map(part => this.transform(part, source, { player }));
         }
         if (!component || typeof component !== 'object') return component;
 
@@ -85,12 +89,12 @@ class ClickTokens {
         if (out.click?.action === 'suggest_command' && typeof out.click.value === 'string') {
             const suggestion = out.click.value.trim();
             if (suggestion && this.onCommand) {
-                const token = this.register(source, clicker => this.onCommand(suggestion, clicker));
+                const token = this.register(source, clicker => this.onCommand(suggestion, clicker), { player });
                 out.click = { action: 'run_command', value: token };
             }
         }
         if (Array.isArray(out.extra)) {
-            out.extra = out.extra.map(part => this.transform(part, source));
+            out.extra = out.extra.map(part => this.transform(part, source, { player }));
         }
         return out;
     }
@@ -128,6 +132,13 @@ class ClickTokens {
             const entry = this.resolve(command);
             if (!entry) {
                 this.log.debug(`no click token for ${command}`);
+                return false;
+            }
+
+            // A button sent to one player only answers for that player, so the
+            // name on the echo line cannot be borrowed from someone else.
+            if (entry.player && entry.player !== String(clicker).toLowerCase()) {
+                this.log.warn(`click token for ${entry.player} used by ${clicker}; ignored`);
                 return false;
             }
 

@@ -284,8 +284,9 @@ class Bot extends EventEmitter {
     }
 
     // Runs something a player clicked as that player, with their own rank. The
-    // click line is server output, so it is not a signed message: ranks that
-    // depend on signed chat still need a token.
+    // button's token was issued to exactly one player and only answers for them,
+    // so the name on the echo line is trustworthy even though it is not signed
+    // chat - that is what keeps an owner an owner when they click.
     runSuggestion(suggestion, clicker) {
         const message = String(suggestion || '').trim();
         if (!message || !clicker?.name) return false;
@@ -296,7 +297,7 @@ class Bot extends EventEmitter {
             uuid: clicker.uuid ?? this.uuidFor(clicker.name)
         };
         this.registry
-            .dispatch({ bot: this, parsed, verified: false, clicked: true })
+            .dispatch({ bot: this, parsed, verified: false, clicked: true, trustedClicker: true })
             .catch(error => this.log.error(`clicked command failed: ${error.message}`));
         return true;
     }

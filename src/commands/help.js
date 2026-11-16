@@ -10,14 +10,15 @@ function usageOf(prefix, command) {
     return `${prefix}${command.usage || command.name}`;
 }
 
-// Clicking a command puts it in the chat bar ready to edit; it does not run
-// anything by itself, since the player still has to press enter.
+// Clicking a command name opens its help instead of running it: nothing fires
+// by accident, and the entry is a real button (the registry turns every
+// suggestion into one).
 function clickable(prefix, command) {
     return {
         text: command.name,
         color: COMMAND_COLOR,
-        click: { action: 'suggest_command', value: `${prefix}${command.name} ` },
-        hover: { text: `${usageOf(prefix, command)}\n${command.description || 'no description'}` }
+        click: { action: 'suggest_command', value: `${prefix}help ${command.name}` },
+        hover: { text: `${usageOf(prefix, command)}\n${command.description || 'no description'}\nclick to open its help` }
     };
 }
 
@@ -55,8 +56,9 @@ module.exports = {
                 {
                     text: usage,
                     color: COMMAND_COLOR,
-                    click: { action: 'suggest_command', value: `${usage} ` },
-                    hover: { text: 'Click to put this in chat' }
+                    // Copy, not run: a usage line is not something to fire off.
+                    click: { action: 'copy_to_clipboard', value: usage },
+                    hover: { text: 'Click to copy this usage' }
                 },
                 { text: ' — ', color: 'dark_gray' },
                 { text: command.description || 'no description', color: 'gray' },

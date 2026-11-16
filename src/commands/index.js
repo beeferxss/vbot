@@ -77,7 +77,7 @@ class CommandRegistry {
         return found;
     }
 
-    async dispatch({ bot, parsed, verified = true }) {
+    async dispatch({ bot, parsed, verified = true, trustedClicker = false }) {
         const prefix = this.matchPrefix(parsed.message);
         if (!prefix) return false;
 
@@ -104,7 +104,10 @@ class CommandRegistry {
         const trustUnsigned = trustSetting === 'auto'
             ? !bot.signedChatSeen
             : trustSetting === true;
-        const trustedName = verified || trustUnsigned;
+        // A click token was handed to one player and only answers for them, so
+        // the name on its echo line is as good as signed chat: the player keeps
+        // their own rank and cannot borrow anyone else's.
+        const trustedName = verified || trustUnsigned || trustedClicker;
 
         let level = this.permissions.levelFor({
             name: trustedName ? parsed.username : null,
@@ -175,8 +178,11 @@ class CommandRegistry {
         let component = toComponent(text);
 
         // Every suggestion becomes a working button, the way the reference does
-        // it: clicking runs the command as the player, through a click token.
-        if (bot.clickTokens?.transform) component = bot.clickTokens.transform(component, source);
+        // it: clicking runs the command as the player, through a click token that
+        // only works for the player this reply is addressed to.
+        if (bot.clickTokens?.transform) {
+            component = bot.clickTokens.transform(component, source, { player: username });
+        }
 
         if (mode === 'tellraw' && username) {
             const version = bot?.client?.version || this.config.minecraft?.version || null;

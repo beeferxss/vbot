@@ -763,15 +763,17 @@ async function main() {
         const clicks = listing.filter(part => part.clickEvent?.action === 'suggest_command');
         assert.ok(clicks.length >= 5, 'each listed command should be clickable');
         for (const part of clicks) {
-            assert.strictEqual(part.clickEvent.value, `v:${part.text} `);
+            // Clicking a command opens its help; it never fires the command.
+            assert.strictEqual(part.clickEvent.value, `v:help ${part.text}`);
             assert.ok(registry.find(part.text), `${part.text} should be a real command`);
         }
 
-        // A single command explains itself, with its usage clickable too.
+        // A single command explains itself, with its usage copied on click.
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help ping') });
         const detail = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
-        assert.strictEqual(detail[0].clickEvent.value, 'v:ping ');
+        assert.strictEqual(detail[0].clickEvent.action, 'copy_to_clipboard');
+        assert.strictEqual(detail[0].clickEvent.value, 'v:ping');
         assert.match(decodeReply(sent[0]), /ping — .*latency.* \[public\]/);
     });
 
@@ -782,7 +784,7 @@ async function main() {
 
         // Clicking only works with the new field names, which is the whole point.
         assert.match(sent[0], /^\/tellraw Unranked \[?\{text:'Commands'/);
-        assert.match(sent[0], /click_event:\{action:'suggest_command',command:'v:help '\}/);
+        assert.match(sent[0], /click_event:\{action:'suggest_command',command:'v:help /);
         assert.match(sent[0], /hover_event:\{action:'show_text',value:\{text:'/);
         assert.ok(!sent[0].includes('clickEvent'), 'the old field name is ignored by 1.21.5+');
         assert.ok(!sent[0].includes('hoverEvent'));
@@ -998,11 +1000,84 @@ async function main() {
             'nothing is left as a suggestion'
         );
 
-        // Clicking runs the command as the player who clicked.
+        // Clicking opens that command's help as the player it was sent to.
         sent.length = 0;
-        assert.strictEqual(clicks.handle(`Steve issued server command: ${helpPart.clickEvent.value}`), true);
+        assert.strictEqual(clicks.handle(`Unranked issued server command: ${helpPart.clickEvent.value}`), true);
         await new Promise(resolve => setTimeout(resolve, 20));
-        assert.match(decodeReply(sent[0]), /Commands \(\d+\)/);
+        assert.match(decodeReply(sent[0]), /v:help \[command\]/);
+        assert.match(decodeReply(sent[0]), /List the commands you can use/);
+
+        clicks.destroy();
+    });
+
+    await check('a click token only answers for the player it was sent to', async () => {
+        const { ClickTokens } = require('../src/clicktokens');
+        const clicks = new ClickTokens({ logger, uuidFor: () => null });
+
+        const ran = [];
+        const token = clicks.register('help', player => ran.push(player.name), { player: 'Steve' });
+
+        // Someone else naming the token is not the player it was issued to.
+        assert.strictEqual(clicks.handle(`Alex issued server command: ${token}`), false);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.deepStrictEqual(ran, []);
+
+        assert.strictEqual(clicks.handle(`Steve issued server command: ${token}`), true);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.deepStrictEqual(ran, ['Steve']);
+
+        clicks.destroy();
+    });
+
+    await check('clicking a help entry opens that command\'s help as the clicker', async () => {
+        const { ClickTokens } = require('../src/clicktokens');
+        const clicks = new ClickTokens({
+            logger,
+            uuidFor: name => bot.uuidFor(name),
+            onCommand: (suggestion, clicker) => registry.dispatch({
+                bot: { ...fakeBot, clickTokens: clicks },
+                parsed: { username: clicker.name, message: suggestion, uuid: clicker.uuid },
+                verified: false,
+                trustedClicker: true
+            })
+        });
+        const clickBot = { ...fakeBot, clickTokens: clicks };
+
+        sent.length = 0;
+        await registry.dispatch({ bot: clickBot, parsed: parseChatLine('<VojtaV12> v:help') });
+        const parts = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+
+        const entryPart = parts.find(part => part.text === 'core');
+        assert.ok(entryPart, 'the owner sees the core entry');
+        assert.strictEqual(entryPart.clickEvent.action, 'run_command', 'the entry is a real button');
+
+        // Clicking it runs help for that command, not the command itself.
+        sent.length = 0;
+        assert.strictEqual(clicks.handle(`VojtaV12 issued server command: ${entryPart.clickEvent.value}`), true);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        const helpReply = decodeReply(sent[0]);
+        assert.match(helpReply, /v:core \[status/);
+        assert.match(helpReply, /Run a command through the core/);
+        assert.match(helpReply, /\[admin\]/, 'the clicker sees the rank of the command');
+
+        // A button that runs a privileged command keeps the clicker's rank: an
+        // owner is still the owner when they click.
+        const statusBot = {
+            ...clickBot,
+            core: { origin: { x: null }, statusParts: () => [{ text: 'core ready', color: 'green' }] }
+        };
+        const statusToken = clicks.register('core', clicker => registry.dispatch({
+            bot: statusBot,
+            parsed: { username: clicker.name, message: 'v:core status', uuid: clicker.uuid },
+            verified: false,
+            trustedClicker: true
+        }));
+
+        sent.length = 0;
+        clicks.handle(`VojtaV12 issued server command: ${statusToken}`);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.match(decodeReply(sent[0]), /core ready/);
+        assert.ok(!/token/.test(decodeReply(sent[0])), 'an owner click is not asked for a token');
 
         clicks.destroy();
     });
