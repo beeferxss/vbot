@@ -5,6 +5,7 @@
 // area is refilled with /fill whenever something breaks a block.
 
 const tellraw = require('./minecraft/tellraw');
+const { FillItem } = require('./fillitem');
 
 const OWN_CHANGE_MS = 2500;
 const DAMAGE_DELAY_MS = 250;
@@ -52,6 +53,11 @@ class Core {
         this.spamTimer = null;
         this.spam = null;
         this.spamMs = positive(this.config.refill?.spamMs, DEFAULT_SPAM_MS);
+        // The fastest refill path: a command block item placed and broken again.
+        this.fillItem = this.config.refill?.item === false
+            ? null
+            : new FillItem({ bot, logger, config: this.config.refill });
+        this.itemFills = 0;
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
         this.fillFailures = 0;
@@ -203,11 +209,16 @@ class Core {
             ? text => this.bot.sendChat(text)
             : text => this.bot.chat(text);
 
-        // Reuse a block that is still standing: writing the fill into it rebuilds
-        // the area without a chat command. Only when nothing is left standing
-        // does an automatic refill fall back to chat.
-        const survivor = !viaChat && !this.refilling ? this.survivor() : null;
+        // Fastest first: place a command block item carrying the fill, which runs
+        // the moment it lands, and break that one block again a moment later.
         let viaCore = false;
+        const viaItem = !viaChat && this.placeFill(command);
+        if (viaItem) viaCore = true;
+
+        // Next best: reuse a block that is still standing, writing the fill into
+        // it without a chat command. Only when neither works does an automatic
+        // refill fall back to chat.
+        const survivor = !viaChat && !viaCore && !this.refilling ? this.survivor() : null;
 
         if (survivor) {
             this.markOwn(survivor);
@@ -226,9 +237,10 @@ class Core {
         this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
-        this.log.info(
-            `core refill (${reason}) via ${viaCore ? `block ${survivor.x} ${survivor.y} ${survivor.z}` : 'chat'}`
-        );
+        let place = 'chat';
+        if (viaItem) place = 'a placed command block';
+        else if (viaCore && survivor) place = `block ${survivor.x} ${survivor.y} ${survivor.z}`;
+        this.log.info(`core refill (${reason}) via ${place}`);
 
         setTimeout(() => {
             this.refilling = false;
@@ -237,6 +249,15 @@ class Core {
             this.markAllAlive();
         }, REFILL_SETTLE_MS).unref?.();
 
+        return true;
+    }
+
+    // Places the fill as a command block item and breaks only that block. False
+    // when the server or the version will not take the item.
+    placeFill(command) {
+        if (!this.fillItem?.usable) return false;
+        if (!this.fillItem.run(command)) return false;
+        this.itemFills += 1;
         return true;
     }
 
@@ -265,7 +286,8 @@ class Core {
 
             // Our own fills change blocks; none of that is damage.
             this.graceUntil = Date.now() + REFILL_GRACE_MS;
-            if (this.run(this.fillCommand())) this.spam.count += 1;
+            const command = this.fillCommand();
+            if (this.placeFill(command) || this.run(command)) this.spam.count += 1;
         }, every);
         this.spamTimer.unref?.();
 
@@ -537,6 +559,7 @@ class Core {
     }
 
     destroy() {
+        this.fillItem?.destroy();
         if (this.spamTimer) {
             clearInterval(this.spamTimer);
             this.spamTimer = null;

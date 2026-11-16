@@ -134,7 +134,9 @@
       "block": "minecraft:command_block",
       "mode": "replace",
       "intervalMs": 1000,
-      "spamMs": 250
+      "spamMs": 250,
+      "item": true,
+      "breakDelayMs": 250
     }
   }
 }

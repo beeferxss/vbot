@@ -465,7 +465,8 @@ async function main() {
             enabled: true,
             name: '{"text":"vbot","color":"green"}',
             area: { size: 9, y: 64 },
-            refill: { enabled: true }
+            // The item path is checked on its own; this is about the fill text.
+            refill: { enabled: true, item: false }
         };
 
         // 1.21.5+ stores the name as an inline component, not a quoted JSON string.
@@ -489,7 +490,7 @@ async function main() {
         // Without a name the fill stays plain.
         const plainCore = new Core({
             bot: fake('1.21.5'),
-            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true, item: false } },
             logger
         });
         plainCore.reset();
@@ -502,6 +503,87 @@ async function main() {
         modern.destroy();
         legacy.destroy();
         plainCore.destroy();
+    });
+
+    await check('a command block item carries the fill and is broken again', async () => {
+        const { FillItem, commandBlockItem, usesComponents } = require('../src/fillitem');
+        const data = { itemsByName: { command_block: { id: 418 } } };
+
+        // 1.20.5+ keeps the command in data components, older versions in NBT.
+        assert.strictEqual(usesComponents('1.21.4'), true);
+        assert.strictEqual(usesComponents('1.20.4'), false);
+
+        const modern = commandBlockItem({ version: '1.21.4', itemId: 418, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
+        assert.strictEqual(modern.present, true);
+        assert.strictEqual(modern.itemCount, 1);
+        assert.strictEqual(modern.itemId, 418);
+        assert.deepStrictEqual(modern.components.map(c => c.type), ['block_entity_data', 'custom_data']);
+        assert.strictEqual(
+            modern.components[0].data.value.Command.value,
+            'fill 1 2 3 4 5 6 minecraft:command_block replace'
+        );
+        assert.strictEqual(modern.components[0].data.value.auto.value, 1, 'always active');
+
+        const legacy = commandBlockItem({ version: '1.20.4', itemId: 373, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
+        assert.strictEqual(legacy.present, true);
+        assert.strictEqual(legacy.nbtData.value.BlockEntityTag.value.Command.value.length > 0, true);
+
+        // The packets: item into the hotbar, place it, break only that block.
+        const writes = [];
+        const itemBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const fillItem = new FillItem({
+            bot: itemBot,
+            logger,
+            data,
+            config: { breakDelayMs: 40 }
+        });
+
+        assert.strictEqual(fillItem.usable, true);
+        assert.strictEqual(fillItem.run('fill 1 2 3 4 5 6 minecraft:command_block replace'), true);
+        assert.strictEqual(fillItem.run('anything'), false, 'one placement at a time');
+
+        assert.deepStrictEqual(writes.map(write => write.name), ['set_creative_slot', 'held_item_slot', 'block_place']);
+        assert.strictEqual(writes[0].payload.slot, 36);
+        assert.strictEqual(writes[0].payload.item.present, true);
+        assert.strictEqual(writes[1].payload.slotId, 0);
+        assert.deepStrictEqual(writes[2].payload.location, { x: 10, y: 63, z: -4 }, 'the block the bot stands on');
+        assert.strictEqual(writes[2].payload.direction, 1, 'placed on its top face');
+
+        await new Promise(resolve => setTimeout(resolve, 90));
+
+        const dig = writes.find(write => write.name === 'block_dig');
+        assert.ok(dig, 'the placed block has to be broken again');
+        assert.deepStrictEqual(dig.payload.location, { x: 10, y: 64, z: -4 }, 'only that block');
+        assert.strictEqual(dig.payload.status, 0);
+        assert.deepStrictEqual(writes.map(write => write.name).slice(-2), ['block_dig', 'set_creative_slot']);
+        assert.strictEqual(writes[writes.length - 1].payload.item.itemCount, 0, 'the slot is cleared');
+
+        fillItem.destroy();
+    });
+
+    await check('refills place a command block item before anything else', async () => {
+        const used = [];
+        const core = new Core({
+            bot: { position: { x: 0, y: 70, z: 0 }, chat: () => true, write: () => true, log: logger },
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset();
+        core.fillItem = { usable: true, run: command => (used.push(command), true), destroy: () => {} };
+
+        assert.strictEqual(core.refill('damaged', { force: true }), true);
+        assert.strictEqual(used.length, 1);
+        assert.match(used[0], /^fill 0 64 0 8 72 8 /, 'the item carries the fill');
+
+        // No chat fill went out: the item was used instead.
+        core.refill('damaged', { force: true });
+        assert.strictEqual(used.length, 2);
+        assert.strictEqual(core.itemFills, 2);
+        core.destroy();
     });
 
     await check('the core rebuilds itself on an interval when nothing is left', async () => {

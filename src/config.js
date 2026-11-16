@@ -98,7 +98,12 @@ function defaults() {
                 // How often a missing core is rebuilt, in milliseconds.
                 intervalMs: 1000,
                 // How fast "refill" spams fills through the core blocks.
-                spamMs: 250
+                spamMs: 250,
+                // Refill by placing a command block item and breaking it again:
+                // the fill runs on placement and the core is never written to.
+                item: true,
+                // How long that placed block stays before it is broken.
+                breakDelayMs: 250
             }
         }
     };
