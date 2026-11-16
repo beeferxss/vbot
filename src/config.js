@@ -98,7 +98,7 @@ function defaults() {
                 // How often a missing core is rebuilt, in milliseconds.
                 intervalMs: 1000,
                 // How fast "refill" spams fills through the core blocks.
-                spamMs: 1,
+                spamMs: 150,
                 // Start the spam refill by itself once the core is placed.
                 auto: true,
                 // Refill by placing a command block item and breaking it again:

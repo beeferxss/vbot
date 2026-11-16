@@ -11,7 +11,7 @@ const OWN_CHANGE_MS = 2500;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
-const DEFAULT_SPAM_MS = 1;
+const DEFAULT_SPAM_MS = 150;
 // A fill's own block updates can arrive a second or more later, and a refill
 // twice in a row is never useful, so both the grace and the rate limit are
 // generous. Without them one slow update looped refills forever.
