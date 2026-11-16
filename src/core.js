@@ -115,30 +115,20 @@ class Core {
         const command =
             `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${block} ${this.mode}`;
 
-        // Reuse a block that is still standing: writing the fill into it rebuilds
-        // the whole area without a chat command. Only when every block is gone
-        // does the fill have to go out as chat.
-        const survivor = this.refilling ? null : this.survivor();
-        let viaCore = false;
-
-        if (survivor) {
-            this.markOwn(survivor);
-            viaCore = Boolean(this.bot.write?.('update_command_block', {
-                location: survivor,
-                command,
-                mode: 1,
-                flags: 0b101
-            }));
-            if (!viaCore) this.blocks.set(keyOf(survivor), false);
-        }
-
-        if (!viaCore) this.bot.chat(`/${command}`);
+        // Refills always go out as chat. Writing the fill into a leftover block
+        // cannot be trusted - that block may already be gone, or the write may
+        // be ignored - and a refill is exactly when the core must not depend on
+        // the core.
+        const send = typeof this.bot.sendChat === 'function'
+            ? text => this.bot.sendChat(text)
+            : text => this.bot.chat(text);
+        send(`/${command}`);
 
         this.refilling = true;
         this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_SETTLE_MS + 500;
-        this.log.info(`core refill (${reason}) via ${viaCore ? `block ${survivor.x} ${survivor.y} ${survivor.z}` : 'chat'}`);
+        this.log.info(`core refill (${reason}) via chat`);
 
         setTimeout(() => {
             this.refilling = false;

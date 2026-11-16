@@ -452,7 +452,7 @@ async function main() {
         core.destroy();
     });
 
-    await check('refill reuses a surviving block, and only chats when none are left', async () => {
+    await check('every refill goes out as chat, survivors or not', async () => {
         const sent = [];
         const writes = [];
         const coreBot = {
@@ -468,27 +468,23 @@ async function main() {
         });
         core.reset();
 
-        // Nothing has been built yet, so the first fill can only go out as chat.
         core.refill('startup');
         assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
         await new Promise(resolve => setTimeout(resolve, 450));
         assert.strictEqual(core.ready, true);
         assert.strictEqual(core.blocks.size, 8, 'every cell is recorded once the fill lands');
 
-        // Seven of the eight blocks are destroyed; the last one still stands.
+        // One survivor, and the core is ready: still chat.
         for (const key of core.blocks.keys()) {
             if (key !== '1:65:1') core.blocks.set(key, false);
         }
-
         sent.length = 0;
         writes.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(sent, [], 'a surviving block carries the fill');
-        assert.strictEqual(writes.length, 1);
-        assert.deepStrictEqual(writes[0].payload.location, { x: 1, y: 65, z: 1 });
-        assert.match(writes[0].payload.command, /^fill 0 64 0 1 65 1 /);
+        assert.strictEqual(writes.length, 0, 'a refill never writes into a block');
+        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
 
-        // With every block gone there is nothing left to write into.
+        // Nothing left standing: chat too.
         await new Promise(resolve => setTimeout(resolve, 450));
         for (const key of core.blocks.keys()) core.blocks.set(key, false);
         sent.length = 0;
@@ -805,11 +801,11 @@ async function main() {
         routingBot.chat('hello world');
         assert.deepStrictEqual(spoken, ['hello world']);
 
-        // Refills reuse a block instead of spamming chat.
+        // A refill never goes into a block, even though the core is ready.
         packets.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken, ['hello world']);
-        assert.match(packets[0].payload.command, /^fill 0 64 0 1 65 1 /);
+        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
+        assert.strictEqual(packets.length, 0, 'a refill must not be written into a block');
         core.destroy();
     });
 

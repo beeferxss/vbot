@@ -269,6 +269,14 @@ class Bot extends EventEmitter {
             if (cell) return true;
         }
 
+        return this.sendChat(text);
+    }
+
+    // Plain chat, never routed through the core. Core refills use this: the fill
+    // has to reach the server even when the core itself is the thing broken.
+    sendChat(message) {
+        const text = String(message ?? '');
+        if (!text) return false;
         if (!this.client || this.state !== 'ready') return false;
         this.client.chat(text);
         return true;
