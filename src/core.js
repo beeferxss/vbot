@@ -66,12 +66,17 @@ class Core {
 
         const { origin, bounds } = this;
         const command =
-            `/fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${this.block} ${this.mode}`;
+            `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${this.block} ${this.mode}`;
+
+        // The first fill has no command block to run it, so it goes through chat.
+        // Once the core exists, refills are written into a block like any other
+        // command, which keeps them out of the server log.
+        const viaCore = this.ready && !this.refilling && this.run(command);
+        if (!viaCore) this.bot.chat(`/${command}`);
 
         this.refilling = true;
         this.ready = false;
-        this.bot.chat(command);
-        this.log.info(`core refill (${reason})`);
+        this.log.info(`core refill (${reason})${viaCore ? ' via core' : ' via chat'}`);
 
         setTimeout(() => {
             this.refilling = false;

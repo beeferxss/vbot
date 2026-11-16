@@ -25,7 +25,10 @@ function defaults() {
         },
         bot: {
             prefixes: ['v\\'],
-            nick: null
+            nick: null,
+            // "tellraw" replies privately and needs the bot to be opped;
+            // "chat" replies in normal chat.
+            reply: 'tellraw'
         },
         permissions: {
             keys: { owner: '', admin: '', trusted: '' },

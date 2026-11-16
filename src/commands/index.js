@@ -85,7 +85,7 @@ class CommandRegistry {
 
         const [label, ...argv] = body.split(/\s+/);
         const command = this.find(label);
-        const reply = text => bot.chat(text);
+        const reply = text => this.reply(bot, parsed.username, text);
 
         if (!command) {
             reply(`Unknown command "${label}". Try ${prefix}help`);
@@ -146,7 +146,10 @@ class CommandRegistry {
             argString: args.join(' '),
             prefix,
             reply,
-            replyPrivate: text => reply(`/msg ${parsed.username} ${text}`)
+            replyPrivate: text => reply(`/msg ${parsed.username} ${text}`),
+            // Commands are run through the core command blocks when it is up,
+            // so they do not appear as bot chat. Chat is the bootstrap path.
+            run: commandText => this.runCommand(bot, commandText)
         };
 
         try {
@@ -156,6 +159,33 @@ class CommandRegistry {
             reply(`Command failed: ${error.message}`);
         }
         return true;
+    }
+
+    // Replies are sent as tellraw so they are private and do not depend on chat
+    // formatting. A server that will not run commands for the bot (it is not
+    // opped) can be switched to "chat" with bot.reply.
+    reply(bot, username, text) {
+        const mode = this.config.bot?.reply || 'tellraw';
+        const message = String(text ?? '');
+
+        if (mode === 'tellraw' && username) {
+            const component = JSON.stringify({ text: message });
+            return bot.chat(`/tellraw ${username} ${component}`);
+        }
+        return bot.chat(message);
+    }
+
+    // Runs a server command: through a core command block when the core is
+    // ready, otherwise by sending it as bot chat.
+    runCommand(bot, commandText) {
+        const text = String(commandText ?? '').trim().replace(/^\//, '');
+        if (!text) return false;
+
+        if (bot.core && bot.core.ready) {
+            const cell = bot.core.run(text);
+            if (cell) return true;
+        }
+        return bot.chat(`/${text}`);
     }
 
     // Commands visible to a rank, for the help listing.

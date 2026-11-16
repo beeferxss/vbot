@@ -426,10 +426,22 @@ async function main() {
         server: { auth: 'offline' }
     };
 
+    const decodeReply = message => {
+        const match = /^\/tellraw (\S+) (.*)$/s.exec(String(message || ''));
+        if (!match) return message;
+        try {
+            const component = JSON.parse(match[2]);
+            const parts = Array.isArray(component) ? component : [component];
+            return parts.map(part => part.text ?? '').join('');
+        } catch {
+            return message;
+        }
+    };
+
     const run = async line => {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine(line) });
-        return sent[0];
+        return decodeReply(sent[0]);
     };
 
     await check('commands load with unique names and aliases', () => {
@@ -504,6 +516,67 @@ async function main() {
         assert.match(output, /Alex — 069a79f4/);
         assert.match(output, /rank admin/);
         assert.match(output, /player list/);
+    });
+
+    await check('replies are private tellraw, with a chat fallback', async () => {
+        sent.length = 0;
+        await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
+        assert.match(sent[0], /^\/tellraw Unranked \{/);
+        assert.match(decodeReply(sent[0]), /Commands for public/);
+
+        const chatConfig = loadConfig(examplePath);
+        chatConfig.bot.prefixes = ['v:'];
+        chatConfig.bot.reply = 'chat';
+        const chatRegistry = new CommandRegistry({
+            dir: path.join(ROOT, 'src', 'commands'),
+            config: chatConfig,
+            permissions,
+            store,
+            logger,
+            tokens
+        }).loadAll();
+        sent.length = 0;
+        await chatRegistry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:ping') });
+        assert.match(sent[0], /^pong/);
+    });
+
+    await check('commands go through the core once it is ready', () => {
+        const coreSent = [];
+        const coreWrites = [];
+        const coreBot = {
+            position: { x: 0, y: 70, z: 0 },
+            chat: command => coreSent.push(command),
+            write: (name, payload) => coreWrites.push({ name, payload }),
+            log: logger
+        };
+        const core = new Core({
+            bot: coreBot,
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset();
+
+        // Not ready: falls back to chat on the bot that asked for it.
+        sent.length = 0;
+        registry.runCommand({ ...fakeBot, core }, '/say hi');
+        assert.deepStrictEqual(sent, ['/say hi']);
+
+        // Ready: written into a command block instead.
+        core.ready = true;
+        coreSent.length = 0;
+        registry.runCommand({ ...fakeBot, core }, 'gamemode creative vbot');
+        assert.deepStrictEqual(coreSent, [], 'no chat command once the core is ready');
+        assert.strictEqual(coreWrites.length, 1);
+        assert.strictEqual(coreWrites[0].name, 'update_command_block');
+        assert.strictEqual(coreWrites[0].payload.command, 'gamemode creative vbot');
+
+        // And refills reuse a block rather than spamming chat.
+        coreSent.length = 0;
+        coreWrites.length = 0;
+        core.refill('damaged');
+        assert.deepStrictEqual(coreSent, []);
+        assert.match(coreWrites[0].payload.command, /^fill 0 64 0 1 65 1 /);
+        core.destroy();
     });
 
     await check('uuid and whoami commands answer', async () => {
