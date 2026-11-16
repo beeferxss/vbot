@@ -21,8 +21,8 @@
         "version": false
       },
       {
-        "id": "bkbpw",
-        "enabled": false,
+        "id": "kbpw",
+        "enabled": true,
         "host": "kbpw.de",
         "port": 25565,
         "username": "random",
