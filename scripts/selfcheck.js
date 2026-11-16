@@ -345,38 +345,85 @@ async function main() {
 
     await check('core blocks can be named from config', () => {
         const named = [];
-        const core = new Core({
-            bot: { position: { x: 0, y: 70, z: 0 }, chat: c => named.push(c), write: () => true, log: logger },
-            config: {
-                enabled: true,
-                name: '{"text":"vbot","color":"green"}',
-                area: { size: 9, y: 64 },
-                refill: { enabled: true }
-            },
-            logger
+        const fake = version => ({
+            client: { version },
+            position: { x: 0, y: 70, z: 0 },
+            chat: command => named.push(command),
+            write: () => true,
+            log: logger
         });
-        core.reset();
-        core.refill('test');
+        const nameConfig = {
+            enabled: true,
+            name: '{"text":"vbot","color":"green"}',
+            area: { size: 9, y: 64 },
+            refill: { enabled: true }
+        };
 
-        const expected = 'fill 0 64 0 8 72 8 ' +
-            'minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace';
-        assert.strictEqual(named[0], `/${expected}`);
-        assert.match(core.status(), /name \{"text"/);
+        // 1.21.5+ stores the name as an inline component, not a quoted JSON string.
+        const modern = new Core({ bot: fake('1.21.5'), config: nameConfig, logger });
+        modern.reset();
+        modern.refill('test');
+        assert.strictEqual(
+            named[0],
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
+        );
+        assert.match(modern.status(), /name \{"text"/);
+
+        const legacy = new Core({ bot: fake('1.20.4'), config: nameConfig, logger });
+        legacy.reset();
+        legacy.refill('test');
+        assert.strictEqual(
+            named[1],
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
+        );
 
         // Without a name the fill stays plain.
         const plainCore = new Core({
-            bot: { position: { x: 0, y: 70, z: 0 }, chat: c => named.push(c), write: () => true, log: logger },
+            bot: fake('1.21.5'),
             config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
             logger
         });
         plainCore.reset();
         plainCore.refill('test');
         assert.strictEqual(
-            named[1],
+            named[2],
             '/fill 0 64 0 8 72 8 minecraft:repeating_command_block replace'
         );
-        core.destroy();
+
+        modern.destroy();
+        legacy.destroy();
         plainCore.destroy();
+    });
+
+    await check('the core rebuilds itself on an interval when nothing is left', async () => {
+        const sent = [];
+        const core = new Core({
+            bot: {
+                position: { x: 0, y: 70, z: 0 },
+                chat: command => sent.push(command),
+                write: () => true,
+                log: logger
+            },
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true, intervalMs: 25 } },
+            logger
+        });
+
+        core.onReady();
+        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+        await new Promise(resolve => setTimeout(resolve, 450));
+        assert.strictEqual(core.ready, true);
+
+        // Nothing standing: the watchdog has to fall back to chat, repeatedly.
+        for (const key of core.blocks.keys()) core.blocks.set(key, false);
+        sent.length = 0;
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.ok(sent.length >= 1, 'the watchdog should rebuild the core through chat');
+        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+
+        core.destroy();
+        const after = sent.length;
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.strictEqual(sent.length, after, 'destroy stops the watchdog');
     });
 
     await check('core refills itself when a block is damaged', async () => {

@@ -4,9 +4,12 @@
 // blocks with the update_command_block packet, which keeps them off the chat log,
 // and the area is refilled with /fill whenever something breaks a block.
 
+const tellraw = require('./minecraft/tellraw');
+
 const OWN_CHANGE_MS = 2500;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 400;
+const WATCHDOG_MS = 2000;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -35,6 +38,8 @@ class Core {
         // key -> alive. Populated when a fill lands, then pruned by block changes.
         this.blocks = new Map();
         this.graceUntil = 0;
+        this.watchdog = null;
+        this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
     }
 
     get volume() {
@@ -148,9 +153,22 @@ class Core {
     }
 
     // The block as written in the fill command, with the configured name.
+    // NBT text components changed in 1.21.5: a name used to be a JSON string
+    // wrapped in quotes, and is now the component written inline.
     blockSpec() {
         if (!this.name) return this.block;
-        return `${this.block}{CustomName:'${this.name.replace(/'/g, "\\'")}'}`;
+        if (!tellraw.isModern(this.bot?.client?.version)) {
+            return `${this.block}{CustomName:'${this.name.replace(/'/g, "\\'")}'}`;
+        }
+
+        let component = this.name;
+        try {
+            component = JSON.parse(this.name);
+        } catch {
+            // Already SNBT; use it as written.
+            return `${this.block}{CustomName:${this.name}}`;
+        }
+        return `${this.block}{CustomName:${tellraw.snbt(component)}}`;
     }
 
     markAllAlive() {
@@ -214,6 +232,24 @@ class Core {
         if (!this.enabled) return;
         if (this.origin.x === null) this.reset();
         if (this.origin.x !== null) this.refill('startup');
+        this.startWatchdog();
+    }
+
+    // Nothing guarantees the fill landed: the bot may not be opped yet, a chunk
+    // may not be loaded, or every block may have been broken. Every couple of
+    // seconds, rebuild whatever is missing - through a leftover block when there
+    // is one, and through chat when there is nothing left at all.
+    startWatchdog() {
+        if (this.watchdog || !this.enabled || !this.refillEnabled) return;
+        this.watchdog = setInterval(() => {
+            if (!this.enabled || this.refilling) return;
+            const standing = this.survivor() !== null;
+            if (this.ready && standing) return;
+            if (this.origin.x === null && !this.reset()) return;
+            this.log.info('core missing or incomplete; rebuilding');
+            this.refill('watchdog');
+        }, this.watchdogMs);
+        this.watchdog.unref?.();
     }
 
     // Anything that changes a block inside the core that we did not write
@@ -241,6 +277,10 @@ class Core {
         if (this.damageTimer) {
             clearTimeout(this.damageTimer);
             this.damageTimer = null;
+        }
+        if (this.watchdog) {
+            clearInterval(this.watchdog);
+            this.watchdog = null;
         }
         this.ownChanges.clear();
         this.ready = false;

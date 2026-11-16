@@ -71,7 +71,7 @@ module.exports = {
 
         const all = registry.listAll();
         const parts = [
-            { text: 'Commands', color: 'gold', bold: true },
+            { text: 'Commands', color: 'gold' },
             { text: ` (${all.length})`, color: 'dark_gray' }
         ];
 
@@ -81,7 +81,7 @@ module.exports = {
             const group = all.filter(command => levelName(command.level) === rank);
             if (!group.length) continue;
 
-            parts.push({ text: `\n${rank}: `, color: RANK_COLOR[rank], bold: true });
+            parts.push({ text: `\n${rank}: `, color: RANK_COLOR[rank] });
             group.forEach((command, index) => {
                 if (index) parts.push({ text: ' ', color: 'dark_gray' });
                 parts.push(entry(ctx.prefix, ctx.level, command));

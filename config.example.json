@@ -108,7 +108,8 @@
     "refill": {
       "enabled": true,
       "block": "minecraft:repeating_command_block",
-      "mode": "replace"
+      "mode": "replace",
+      "intervalMs": 2000
     }
   }
 }

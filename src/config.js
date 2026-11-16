@@ -56,7 +56,13 @@ function defaults() {
             // Example: {"text":"vbot","color":"green"}
             name: null,
             area: { size: 9, y: 64 },
-            refill: { enabled: true, block: 'minecraft:repeating_command_block', mode: 'replace' }
+            refill: {
+                enabled: true,
+                block: 'minecraft:repeating_command_block',
+                mode: 'replace',
+                // How often a missing core is rebuilt, in milliseconds.
+                intervalMs: 2000
+            }
         }
     };
 }
