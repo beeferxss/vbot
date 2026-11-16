@@ -7,7 +7,7 @@
 const tellraw = require('./minecraft/tellraw');
 const { FillItem } = require('./fillitem');
 
-const OWN_CHANGE_MS = 2500;
+const OWN_CHANGE_MS = 5000;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
@@ -549,8 +549,9 @@ class Core {
         this.watchdog.unref?.();
     }
 
-    // Anything that changes a block inside the core that we did not write
-    // ourselves means the area lost a block and needs rebuilding.
+    // Core blocks can change often while commands are written into them. Only an
+    // actual break (air) means a cell is gone; other non-own changes are treated
+    // as benign updates so the core stays reusable under heavy command load.
     onBlockChange(packet) {
         if (!this.enabled || !this.refillEnabled) return false;
         const location = packet?.location;
@@ -558,30 +559,20 @@ class Core {
         if (!this.inside(location.x, location.y, location.z)) return false;
         if (this.isOwn(location)) return false;
 
-        // A core block that became air was broken outright, which no fill of ours
-        // ever does: rebuild at once instead of waiting out the damage delay.
-        const broken = isAir(packet);
-
-        // Changes made by our own fill are not damage.
-        if (!broken && (this.refilling || Date.now() < this.graceUntil)) return false;
-        if (!broken && Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
-
-        this.blocks.set(keyOf(location), false);
-
-        if (broken) {
+        // A core block that became air was broken outright: rebuild at once.
+        if (isAir(packet)) {
+            this.blocks.set(keyOf(location), false);
             this.log.debug(`core block ${location.x} ${location.y} ${location.z} went to air; refilling`);
             this.refill('broken', { force: true });
             return true;
         }
 
-        if (this.damageTimer) return false;
-        this.damageTimer = setTimeout(() => {
-            this.damageTimer = null;
-            // Damage is its own reason to refill: the fill that just ran did not
-            // take, so waiting out the look-before-you-refill gap helps nobody.
-            this.refill('damaged', { force: true });
-        }, DAMAGE_DELAY_MS).unref?.();
-        return true;
+        // Non-air changes (e.g. command/NBT updates) do not mean the block is
+        // unusable. During or shortly after our own refills they are expected.
+        if (this.refilling || Date.now() < this.graceUntil) return false;
+        if (Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
+
+        return false;
     }
 
     destroy() {
