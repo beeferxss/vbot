@@ -1052,6 +1052,51 @@ async function main() {
         clicks.destroy();
     });
 
+    await check('list pages through the players the tab list reported', async () => {
+        const online = new Map();
+        for (let index = 0; index < 10; index++) {
+            const name = `Player${index}`;
+            online.set(name.toLowerCase(), { name, uuid: offlineUuid(name) });
+        }
+        const { ClickTokens } = require('../src/clicktokens');
+        const clicks = new ClickTokens({ logger, uuidFor: () => null, onCommand: () => {} });
+        const listBot = { ...fakeBot, online, clickTokens: clicks };
+
+        const show = async message => {
+            sent.length = 0;
+            await registry.dispatch({ bot: listBot, parsed: parseChatLine(message) });
+            return JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        };
+
+        const first = await show('<Unranked> v:list');
+        const text = parts => parts.map(part => part.text).join('');
+        assert.match(text(first), /Online \(10/, 'the header counts everyone');
+        assert.match(text(first), /page 1\/2|\(10, page 1\/2\)/);
+        // One page of eight: a name and a UUID each copy the UUID.
+        assert.strictEqual(first.filter(part => part.clickEvent?.action === 'copy_to_clipboard').length, 16);
+        assert.strictEqual(first.filter(part => part.text === ' - ').length, 8);
+
+        // The arrow is a suggestion, which the registry turns into a real button.
+        const next = first.find(part => part.text === ' ▶');
+        assert.ok(next, 'a next arrow is offered');
+        assert.strictEqual(next.clickEvent.action, 'run_command');
+        assert.match(next.hoverEvent.contents.text, /Next page/);
+
+        const second = await show('<Unranked> v:players 2');
+        assert.match(text(second), /Player9/);
+        assert.match(text(second), /page 2\/2/);
+
+        // Out of range lands on the last page instead of an empty reply.
+        assert.match(text(await show('<Unranked> v:list 99')), /page 2\/2/);
+        clicks.destroy();
+
+        // An empty tab list says so.
+        listBot.online = new Map();
+        sent.length = 0;
+        await registry.dispatch({ bot: listBot, parsed: parseChatLine('<Unranked> v:list') });
+        assert.match(decodeReply(sent[0]), /No players online/);
+    });
+
     await check('uuid and whoami commands answer', async () => {
         assert.match(await run('<Steve> v:uuid Notch'), /offline: [0-9a-f-]{36}/);
         assert.match(await run('<Steve> v:whoami'), /You are admin/);

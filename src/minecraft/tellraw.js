@@ -22,6 +22,7 @@ const CLICK_FIELD = {
     open_url: 'url',
     run_command: 'command',
     suggest_command: 'command',
+    copy_to_clipboard: 'value',
     change_page: 'page'
 };
 

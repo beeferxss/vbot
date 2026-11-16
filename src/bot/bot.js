@@ -41,6 +41,8 @@ class Bot extends EventEmitter {
         this.destroyed = false;
         this.disconnectReason = null;
         this.known = new Map();
+        // Who the tab list says is online, as lower-case name -> { name, uuid }.
+        this.online = new Map();
         // Set once a signed player chat packet arrives: until then the server may
         // simply not support chat signing, so unsigned chat is all there is.
         this.signedChatSeen = false;
@@ -108,6 +110,7 @@ class Bot extends EventEmitter {
         for (const event of ['player_info', 'player_info_update']) {
             client.on(event, packet => this.handlePlayerInfo(packet));
         }
+        client.on('player_remove', packet => this.handlePlayerRemove(packet));
 
         for (const event of ['position', 'position_look']) {
             client.on(event, packet => {
@@ -145,6 +148,7 @@ class Bot extends EventEmitter {
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
+            this.online.clear();
             this.core?.destroy();
             this.clickTokens?.clear();
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
@@ -194,12 +198,36 @@ class Bot extends EventEmitter {
         }
     }
 
+    // The tab list is also the only source of who is online, so it is kept
+    // separate from the identity cache: a player who leaves stays known.
+    handlePlayerRemove(packet) {
+        const gone = new Set();
+        for (const list of [packet?.players, packet?.entries, packet?.data]) {
+            if (!Array.isArray(list)) continue;
+            for (const entry of list) {
+                const uuid = normalizeUuid(entry?.uuid ?? entry);
+                if (uuid) gone.add(uuid);
+                const name = entry?.name;
+                if (typeof name === 'string') gone.add(name.toLowerCase());
+            }
+        }
+        if (!gone.size) return;
+
+        for (const [key, player] of this.online) {
+            if (gone.has(key) || gone.has(player.uuid)) this.online.delete(key);
+        }
+    }
+
     // Online-mode servers send real UUIDs in the player list; offline-mode
     // servers derive them from the name, so nothing needs to arrive at all.
     handlePlayerInfo(packet) {
+        // Older protocols put removal in player_info as action 4.
+        if (Number(packet?.action) === 4) this.handlePlayerRemove(packet);
+
         for (const { name, uuid } of playerInfoEntries(packet)) {
             if (this.known.get(name.toLowerCase()) === uuid) continue;
             this.known.set(name.toLowerCase(), uuid);
+            this.online.set(name.toLowerCase(), { name, uuid });
             this.store.linkPlayer(name, uuid);
             this.log.debug(`identity ${name} -> ${uuid}`);
             this.emit('player', { name, uuid });
