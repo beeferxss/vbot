@@ -49,9 +49,9 @@ function defaults() {
         alts: {
             enabled: true,
             // The bot cannot see addresses; it reads them back from a server
-            // command. Empty means /alts only reports what is already stored.
-            // Example: "seen {player}"
-            lookupCommand: '',
+            // command whose output carries the address. Empty means /alts only
+            // reports what is already stored.
+            lookupCommand: 'whois {player}',
             cacheMs: 600000,
             gapMs: 1200,
             timeoutMs: 3000,

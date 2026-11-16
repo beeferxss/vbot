@@ -8,7 +8,7 @@
 // runTracked, its output is parsed, and the addresses are stored so /alts and
 // /list keep working after the fact.
 
-const { parseIps, lookupCommand } = require('./ip');
+const { parseIps, parseUuid, lookupCommand } = require('./ip');
 
 const DEFAULT_CACHE_MS = 10 * 60 * 1000;
 const DEFAULT_GAP_MS = 1200;
@@ -106,14 +106,21 @@ class IpLookup {
             return [];
         }
 
+        // The same reply usually names the account's uuid; keep it if the tab
+        // list never gave us one.
+        const uuid = parseUuid(output || '');
+        if (uuid && typeof this.store.getPlayer === 'function' && !this.store.getPlayer(name)?.uuid) {
+            this.store.linkPlayer(name, uuid);
+        }
+
         const ips = parseIps(output || '');
         if (!ips.length) {
             this.log.debug(`ip lookup of ${name} found nothing in: ${JSON.stringify(output)}`);
             return [];
         }
 
-        const uuid = typeof this.bot.uuidFor === 'function' ? this.bot.uuidFor(name) : null;
-        for (const ip of ips) this.store.recordIp(name, ip, uuid);
+        const knownUuid = uuid ?? (typeof this.bot.uuidFor === 'function' ? this.bot.uuidFor(name) : null);
+        for (const ip of ips) this.store.recordIp(name, ip, knownUuid);
         this.log.info(`ip lookup of ${name}: ${ips.join(', ')}`);
         return ips;
     }

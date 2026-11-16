@@ -43,11 +43,20 @@ function parseIps(text) {
     return [...found];
 }
 
-// "seen {player}" -> "seen Steve"; empty stays empty, so lookups stay off.
+const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
+// whois output carries the uuid too, which is worth keeping when the player
+// list never showed it.
+function parseUuid(text) {
+    const match = UUID.exec(String(text || ''));
+    return match ? match[0].toLowerCase() : null;
+}
+
+// "whois {player}" -> "whois Steve"; empty stays empty, so lookups stay off.
 function lookupCommand(template, player) {
     const text = String(template || '').trim();
     if (!text || !player) return null;
     return text.replace(/\{player\}/gi, player).replace(/^\/+/, '');
 }
 
-module.exports = { looksLikeIp, normalize, parseIps, lookupCommand };
+module.exports = { looksLikeIp, normalize, parseIps, parseUuid, lookupCommand };

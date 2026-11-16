@@ -84,7 +84,7 @@
   },
   "alts": {
     "enabled": true,
-    "lookupCommand": "",
+    "lookupCommand": "whois {player}",
     "cacheMs": 600000,
     "gapMs": 1200,
     "timeoutMs": 3000,

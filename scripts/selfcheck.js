@@ -1193,7 +1193,7 @@ async function main() {
     });
 
     await check('ip parsing only accepts real addresses', () => {
-        const { parseIps, looksLikeIp, lookupCommand } = require('../src/ip');
+        const { parseIps, parseUuid, looksLikeIp, lookupCommand } = require('../src/ip');
         assert.deepStrictEqual(parseIps('Steve joined from 1.2.3.4'), ['1.2.3.4']);
         assert.deepStrictEqual(parseIps('server version 1.21.4'), [], 'a version is not an address');
         assert.deepStrictEqual(parseIps('no address here'), []);
@@ -1206,6 +1206,19 @@ async function main() {
         assert.strictEqual(looksLikeIp('1.2.3.4'), true);
         assert.strictEqual(looksLikeIp('1.21.4'), false);
         assert.strictEqual(looksLikeIp('Steve'), false);
+        // The real /whois reply, as the screenshot shows it.
+        const whois = [
+            '----- Whois: VojtaV12 -----',
+            '- Nick: VojtaV12',
+            '- UUID: 2f1d16b9-7337-31d7-997f-acaa527152d9',
+            '- Location: (world, 29,999,955.1, 29,999,938)',
+            '- Playtime: now',
+            '- IP Address: /246.37.222.31',
+            '- Speed: 0.2'
+        ].join('\n');
+        assert.deepStrictEqual(parseIps(whois), ['246.37.222.31'], 'the leading slash is not part of it');
+        assert.strictEqual(parseUuid(whois), '2f1d16b9-7337-31d7-997f-acaa527152d9');
+
         assert.strictEqual(lookupCommand('seen {player}', 'Steve'), 'seen Steve');
         assert.strictEqual(lookupCommand('/seen {PLAYER}', 'Steve'), 'seen Steve');
         assert.strictEqual(lookupCommand('', 'Steve'), null);
@@ -1240,6 +1253,26 @@ async function main() {
         assert.strictEqual(scan.rescan(), 2, 'both online players are queued');
         await new Promise(resolve => setTimeout(resolve, 120));
         assert.deepStrictEqual(asked.sort(), ['seen Alex', 'seen Steve']);
+
+        // A whois reply also gives the uuid, which is stored when the player
+        // list never supplied one.
+        const whoisBot = {
+            ...lookupBot,
+            core: {
+                ready: true,
+                runTracked: async () => '- UUID: 2f1d16b9-7337-31d7-997f-acaa527152d9\n- IP Address: /246.37.222.31'
+            }
+        };
+        const whois = new IpLookup({
+            bot: whoisBot,
+            store,
+            config: { lookupCommand: 'whois {player}' },
+            logger
+        });
+        assert.deepStrictEqual(await whois.lookup('WhoisGuy'), ['246.37.222.31']);
+        assert.strictEqual(store.getPlayer('WhoisGuy').uuid, '2f1d16b9-7337-31d7-997f-acaa527152d9');
+        assert.strictEqual(store.ipsFor('WhoisGuy')[0].ip, '246.37.222.31');
+        whois.destroy();
 
         // A second rescan happens even though the answers are cached.
         asked.length = 0;
