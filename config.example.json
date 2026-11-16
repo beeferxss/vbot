@@ -149,7 +149,7 @@
       "mode": "replace",
       "intervalMs": 1000,
       "spamMs": 150,
-      "auto": true,
+      "auto": false,
       "item": true,
       "breakDelayMs": 250
     }
