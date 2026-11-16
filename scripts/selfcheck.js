@@ -1041,7 +1041,7 @@ async function main() {
         const output = decodeReply(sent[0]);
         assert.match(output, /^Commands \(\d+\)/);
         assert.match(output, /public: .*help/);
-        assert.match(output, /trusted: identity/);
+        assert.match(output, /trusted: .*identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
         assert.match(output, /admin: filter refill whitelist/);
@@ -1902,6 +1902,125 @@ async function main() {
         const implicit = make(undefined);
         implicit.onReady();
         assert.strictEqual(implicit.spamTimer, null);
+    });
+
+    await check('core skips commands while its area is not loaded', () => {
+        const writes = [];
+        const core = new Core({
+            bot: {
+                position: { x: 1000, y: 70, z: 1000 },
+                chat: () => true,
+                write: (name, payload) => (writes.push({ name, payload }), true),
+                log: logger
+            },
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset({ x: 1000, y: 70, z: 1000 });
+        core.ready = true;
+        core.markAllAlive();
+
+        // The bot was teleported far away: command blocks in the core chunk do
+        // not tick, so the write is refused instead of silently lost.
+        core.bot.position = { x: 5000, y: 70, z: 5000 };
+        assert.strictEqual(core.run('say hi'), null);
+        assert.strictEqual(writes.length, 0);
+
+        core.bot.position = { x: 1000, y: 70, z: 1000 };
+        assert.deepStrictEqual(core.run('say hi'), { x: 1000, y: 64, z: 1000 });
+        assert.strictEqual(writes.length, 1);
+        core.destroy();
+    });
+
+    await check('core picks up chunk and bulk damage', () => {
+        const core = new Core({
+            bot: {
+                position: { x: 0, y: 70, z: 0 },
+                client: { version: '1.21.4' },
+                chat: () => true,
+                write: () => true,
+                log: logger
+            },
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset({ x: 0, y: 70, z: 0 });
+        core.ready = true;
+        core.graceUntil = 0;
+        core.lastRefillAt = 0;
+        core.markAllAlive();
+
+        // A chunk resend with no command blocks in the area is bulk damage: an
+        // empty chunk is air everywhere.
+        const Chunk = require('prismarine-chunk')('1.21.4');
+        const chunkData = new Chunk().dump();
+        assert.strictEqual(core.onMapChunk({ x: 0, z: 0, chunkData }), true, 'an empty core chunk is damage');
+
+        // A section y of 4 is block y 64; a zero record is local (0,0,0).
+        // The chunk refill above started, so put the core back in its normal
+        // standing state before the next packet.
+        core.refilling = false;
+        core.ready = true;
+        core.graceUntil = 0;
+        core.ownChanges.clear();
+        core.markAllAlive();
+        const changed = core.onMultiBlockChange({
+            chunkCoordinates: { x: 0, y: 4, z: 0 },
+            records: [0]
+        });
+        assert.strictEqual(changed, true, 'a core block in a bulk update is damage');
+        assert.strictEqual(core.blocks.get('0:64:0'), false);
+
+        // A record in another chunk is not our damage.
+        core.refilling = false;
+        core.ready = true;
+        core.graceUntil = 0;
+        core.ownChanges.clear();
+        assert.strictEqual(core.onMultiBlockChange({
+            chunkCoordinates: { x: 4, y: 4, z: 4 },
+            records: [0]
+        }), false);
+        core.destroy();
+    });
+
+    await check('command loops persist and run through the core', async () => {
+        const { Cloops } = require('../src/cloops');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-cloop-'));
+        const runs = [];
+        const bot = {
+            id: 'loop',
+            destroyed: false,
+            core: { run: command => (runs.push(command), { x: 0, y: 64, z: 0 }) }
+        };
+        const cloops = new Cloops({
+            bot,
+            storePath: path.join(dir, 'cloops.json'),
+            logger,
+            config: { enabled: true, minIntervalMs: 50 }
+        });
+
+        assert.deepStrictEqual(cloops.add(60, 'say hi'), { id: 1, interval: 60, command: 'say hi' });
+        assert.strictEqual(cloops.add(10, 'say fast'), null, 'an interval under the minimum is refused');
+        assert.strictEqual(cloops.add(100, ''), null);
+
+        // A second reader loads it from disk, so restarts keep the loops.
+        const again = new Cloops({
+            bot,
+            storePath: path.join(dir, 'cloops.json'),
+            logger,
+            config: { enabled: true, minIntervalMs: 50 }
+        });
+        assert.deepStrictEqual(again.list(), [{ id: 1, interval: 60, command: 'say hi' }]);
+
+        cloops.start();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.ok(runs.length >= 1, 'the loop runs through the core');
+        assert.ok(runs.every(command => command === 'say hi'));
+
+        assert.strictEqual(cloops.remove(1).id, 1);
+        assert.deepStrictEqual(cloops.list(), []);
+        cloops.destroy();
+        again.destroy();
     });
 
     store.close();

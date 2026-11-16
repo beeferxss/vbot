@@ -80,6 +80,15 @@ function defaults() {
             level: 'info',
             chat: true
         },
+        // Local terminal control. Only starts when stdin is a TTY.
+        console: {
+            enabled: true
+        },
+        // Persistent per-server command loops (cloop).
+        cloops: {
+            enabled: true,
+            minIntervalMs: 100
+        },
         chat: {
             // "auto" trusts unsigned chat until the server proves it signs
             // player chat; true always trusts it; false never does.

@@ -124,6 +124,13 @@
     "level": "info",
     "chat": true
   },
+  "console": {
+    "enabled": true
+  },
+  "cloops": {
+    "enabled": true,
+    "minIntervalMs": 100
+  },
   "chat": {
     "trustUnsigned": "auto"
   },

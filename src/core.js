@@ -34,6 +34,9 @@ class Core {
         this.mode = String(this.config.refill?.mode || 'replace');
         this.refillEnabled = this.config.refill?.enabled !== false;
 
+        // prismarine-chunk is loaded lazily, per protocol version, for the
+        // chunk checks; a version without data must not break the core.
+        this.chunkFactories = new Map();
         this.origin = { x: null, y: this.y, z: null };
         this.bounds = { x: null, y: this.y + this.size - 1, z: null };
         this.cursor = 0;
@@ -406,6 +409,12 @@ class Core {
         if (!text) return null;
         if (this.origin.x === null && !this.reset()) return null;
 
+        if (!this.areaLoaded()) {
+            this.logEvery('core-unloaded', 15000, 'warn',
+                'core area is not loaded around the bot (teleported away?); commands will retry once it is');
+            return null;
+        }
+
         // If we somehow lost track of liveness after the core has been
         // established, assume blocks are present and let writes/air-break
         // detection correct it. This keeps the core reusable.
@@ -460,6 +469,11 @@ class Core {
         this.client = client;
 
         client.on('nbt_query_response', packet => this.onQueryResponse(packet));
+        // A core can also be damaged in bulk: a chunk resend or a multi-block
+        // update never fires block_change for each cell.
+        client.on('map_chunk', packet => this.onMapChunk(packet));
+        client.on('map_chunk_bulk', packet => this.onMapChunk(packet));
+        client.on('multi_block_change', packet => this.onMultiBlockChange(packet));
         client.on('packet', (data, meta) => {
             const name = meta?.name || '';
             if (!/query.*nbt|nbt.*query/i.test(name)) return;
@@ -594,6 +608,129 @@ class Core {
             return false;
         }
         return true;
+    }
+
+    // prismarine-chunk is a native-format parser: one factory per version.
+    chunkFactory() {
+        const version = this.bot?.client?.version || this.bot?.version || null;
+        if (!version) return null;
+        if (this.chunkFactories.has(version)) return this.chunkFactories.get(version);
+        let factory = null;
+        try {
+            // eslint-disable-next-line global-require
+            factory = require('prismarine-chunk')(version);
+        } catch {
+            factory = null;
+        }
+        this.chunkFactories.set(version, factory);
+        return factory;
+    }
+
+    // Chunk packet coordinates are chunk coordinates, so the core is only
+    // affected by the one chunk it sits in.
+    chunkMatches(x, z) {
+        if (this.origin.x === null) return false;
+        return Math.floor(this.origin.x / 16) === Number(x) &&
+            Math.floor(this.origin.z / 16) === Number(z);
+    }
+
+    // Whatever a block turns out to be: any command block counts, because the
+    // configured block can be repeating, chain or impulse.
+    blockName(block) {
+        return String(block?.name || block?.type || '').replace(/^minecraft:/, '');
+    }
+
+    // Bulk damage: a chunk resend replaces every block in the core at once.
+    onMapChunk(packet) {
+        if (!this.enabled || !this.refillEnabled) return false;
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
+        if (!packet || !this.chunkMatches(packet.x, packet.z)) return false;
+        if (!packet.chunkData) return false;
+
+        const Factory = this.chunkFactory();
+        if (!Factory) return false;
+
+        let chunk;
+        try {
+            chunk = new Factory();
+            chunk.load(packet.chunkData, packet.bitMap || 0);
+        } catch {
+            return false; // unparsable chunk data is never damage
+        }
+
+        let damaged = 0;
+        for (let x = this.origin.x; x <= this.bounds.x; x++) {
+            for (let y = this.origin.y; y <= this.bounds.y; y++) {
+                for (let z = this.origin.z; z <= this.bounds.z; z++) {
+                    let name;
+                    try {
+                        const block = chunk.getBlock({ x: x & 15, y, z: z & 15 });
+                        name = this.blockName(block);
+                    } catch {
+                        continue; // unknown block data: ignore, never damage
+                    }
+                    if (!name) continue;
+                    const ours = name.includes('command_block');
+                    this.blocks.set(keyOf({ x, y, z }), ours);
+                    if (!ours) damaged += 1;
+                }
+            }
+        }
+
+        if (damaged >= 4) {
+            this.lastChangeAt = Date.now();
+            this.logEvery('chunk-damage', 10000, 'debug',
+                `core chunk reload has ${damaged} non-command block(s); refilling`);
+            this.refill('map_chunk_damage');
+            return true;
+        }
+        return false;
+    }
+
+    // Bulk damage: a list of changed blocks in one packet.
+    onMultiBlockChange(packet) {
+        if (!this.enabled || !this.refillEnabled) return false;
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
+        if (!packet || !Array.isArray(packet.records)) return false;
+
+        const section = packet.chunkCoordinates;
+        if (!section || typeof section.x !== 'number') return false;
+        if (!this.chunkMatches(section.x, section.z)) return false;
+
+        let damaged = 0;
+        for (const record of packet.records) {
+            if (typeof record !== 'number') continue;
+            // 1.16.2+ packs a section local position into the varint.
+            const x = section.x * 16 + ((record >>> 8) & 0xF);
+            const y = (Number(section.y) || 0) * 16 + (record & 0xF);
+            const z = section.z * 16 + ((record >>> 4) & 0xF);
+            if (!this.inside(x, y, z)) continue;
+            if (this.isOwn({ x, y, z })) continue;
+            this.blocks.set(keyOf({ x, y, z }), false);
+            damaged += 1;
+        }
+
+        if (damaged > 0) {
+            this.lastChangeAt = Date.now();
+            this.logEvery('multi-block-damage', 10000, 'debug',
+                `core multi-block update damaged ${damaged} block(s); refilling`);
+            this.refill('multi_block_change');
+            return true;
+        }
+        return false;
+    }
+
+    // Command blocks only tick in loaded chunks. If the bot has been teleported
+    // (or the server dropped the chunk) a write is silently lost, so it is
+    // better to refuse and let the caller retry.
+    areaLoaded() {
+        const position = this.bot?.position;
+        if (!position || this.origin.x === null) return true; // cannot tell
+        const centerX = this.origin.x + (this.size - 1) / 2;
+        const centerZ = this.origin.z + (this.size - 1) / 2;
+        const radius = this.size + 32;
+        return Math.abs(position.x - centerX) <= radius &&
+            Math.abs(position.z - centerZ) <= radius;
     }
 
     onReady() {

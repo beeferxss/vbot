@@ -13,6 +13,9 @@ class CommandRegistry {
         this.store = store;
         this.logger = logger;
         this.tokens = tokens;
+        // Wired after construction by index.js; commands like `servers` and
+        // `netmsg` need every bot, not just the one they were typed on.
+        this.manager = null;
         this.commands = new Map();
         this.aliases = new Map();
     }
@@ -134,6 +137,7 @@ class CommandRegistry {
 
         const ctx = {
             bot,
+            bots: this.manager?.bots || new Map([[bot.id, bot]]),
             client: bot.client,
             config: this.config,
             store: this.store,
