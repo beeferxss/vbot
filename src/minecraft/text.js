@@ -40,42 +40,57 @@ function unwrapNbt(value) {
     return out;
 }
 
-// Flattens a Minecraft chat component into plain text.
-function flatten(component) {
+// Flattens a Minecraft chat component into plain text. A translate component
+// carries a key and arguments, not the sentence, so the version's language
+// table turns "advMode.setCommand.success" into "Command set: %s". Without a
+// table the key is shown, which is what the client would print for a string it
+// has no translation for.
+function flatten(component, lang = null) {
     component = unwrapNbt(decode(component));
     if (component === null || component === undefined) return '';
     if (typeof component === 'string') return component;
     if (typeof component === 'number' || typeof component === 'boolean') return String(component);
-    if (Array.isArray(component)) return component.map(flatten).join('');
+    if (Array.isArray(component)) return component.map(child => flatten(child, lang)).join('');
     if (typeof component !== 'object') return '';
 
     let out = '';
+    let argsDone = false;
 
     if (typeof component.text === 'string') {
-        out += interpolate(component.text, component.with);
+        out += interpolate(component.text, component.with, lang);
     } else if (typeof component.translate === 'string') {
-        out += interpolate(component.translate, component.with);
+        const args = Array.isArray(component.with) ? component.with : [];
+        const template = lang ? lang[component.translate] : null;
+
+        if (typeof template === 'string') {
+            out += interpolate(template, args, lang);
+            argsDone = true;
+        } else {
+            out += component.translate;
+        }
     } else if (typeof component.keybind === 'string') {
         out += component.keybind;
     } else if (typeof component.selector === 'string') {
         out += component.selector;
     }
 
-    if (Array.isArray(component.with) && typeof component.text !== 'string') {
-        out += component.with.map(flatten).join('');
+    const args = Array.isArray(component.with) ? component.with : [];
+    if (!argsDone && args.length && typeof component.text !== 'string') {
+        out += args.map(child => flatten(child, lang)).join('');
     }
-    if (component.extra) out += flatten(component.extra);
+    if (component.extra) out += flatten(component.extra, lang);
 
     return out;
 }
 
-function interpolate(template, args) {
+// Minecraft has both positional (%s, %d) and indexed (%1$s) placeholders.
+function interpolate(template, args, lang = null) {
     if (!Array.isArray(args) || !args.length) return template;
     let index = 0;
-    return String(template).replace(/%[sd]/g, match => {
-        const value = args[index++];
-        const text = flatten(value);
-        return match === '%d' ? text : text;
+    return String(template).replace(/%%|%(?:(\d+)\$)?[sd]/g, (match, position) => {
+        if (match === '%%') return '%';
+        const at = position ? Number(position) - 1 : index++;
+        return at < args.length ? flatten(args[at], lang) : '';
     });
 }
 
@@ -146,17 +161,17 @@ function pushAnsi(text, code, out) {
     out.push([value, code]);
 }
 
-function collectAnsi(component, inherited, out) {
+function collectAnsi(component, inherited, out, lang = null) {
     component = unwrapNbt(decode(component));
     if (component === null || component === undefined) return;
 
     if (Array.isArray(component)) {
-        for (const child of component) collectAnsi(child, inherited, out);
+        for (const child of component) collectAnsi(child, inherited, out, lang);
         return;
     }
 
     if (typeof component !== 'object') {
-        pushAnsi(flatten(component), inherited, out);
+        pushAnsi(flatten(component, lang), inherited, out);
         return;
     }
 
@@ -165,18 +180,18 @@ function collectAnsi(component, inherited, out) {
     if (Array.isArray(component.extra) && component.extra.length) {
         const base = { ...component };
         delete base.extra;
-        pushAnsi(flatten(base), own, out);
-        for (const child of component.extra) collectAnsi(child, own, out);
+        pushAnsi(flatten(base, lang), own, out);
+        for (const child of component.extra) collectAnsi(child, own, out, lang);
         return;
     }
 
-    pushAnsi(flatten(component), own, out);
+    pushAnsi(flatten(component, lang), own, out);
 }
 
 // Renders a chat component as a single ANSI-styled line.
-function toAnsi(component) {
+function toAnsi(component, lang = null) {
     const parts = [];
-    collectAnsi(component, null, parts);
+    collectAnsi(component, null, parts, lang);
     if (!parts.length) return '';
 
     const styled = parts.some(([, code]) => code);

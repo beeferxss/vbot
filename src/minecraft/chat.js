@@ -3,8 +3,32 @@
 const { flatten, stripColors, toAnsi } = require('./text');
 const { normalizeUuid } = require('./uuid');
 
+const mcData = require('minecraft-data');
+
+// Translate components carry a key such as "advMode.setCommand.success"; the
+// matching en_us table ships with minecraft-data, so it is resolved locally for
+// whichever version this bot is running.
+const languageCache = new Map();
+
+function languageFor(version) {
+    if (!version) return null;
+
+    const key = String(version);
+    if (languageCache.has(key)) return languageCache.get(key);
+
+    let language = null;
+    try {
+        language = mcData(key)?.language || null;
+    } catch {
+        language = null;
+    }
+
+    languageCache.set(key, language);
+    return language;
+}
+
 // Packet field names differ across protocol versions, so probe the known ones.
-function chatTextFromPacket(packet) {
+function chatTextFromPacket(packet, lang = null) {
     if (!packet) return '';
     if (typeof packet === 'string') return packet;
 
@@ -20,7 +44,7 @@ function chatTextFromPacket(packet) {
     ];
 
     for (const candidate of candidates) {
-        const text = flatten(candidate);
+        const text = flatten(candidate, lang);
         if (text) return text;
     }
     return '';
@@ -28,7 +52,7 @@ function chatTextFromPacket(packet) {
 
 // Colours live in the component, and the plain line has already thrown them
 // away, so the same candidates are rendered again with their ANSI styling.
-function ansiFromPacket(packet) {
+function ansiFromPacket(packet, lang = null) {
     if (!packet || typeof packet === 'string') return '';
 
     const candidates = [
@@ -42,7 +66,7 @@ function ansiFromPacket(packet) {
 
     for (const candidate of candidates) {
         if (!candidate) continue;
-        const ansi = toAnsi(candidate);
+        const ansi = toAnsi(candidate, lang);
         if (ansi) return ansi;
     }
 
@@ -87,21 +111,21 @@ function parseChatLine(line) {
 //  - system_chat (and legacy chat) is free-form text. Anyone able to print a
 //    line - /sudo, a plugin, a rank prefix - can make it look like player chat,
 //    so it is reported as unverified and never grants a stored rank.
-function chatEventFromPacket(event, packet) {
+function chatEventFromPacket(event, packet, lang = null) {
     if (!packet) return null;
 
     if (event === 'player_chat') {
         const username = senderName(packet.networkName ?? packet.senderName);
         const message = typeof packet.plainMessage === 'string' && packet.plainMessage
             ? packet.plainMessage
-            : stripColors(flatten(packet.unsignedChatContent)).trim();
+            : stripColors(flatten(packet.unsignedChatContent, lang)).trim();
         if (!message) return null;
 
         return {
             line: username ? `<${username}> ${message}` : message,
             ansi: username
-                ? `\x1b[96m<${username}>\x1b[0m ${ansiFromPacket(packet) || message}`
-                : ansiFromPacket(packet) || message,
+                ? `\x1b[96m<${username}>\x1b[0m ${ansiFromPacket(packet, lang) || message}`
+                : ansiFromPacket(packet, lang) || message,
             message,
             username,
             uuid: normalizeUuid(packet.senderUuid ?? packet.sender),
@@ -109,9 +133,9 @@ function chatEventFromPacket(event, packet) {
         };
     }
 
-    const text = stripColors(chatTextFromPacket(packet)).trim();
+    const text = stripColors(chatTextFromPacket(packet, lang)).trim();
     if (!text) return null;
-    return { line: text, ansi: ansiFromPacket(packet) || text, message: text, username: '', uuid: null, verified: false };
+    return { line: text, ansi: ansiFromPacket(packet, lang) || text, message: text, username: '', uuid: null, verified: false };
 }
 
-module.exports = { chatTextFromPacket, chatEventFromPacket, parseChatLine, senderName };
+module.exports = { chatTextFromPacket, chatEventFromPacket, languageFor, parseChatLine, senderName };

@@ -2,7 +2,7 @@
 
 const EventEmitter = require('node:events');
 const mc = require('minecraft-protocol');
-const { chatTextFromPacket, chatEventFromPacket, parseChatLine } = require('../minecraft/chat');
+const { chatTextFromPacket, chatEventFromPacket, languageFor, parseChatLine } = require('../minecraft/chat');
 const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
 const { playerInfoEntries } = require('../minecraft/players');
 const { Core } = require('../core');
@@ -224,7 +224,9 @@ class Bot extends EventEmitter {
     }
 
     handleChatEvent(event, packet) {
-        const chat = chatEventFromPacket(event, packet);
+        // Translate keys only become sentences with the version's en_us table.
+        const language = languageFor(this.client?.version || this.config.minecraft?.version || null);
+        const chat = chatEventFromPacket(event, packet, language);
         if (!chat || !chat.line) return;
 
         // A signed chat packet is the only place a name and uuid are worth

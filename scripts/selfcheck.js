@@ -2166,6 +2166,46 @@ async function main() {
         bridge.destroy();
     });
 
+    await check('translate keys become sentences', () => {
+        const { flatten, toAnsi } = require('../src/minecraft/text');
+        const { chatEventFromPacket } = require('../src/minecraft/chat');
+
+        const lang = { 'advMode.setCommand.success': 'Command set: %s' };
+        const component = {
+            translate: 'advMode.setCommand.success',
+            with: [{ text: 'whois 9Pon4Inkr7Kn' }]
+        };
+
+        assert.strictEqual(flatten(component, lang), 'Command set: whois 9Pon4Inkr7Kn');
+        // No table means the key, the way a client shows a missing string.
+        assert.strictEqual(flatten(component), 'advMode.setCommand.successwhois 9Pon4Inkr7Kn');
+
+        const event = chatEventFromPacket('system_chat', { content: component }, lang);
+        assert.strictEqual(event.line, 'Command set: whois 9Pon4Inkr7Kn');
+
+        assert.strictEqual(
+            toAnsi({ ...component, color: 'gray' }, lang),
+            '\x1b[37mCommand set: whois 9Pon4Inkr7Kn\x1b[0m'
+        );
+
+        // The real en_us table that ships with minecraft-data resolves the key
+        // the server actually sends.
+        const { languageFor } = require('../src/minecraft/chat');
+        const real = languageFor('1.20.1');
+        assert.strictEqual(
+            chatEventFromPacket('system_chat', { content: component }, real).line,
+            'Command set: whois 9Pon4Inkr7Kn'
+        );
+
+        // Indexed placeholders are used by a few messages.
+        assert.strictEqual(
+            flatten({ translate: 'multiplayer.player.joined', with: [{ text: 'Alex' }] }, {
+                'multiplayer.player.joined': '%s joined the game'
+            }),
+            'Alex joined the game'
+        );
+    });
+
     store.close();
 
     console.log(results.join('\n'));
