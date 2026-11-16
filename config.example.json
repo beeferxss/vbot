@@ -78,6 +78,13 @@
     "nick": "vbot",
     "reply": "tellraw"
   },
+  "alts": {
+    "enabled": true,
+    "lookupCommand": "",
+    "cacheMs": 600000,
+    "gapMs": 1200,
+    "timeoutMs": 3000
+  },
   "selfCare": {
     "enabled": true,
     "creative": true,

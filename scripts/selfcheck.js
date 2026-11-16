@@ -626,12 +626,18 @@ async function main() {
         assert.deepStrictEqual(columns('players'), ['name_key', 'name', 'uuid', 'first_seen', 'last_seen']);
         assert.deepStrictEqual(columns('users'), ['name_key', 'name', 'uuid', 'level', 'granted_by', 'granted_at']);
 
+        // Addresses are stored because /alts cannot work without them.
+        assert.deepStrictEqual(
+            columns('player_ips'),
+            ['name_key', 'ip', 'uuid', 'first_seen', 'last_seen']
+        );
+
         const tables = scratch.db
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
             .all()
             .map(row => row.name)
             .filter(name => !name.startsWith('sqlite_'));
-        assert.deepStrictEqual(tables.sort(), ['players', 'users'], `unexpected tables: ${tables}`);
+        assert.deepStrictEqual(tables.sort(), ['player_ips', 'players', 'users'], `unexpected tables: ${tables}`);
         scratch.close();
     });
 
@@ -731,7 +737,7 @@ async function main() {
         assert.match(output, /^Commands \(\d+\)/);
         assert.match(output, /public: .*help/);
         assert.match(output, /trusted: identity/);
-        assert.match(output, /admin: core/);
+        assert.match(output, /admin: alts core/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
@@ -1127,6 +1133,56 @@ async function main() {
         clicks.destroy();
     });
 
+    await check('ip parsing only accepts real addresses', () => {
+        const { parseIps, looksLikeIp, lookupCommand } = require('../src/ip');
+        assert.deepStrictEqual(parseIps('Steve joined from 1.2.3.4'), ['1.2.3.4']);
+        assert.deepStrictEqual(parseIps('server version 1.21.4'), [], 'a version is not an address');
+        assert.deepStrictEqual(parseIps('no address here'), []);
+        assert.strictEqual(looksLikeIp('1.2.3.4'), true);
+        assert.strictEqual(looksLikeIp('1.21.4'), false);
+        assert.strictEqual(looksLikeIp('Steve'), false);
+        assert.strictEqual(lookupCommand('seen {player}', 'Steve'), 'seen Steve');
+        assert.strictEqual(lookupCommand('/seen {PLAYER}', 'Steve'), 'seen Steve');
+        assert.strictEqual(lookupCommand('', 'Steve'), null);
+    });
+
+    await check('alts links accounts through their addresses', async () => {
+        store.recordIp('Steve', '1.2.3.4', offlineUuid('Steve'));
+        store.recordIp('Alex', '1.2.3.4', offlineUuid('Alex'));
+        store.recordIp('Alex', '5.6.7.8', offlineUuid('Alex'));
+
+        const lookup = {
+            usable: true,
+            historyFor: name => store.ipsFor(name),
+            ipFor: name => store.ipsFor(name)[0]?.ip ?? null,
+            lookup: async () => ['1.2.3.4']
+        };
+        const altsBot = {
+            ...fakeBot,
+            ipLookup: lookup,
+            online: new Map([['alex', { name: 'Alex', uuid: offlineUuid('Alex') }]])
+        };
+
+        const run = async message => {
+            sent.length = 0;
+            await registry.dispatch({ bot: altsBot, parsed: parseChatLine(message) });
+            return decodeReply(sent[0]);
+        };
+
+        const playerView = await run('<VojtaV12> v:alts Steve');
+        assert.match(playerView, /alts Steve/);
+        assert.match(playerView, /1\.2\.3\.4/);
+        assert.match(playerView, /Alex/, 'the other account on that address is listed');
+
+        const ipView = await run('<VojtaV12> v:alts 5.6.7.8');
+        assert.match(ipView, /1 account/);
+        assert.match(ipView, /Alex/);
+        assert.match(ipView, /online/, 'an online account is marked');
+
+        // Addresses are admin-only, like the reference bot's player data.
+        assert.match(await run('<Unranked> v:alts Steve'), /needs a admin token/);
+    });
+
     await check('the tab list tracks who is online, not just who was seen', () => {
         bot.online.clear();
         bot.known.clear();
@@ -1135,8 +1191,8 @@ async function main() {
         bot.handlePlayerInfo({
             actions: ['add_player'],
             entries: [
-                { uuid: offlineUuid('Steve'), player: { name: 'Steve' } },
-                { uuid: offlineUuid('Alex'), player: { name: 'Alex' } }
+                { uuid: offlineUuid('Tabby'), player: { name: 'Tabby' } },
+                { uuid: offlineUuid('Tabbo'), player: { name: 'Tabbo' } }
             ]
         });
         assert.strictEqual(bot.online.size, 2, 'both players are online');
@@ -1145,18 +1201,18 @@ async function main() {
         // their identity is already known.
         bot.handlePlayerInfo({
             actions: ['add_player'],
-            entries: [{ uuid: offlineUuid('Steve'), player: { name: 'Steve' } }]
+            entries: [{ uuid: offlineUuid('Tabby'), player: { name: 'Tabby' } }]
         });
         assert.strictEqual(bot.online.size, 2, 'already known players are still online');
 
         // Older protocol: removal arrives as action 4.
-        bot.handlePlayerInfo({ action: 4, data: [{ uuid: offlineUuid('Alex'), name: 'Alex' }] });
-        assert.deepStrictEqual([...bot.online.keys()], ['steve']);
+        bot.handlePlayerInfo({ action: 4, data: [{ uuid: offlineUuid('Tabbo'), name: 'Tabbo' }] });
+        assert.deepStrictEqual([...bot.online.keys()], ['tabby']);
 
         // 1.19.3+ hides a player with update_listed and a uuid only.
         bot.handlePlayerInfo({
             actions: ['update_listed'],
-            entries: [{ uuid: offlineUuid('Steve'), listed: false }]
+            entries: [{ uuid: offlineUuid('Tabby'), listed: false }]
         });
         assert.strictEqual(bot.online.size, 0, 'a hidden player leaves the list');
         bot.online.clear();
@@ -1170,7 +1226,12 @@ async function main() {
         }
         const { ClickTokens } = require('../src/clicktokens');
         const clicks = new ClickTokens({ logger, uuidFor: () => null, onCommand: () => {} });
-        const listBot = { ...fakeBot, online, clickTokens: clicks };
+        const listBot = {
+            ...fakeBot,
+            online,
+            clickTokens: clicks,
+            ipLookup: { ipFor: () => '1.2.3.4' }
+        };
 
         const show = async message => {
             sent.length = 0;
@@ -1185,6 +1246,12 @@ async function main() {
         // One page of eight: a name and a UUID each copy the UUID.
         assert.strictEqual(first.filter(part => part.clickEvent?.action === 'copy_to_clipboard').length, 16);
         assert.strictEqual(first.filter(part => part.text === ' - ').length, 8);
+
+        // The name hover carries the uuid and the address together.
+        const firstRow = first.find(part => part.text === 'Player0');
+        assert.ok(firstRow, 'the first player is listed');
+        assert.match(firstRow.hoverEvent.contents.text, /ip: 1\.2\.3\.4/);
+        assert.match(firstRow.hoverEvent.contents.text, new RegExp(offlineUuid('Player0')));
 
         // The arrow is a suggestion, which the registry turns into a real button.
         const next = first.find(part => part.text === ' ▶');

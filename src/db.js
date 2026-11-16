@@ -15,6 +15,15 @@ CREATE TABLE IF NOT EXISTS players (
     last_seen  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS player_ips (
+    name_key   TEXT NOT NULL,
+    ip         TEXT NOT NULL,
+    uuid       TEXT,
+    first_seen INTEGER NOT NULL,
+    last_seen  INTEGER NOT NULL,
+    PRIMARY KEY (name_key, ip)
+);
+
 CREATE TABLE IF NOT EXISTS users (
     name_key   TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -28,6 +37,7 @@ CREATE TABLE IF NOT EXISTS users (
 const INDEXES = `
 CREATE INDEX IF NOT EXISTS idx_players_uuid ON players(uuid);
 CREATE INDEX IF NOT EXISTS idx_users_uuid ON users(uuid);
+CREATE INDEX IF NOT EXISTS idx_player_ips_ip ON player_ips(ip);
 `;
 
 const PLAYERS_COLUMNS = 'name_key, name, uuid, first_seen, last_seen';
@@ -155,6 +165,47 @@ class Store {
         return this.db.prepare(
             'SELECT * FROM players WHERE uuid = ? ORDER BY last_seen DESC LIMIT 1'
         ).get(uuid) || null;
+    }
+
+    // An IP is the only thing that links two accounts, so it is the one extra
+    // fact worth keeping. Both name and ip identify the row.
+    recordIp(name, ip, uuid = null) {
+        const key = Store.key(name);
+        const address = String(ip || '').trim();
+        if (!key || !address) return null;
+
+        // An address is only useful next to the account that used it, so the
+        // player row is created here if nothing else has seen them yet.
+        if (!this.getPlayer(name)) this.touchPlayer(name, uuid);
+
+        const now = Date.now();
+        this.db.prepare(`
+            INSERT INTO player_ips (name_key, ip, uuid, first_seen, last_seen)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name_key, ip) DO UPDATE SET
+                uuid      = COALESCE(excluded.uuid, player_ips.uuid),
+                last_seen = excluded.last_seen
+        `).run(key, address, uuid, now, now);
+        return { name_key: key, ip: address };
+    }
+
+    ipsFor(name) {
+        const key = Store.key(name);
+        if (!key) return [];
+        return this.db.prepare(`
+            SELECT ip, first_seen, last_seen FROM player_ips
+            WHERE name_key = ? ORDER BY last_seen DESC
+        `).all(key);
+    }
+
+    playersForIp(ip) {
+        const address = String(ip || '').trim();
+        if (!address) return [];
+        return this.db.prepare(`
+            SELECT p.name, p.uuid, p.last_seen, i.first_seen AS ip_first_seen
+            FROM player_ips i LEFT JOIN players p ON p.name_key = i.name_key
+            WHERE i.ip = ? ORDER BY i.last_seen DESC
+        `).all(address);
     }
 
     getUser(name) {

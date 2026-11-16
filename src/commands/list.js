@@ -49,14 +49,15 @@ module.exports = {
         shown.forEach((player, index) => {
             if (index > 0) parts.push({ text: '\n' });
             const uuid = player.uuid;
+            const ip = ctx.bot.ipLookup ? ctx.bot.ipLookup.ipFor(player.name) : null;
             parts.push({
                 text: player.name,
                 color: NAME_COLOURS[(start + index) % NAME_COLOURS.length],
+                // The hover carries both facts worth having, so a click can stay
+                // a copy.
+                hover: { text: `${player.name}\n${uuid || 'uuid unknown'}\nip: ${ip || 'not known yet'}` },
                 ...(uuid
-                    ? {
-                        hover: { text: 'Click to copy UUID' },
-                        click: { action: 'copy_to_clipboard', value: uuid }
-                    }
+                    ? { click: { action: 'copy_to_clipboard', value: uuid } }
                     : {})
             });
             parts.push({ text: ' - ', color: 'dark_gray' });

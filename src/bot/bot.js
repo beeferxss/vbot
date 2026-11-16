@@ -8,6 +8,7 @@ const { playerInfoEntries } = require('../minecraft/players');
 const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
+const { IpLookup } = require('../iplookup');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -30,6 +31,12 @@ class Bot extends EventEmitter {
         this.selfCare = new SelfCare({
             bot: this,
             config: config.selfCare || {},
+            logger: this.log
+        });
+        this.ipLookup = new IpLookup({
+            bot: this,
+            store,
+            config: config.alts || {},
             logger: this.log
         });
 
@@ -254,7 +261,9 @@ class Bot extends EventEmitter {
             // Every entry means this player is in the tab list. The identity
             // cache is separate: it outlives a player leaving, so it is only
             // rewritten when something actually changed.
+            const isNew = !this.online.has(key);
             this.online.set(key, { name, uuid });
+            if (isNew) this.ipLookup?.queue(name);
 
             if (this.known.get(key) !== uuid) {
                 this.known.set(key, uuid);
@@ -399,6 +408,7 @@ class Bot extends EventEmitter {
         this.core?.destroy();
         this.clickTokens?.destroy();
         this.selfCare?.destroy();
+        this.ipLookup?.destroy();
         this.removeAllListeners();
     }
 }

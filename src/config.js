@@ -38,6 +38,16 @@ function defaults() {
             admin: [],
             trusted: []
         },
+        alts: {
+            enabled: true,
+            // The bot cannot see addresses; it reads them back from a server
+            // command. Empty means /alts only reports what is already stored.
+            // Example: "seen {player}"
+            lookupCommand: '',
+            cacheMs: 600000,
+            gapMs: 1200,
+            timeoutMs: 3000
+        },
         selfCare: {
             enabled: true,
             // Ask for op when we have none, then stay in creative.
