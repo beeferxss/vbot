@@ -96,7 +96,9 @@ function defaults() {
                 block: 'minecraft:repeating_command_block',
                 mode: 'replace',
                 // How often a missing core is rebuilt, in milliseconds.
-                intervalMs: 2000
+                intervalMs: 1000,
+                // How fast "refill" spams fills through the core blocks.
+                spamMs: 250
             }
         }
     };

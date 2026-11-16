@@ -133,7 +133,8 @@
       "enabled": true,
       "block": "minecraft:repeating_command_block",
       "mode": "replace",
-      "intervalMs": 2000
+      "intervalMs": 1000,
+      "spamMs": 250
     }
   }
 }

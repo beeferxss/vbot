@@ -8,13 +8,15 @@ const tellraw = require('./minecraft/tellraw');
 
 const OWN_CHANGE_MS = 2500;
 const DAMAGE_DELAY_MS = 250;
-const REFILL_SETTLE_MS = 400;
-const WATCHDOG_MS = 2000;
+const REFILL_SETTLE_MS = 200;
+const WATCHDOG_MS = 1000;
+const DEFAULT_SPAM_MS = 250;
+const DEFAULT_SPAM_SECONDS = 10;
 // A fill's own block updates can arrive a second or more later, and a refill
 // twice in a row is never useful, so both the grace and the rate limit are
 // generous. Without them one slow update looped refills forever.
 const REFILL_GRACE_MS = 3000;
-const REFILL_MIN_INTERVAL_MS = 3000;
+const REFILL_MIN_INTERVAL_MS = 1500;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -45,6 +47,11 @@ class Core {
         this.graceUntil = 0;
         this.watchdog = null;
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
+        // A burst of refills through the blocks, for when the area has to be back
+        // now rather than eventually.
+        this.spamTimer = null;
+        this.spam = null;
+        this.spamMs = positive(this.config.refill?.spamMs, DEFAULT_SPAM_MS);
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
         this.fillFailures = 0;
@@ -188,10 +195,7 @@ class Core {
             return false;
         }
 
-        const { origin, bounds } = this;
-        const block = this.blockSpec();
-        const command =
-            `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${block} ${this.mode}`;
+        const command = this.fillCommand();
 
         // Plain chat, never routed back into the core: a fill must reach the
         // server even when the core is the thing that is broken.
@@ -234,6 +238,64 @@ class Core {
         }, REFILL_SETTLE_MS).unref?.();
 
         return true;
+    }
+
+    // The fill that rebuilds the whole area, as a bare command.
+    fillCommand() {
+        const { origin, bounds } = this;
+        return `fill ${origin.x} ${origin.y} ${origin.z} ` +
+            `${bounds.x} ${bounds.y} ${bounds.z} ${this.blockSpec()} ${this.mode}`;
+    }
+
+    // A burst of refills through the blocks. Nothing goes out as chat, so the
+    // area can be rebuilt several times a second: each write lands in a command
+    // block and runs on the next tick, which is as fast as the server goes.
+    startSpam({ intervalMs, durationMs } = {}) {
+        if (!this.enabled || !this.refillEnabled) return false;
+        if (this.spamTimer) return false;
+        if (this.origin.x === null && !this.reset()) return false;
+
+        const every = positive(intervalMs, this.spamMs);
+        const total = positive(durationMs, DEFAULT_SPAM_SECONDS * 1000);
+        this.spam = { startedAt: Date.now(), count: 0, intervalMs: every, durationMs: total };
+
+        this.spamTimer = setInterval(() => {
+            if (!this.enabled || !this.refillEnabled) return this.stopSpam('disabled');
+            if (Date.now() - this.spam.startedAt >= this.spam.durationMs) return this.stopSpam('finished');
+
+            // Our own fills change blocks; none of that is damage.
+            this.graceUntil = Date.now() + REFILL_GRACE_MS;
+            if (this.run(this.fillCommand())) this.spam.count += 1;
+        }, every);
+        this.spamTimer.unref?.();
+
+        this.log.info(`core spam refill: every ${every}ms for ${total}ms`);
+        return true;
+    }
+
+    stopSpam(reason = 'stopped') {
+        if (!this.spamTimer) return false;
+        clearInterval(this.spamTimer);
+        this.spamTimer = null;
+
+        const count = this.spam?.count || 0;
+        this.spam = null;
+        this.graceUntil = Date.now() + REFILL_GRACE_MS;
+        this.ready = true;
+        this.lastRefillAt = Date.now();
+        this.markAllAlive();
+        this.log.info(`core spam refill ${reason} after ${count} fill(s)`);
+        return true;
+    }
+
+    spamStatus() {
+        if (!this.spam) return { running: false, intervalMs: this.spamMs };
+        return {
+            running: true,
+            intervalMs: this.spam.intervalMs,
+            count: this.spam.count,
+            leftMs: Math.max(0, this.spam.durationMs - (Date.now() - this.spam.startedAt))
+        };
     }
 
     // Spreads commands over the cube instead of hammering one block, so a
@@ -459,12 +521,19 @@ class Core {
         if (this.damageTimer) return false;
         this.damageTimer = setTimeout(() => {
             this.damageTimer = null;
-            this.refill('damaged');
+            // Damage is its own reason to refill: the fill that just ran did not
+            // take, so waiting out the look-before-you-refill gap helps nobody.
+            this.refill('damaged', { force: true });
         }, DAMAGE_DELAY_MS).unref?.();
         return true;
     }
 
     destroy() {
+        if (this.spamTimer) {
+            clearInterval(this.spamTimer);
+            this.spamTimer = null;
+            this.spam = null;
+        }
         for (const pending of this.queries.values()) {
             clearTimeout(pending.timer);
             pending.resolve(null);

@@ -383,6 +383,72 @@ async function main() {
         core.destroy();
     });
 
+    await check('refill spam refills through the blocks and stops itself', async () => {
+        const sent = [];
+        const writes = [];
+        const spamBot = {
+            position: { x: 35, y: 70, z: -3 },
+            chat: command => sent.push(command),
+            write: (name, payload) => writes.push(payload),
+            log: logger
+        };
+        const core = new Core({
+            bot: spamBot,
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true, spamMs: 40 } },
+            logger
+        });
+        assert.strictEqual(core.reset(), true);
+        writes.length = 0;
+        sent.length = 0;
+
+        assert.strictEqual(core.startSpam({ durationMs: 150 }), true);
+        assert.strictEqual(core.startSpam({ durationMs: 150 }), false, 'one burst at a time');
+        assert.strictEqual(core.spamStatus().running, true);
+
+        await new Promise(resolve => setTimeout(resolve, 260));
+        const status = core.spamStatus();
+        core.destroy();
+
+        assert.strictEqual(status.running, false, 'the burst ends by itself');
+        assert.ok(writes.length >= 2, `expected a few fills, got ${writes.length}`);
+        assert.ok(
+            writes.every(write => write.command.startsWith('fill ')),
+            'every write is the fill'
+        );
+        assert.deepStrictEqual(sent, [], 'spam never goes through chat');
+    });
+
+    const refillCommandCheck = async () => {
+        const spam = { started: null, running: false };
+        const botCore = {
+            startSpam: options => {
+                if (spam.running) return false;
+                spam.started = options;
+                spam.running = true;
+                return true;
+            },
+            stopSpam: () => {
+                const was = spam.running;
+                spam.running = false;
+                return was;
+            },
+            spamStatus: () => (spam.running
+                ? { running: true, intervalMs: 250, count: 3, leftMs: 4000 }
+                : { running: false, intervalMs: 250 })
+        };
+        const spamBot = { ...fakeBot, core: botCore };
+
+        sent.length = 0;
+        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill 5') });
+        assert.strictEqual(spam.started.durationMs, 5000);
+        assert.strictEqual(decodeReply(sent[0]), 'Spam refilling for 5s, every 250ms.');
+
+        sent.length = 0;
+        await registry.dispatch({ bot: spamBot, parsed: parseChatLine('<VojtaV12> v:refill stop') });
+        assert.strictEqual(spam.running, false);
+        assert.strictEqual(decodeReply(sent[0]), 'Spam refill stopped.');
+    };
+
     await check('core blocks can be named from config', () => {
         const named = [];
         const fake = version => ({
@@ -955,6 +1021,8 @@ async function main() {
         const op = parts.find(part => part.text === 'true');
         assert.strictEqual(op.color, 'red');
     });
+
+    await check('the refill command starts and stops spam refills', refillCommandCheck);
 
     await check('trusted commands respond with identity data', async () => {
         const output = await run('<Steve> v:identity Alex');
