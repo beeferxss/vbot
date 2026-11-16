@@ -378,14 +378,14 @@ async function main() {
         assert.strictEqual(core.onBlockChange({ location: first }), false);
         assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), false, 'the fill is not damage');
 
-        // Non-air changes are treated as benign updates (core stays reusable
-        // under heavy command load). Only air means a block is actually broken.
+        // Once the fill has landed, a real block change inside the core is damage.
         core.refilling = false;
         core.graceUntil = 0;
         core.lastRefillAt = 0;
+        core.ready = true;
         core.markAllAlive();
-        assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), false);
-        assert.notStrictEqual(core.blocks.get('40:70:-10'), false);
+        assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), true);
+        assert.strictEqual(core.blocks.get('40:70:-10'), false);
         core.destroy();
     });
 
@@ -824,13 +824,12 @@ async function main() {
         core.destroy();
     });
 
-    await check('core ignores non-air block changes but refills when broken to air', async () => {
+    await check('core refills itself when a block is damaged', async () => {
         const sent = [];
-        const writes = [];
         const coreBot = {
             position: { x: 0, y: 70, z: 0 },
             chat: command => sent.push(command),
-            write: (name, payload) => (writes.push({ name, payload }), true),
+            write: () => {},
             log: logger
         };
         const core = new Core({
@@ -842,27 +841,16 @@ async function main() {
         core.refill('startup');
         await new Promise(resolve => setTimeout(resolve, 300));
         sent.length = 0;
-        writes.length = 0;
         core.refilling = false;
         core.graceUntil = 0;
         core.lastRefillAt = 0;
+        core.ready = true;
         core.markAllAlive();
 
-        // Non-air changes (e.g. command updates) must not break the core.
         core.onBlockChange({ location: { x: 1, y: 64, z: 1 } });
-        await new Promise(resolve => setTimeout(resolve, 350));
-        const refillWrites = writes.filter(w => /fill/.test(w.payload?.command || ''));
-        assert.strictEqual(sent.length + refillWrites.length, 0, 'non-air change should not trigger refill');
-        assert.notStrictEqual(core.blocks.get('1:64:1'), false);
-
-        // Air means the block is gone and must be rebuilt.
-        sent.length = 0;
-        writes.length = 0;
-        core.lastRefillAt = 0;
-        core.onBlockChange({ location: { x: 1, y: 64, z: 1 }, type: 0 });
-        await new Promise(resolve => setTimeout(resolve, 350));
-        const airRefills = writes.filter(w => /fill/.test(w.payload?.command || '')).length + sent.filter(s => /fill/.test(s)).length;
-        assert.ok(airRefills >= 1, 'air should trigger refill');
+        await new Promise(resolve => setTimeout(resolve, 400));
+        assert.ok(sent.length >= 1, 'damage should trigger a refill');
+        assert.match(sent[sent.length - 1], /^\/fill 0 64 0 3 67 3 /);
         core.destroy();
     });
 

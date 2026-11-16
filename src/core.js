@@ -213,9 +213,10 @@ class Core {
         };
 
         // Whatever is left of the core refills it: writing the fill into a
-        // surviving block needs no item and no chat.
+        // surviving block needs no item and no chat. Only reuse a survivor once
+        // the core has actually been established.
         let viaCore = false;
-        const survivor = !viaChat && !this.refilling ? this.survivor() : null;
+        const survivor = !viaChat && !this.refilling && this.everReady ? this.survivor() : null;
 
         if (survivor) {
             this.markOwn(survivor);
@@ -348,10 +349,14 @@ class Core {
         // established, assume blocks are present and let writes/air-break
         // detection correct it. This keeps the core reusable.
         if (this.blocks.size === 0 && this.origin.x !== null && this.everReady) this.markAllAlive();
+        // If every known block is marked dead, don't get stuck: assume alive and
+        // let real failures/air breaks correct it.
+        if (this.blocks.size > 0 && !this.survivor() && this.everReady) this.markAllAlive();
 
         for (let attempt = 0; attempt < this.volume; attempt++) {
             const cell = this.nextCell();
             if (!cell) return null;
+            // Only skip blocks we positively know are dead.
             if (this.blocks.get(keyOf(cell)) === false) continue;
 
             this.markOwn(cell);
@@ -364,7 +369,10 @@ class Core {
                 })
                 : false;
 
-            if (sent) {
+            if (sent !== false) {
+                // Treat unknown blocks as alive once a write succeeds.
+                if (!this.blocks.has(keyOf(cell))) this.blocks.set(keyOf(cell), true);
+                else this.blocks.set(keyOf(cell), true);
                 this.lastLocation = cell;
                 return cell;
             }
@@ -374,6 +382,9 @@ class Core {
             this.log.warn(`core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
         }
 
+        // Last resort: force a refill attempt so the area can recover, then fail
+        // this command (callers can retry on next tick).
+        if (this.refillEnabled) this.refill('run-fallback', { force: true });
         this.log.warn('no core block accepted the command');
         return null;
     }
@@ -560,30 +571,40 @@ class Core {
         this.watchdog.unref?.();
     }
 
-    // Core blocks can change often while commands are written into them. Only an
-    // actual break (air) means a cell is gone; other non-own changes are treated
-    // as benign updates so the core stays reusable under heavy command load.
+    // Core blocks can change often while commands are written into them.
+    // Air is always a break. Other non-own changes may mean the block was
+    // altered; treat as damage but coalesce repairs so heavy command traffic
+    // (covered by own-change tracking) does not thrash refills.
     onBlockChange(packet) {
         if (!this.enabled || !this.refillEnabled) return false;
         const location = packet?.location;
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;
         if (this.isOwn(location)) return false;
+        if (this.refilling || Date.now() < this.graceUntil) return false;
+
+        const k = keyOf(location);
 
         // A core block that became air was broken outright: rebuild at once.
         if (isAir(packet)) {
-            this.blocks.set(keyOf(location), false);
+            this.blocks.set(k, false);
             this.log.debug(`core block ${location.x} ${location.y} ${location.z} went to air; refilling`);
             this.refill('broken', { force: true });
             return true;
         }
 
-        // Non-air changes (e.g. command/NBT updates) do not mean the block is
-        // unusable. During or shortly after our own refills they are expected.
-        if (this.refilling || Date.now() < this.graceUntil) return false;
-        if (Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
-
-        return false;
+        // External/non-own change: mark damaged and coalesce refill.
+        this.blocks.set(k, false);
+        this.ready = false;
+        if (Date.now() - this.lastRefillAt < REFILL_MIN_INTERVAL_MS) return true;
+        if (this.damageTimer) clearTimeout(this.damageTimer);
+        this.damageTimer = setTimeout(() => {
+            this.damageTimer = null;
+            if (!this.enabled || !this.refillEnabled) return;
+            this.refill(this.survivor() ? 'damaged' : 'broken', { force: !this.survivor() });
+        }, DAMAGE_DELAY_MS);
+        this.damageTimer.unref?.();
+        return true;
     }
 
     destroy() {
