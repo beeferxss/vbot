@@ -161,6 +161,9 @@ class Bot extends EventEmitter {
         // the action, and never needs to be dispatched as a command.
         if (this.clickTokens?.handle(chat.line)) return;
 
+        // Fill results are the only confirmation that a refill actually ran.
+        this.core?.noteMessage(chat.line);
+
         const parsed = chat.verified && chat.username
             ? { username: chat.username, message: chat.message }
             : parseChatLine(chat.line);

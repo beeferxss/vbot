@@ -426,6 +426,29 @@ async function main() {
         assert.strictEqual(sent.length, after, 'destroy stops the watchdog');
     });
 
+    await check('core reads the fill result the server reports', () => {
+        const core = new Core({
+            bot: { position: { x: 0, y: 70, z: 0 }, chat: () => {}, write: () => true, log: logger },
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset();
+
+        // Servers send this as a translate key, so the raw text carries the count.
+        assert.strictEqual(core.noteMessage('commands.fill.success8'), true);
+        assert.deepStrictEqual(core.lastFill.blocks, 8);
+        assert.deepStrictEqual(core.lastFill.expected, 8);
+
+        assert.strictEqual(core.noteMessage('commands.fill.success1'), true);
+        assert.strictEqual(core.lastFill.blocks, 1, 'a partial fill is recorded as such');
+
+        assert.strictEqual(core.noteMessage('commands.fill.failed'), true);
+        assert.strictEqual(core.lastFill.blocks, 0);
+
+        assert.strictEqual(core.noteMessage('<Steve> hello'), false);
+        core.destroy();
+    });
+
     await check('core refills itself when a block is damaged', async () => {
         const sent = [];
         const coreBot = {
@@ -480,6 +503,7 @@ async function main() {
         }
         sent.length = 0;
         writes.length = 0;
+        core.lastRefillAt = 0; // pretend the last refill is old enough
         core.refill('damaged');
         assert.deepStrictEqual(sent, [], 'a surviving block carries the fill');
         assert.strictEqual(writes.length, 1);
@@ -490,6 +514,7 @@ async function main() {
         await new Promise(resolve => setTimeout(resolve, 450));
         sent.length = 0;
         writes.length = 0;
+        core.lastRefillAt = 0;
         core.refill('command', { viaChat: true });
         assert.strictEqual(writes.length, 0, 'an explicit refill never writes into a block');
         assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);

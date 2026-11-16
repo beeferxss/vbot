@@ -10,6 +10,11 @@ const OWN_CHANGE_MS = 2500;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 400;
 const WATCHDOG_MS = 2000;
+// A fill's own block updates can arrive a second or more later, and a refill
+// twice in a row is never useful, so both the grace and the rate limit are
+// generous. Without them one slow update looped refills forever.
+const REFILL_GRACE_MS = 3000;
+const REFILL_MIN_INTERVAL_MS = 3000;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -40,6 +45,8 @@ class Core {
         this.graceUntil = 0;
         this.watchdog = null;
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
+        // Result the server reported for the last fill it ran for us.
+        this.lastFill = null;
     }
 
     get volume() {
@@ -67,6 +74,40 @@ class Core {
         return Array.isArray(component) ? component : [component];
     }
 
+    // The server reports how many blocks a fill changed, and that is the only
+    // confirmation we get: a fill that changed nothing never ran. Servers send
+    // this as a translated key, so the raw text carries the count.
+    noteMessage(line) {
+        const text = String(line || '');
+
+        const success = /commands\.fill\.success(\d+)/i.exec(text)
+            || /Successfully filled (\d+)/i.exec(text);
+        if (success) {
+            const blocks = Number(success[1]);
+            this.lastFill = { blocks, expected: this.volume, at: Date.now() };
+            if (blocks < this.volume) {
+                this.log.warn(
+                    `core fill changed ${blocks} of ${this.volume} blocks ` +
+                    '(not opped, protected area, or a low max_block_modifications?)'
+                );
+            } else {
+                this.log.info(`core fill filled ${blocks} blocks`);
+            }
+            return true;
+        }
+
+        const failed = /commands\.fill\.failed/i.test(text)
+            || /No blocks were filled/i.test(text)
+            || /commands\.fill\.no\\?/i.test(text);
+        if (failed) {
+            this.lastFill = { blocks: 0, expected: this.volume, at: Date.now() };
+            this.log.warn('core fill failed: the server refused the fill');
+            return true;
+        }
+
+        return false;
+    }
+
     // Status as tellraw parts rather than one string, so the name is coloured.
     statusParts() {
         if (!this.enabled) return [{ text: 'core is disabled in config', color: 'gray' }];
@@ -84,7 +125,13 @@ class Core {
                 color: this.ready ? 'green' : 'yellow'
             },
             { text: `, cursor ${this.cursor}/${this.volume}, name `, color: 'dark_gray' },
-            ...this.nameParts()
+            ...this.nameParts(),
+            ...(this.lastFill
+                ? [{
+                    text: `, last fill ${this.lastFill.blocks}/${this.lastFill.expected}`,
+                    color: this.lastFill.blocks >= this.lastFill.expected ? 'dark_gray' : 'red'
+                }]
+                : [])
         ];
     }
 
@@ -108,9 +155,17 @@ class Core {
 
     // viaChat forces the fill out as a chat command instead of a block write.
     // Automatic refills prefer a block; the explicit command asks for chat.
-    refill(reason = 'manual', { viaChat = false } = {}) {
+    refill(reason = 'manual', { viaChat = false, force = false } = {}) {
         if (!this.enabled || !this.refillEnabled) return false;
         if (this.origin.x === null && !this.reset()) return false;
+
+        // Never refill on top of a refill: the block updates from the last fill
+        // look like damage, and reacting to them loops forever.
+        if (!force && this.refilling) return false;
+        if (!force && Date.now() - this.lastRefillAt < REFILL_MIN_INTERVAL_MS) {
+            this.log.debug(`core refill (${reason}) skipped, last one was too recent`);
+            return false;
+        }
 
         const { origin, bounds } = this;
         const block = this.blockSpec();
@@ -145,7 +200,7 @@ class Core {
         this.refilling = true;
         this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
-        this.graceUntil = Date.now() + REFILL_SETTLE_MS + 500;
+        this.graceUntil = Date.now() + REFILL_GRACE_MS;
         this.log.info(
             `core refill (${reason}) via ${viaCore ? `block ${survivor.x} ${survivor.y} ${survivor.z}` : 'chat'}`
         );
@@ -287,10 +342,15 @@ class Core {
         this.watchdog = setInterval(() => {
             if (!this.enabled || this.refilling) return;
             const standing = this.survivor() !== null;
-            if (this.ready && standing) return;
+            // A fill that changed fewer blocks than expected did not really run.
+            const filled = !this.lastFill || this.lastFill.blocks >= this.lastFill.expected;
+            if (this.ready && standing && filled) return;
             if (this.origin.x === null && !this.reset()) return;
-            this.log.info('core missing or incomplete; rebuilding');
-            this.refill('watchdog');
+
+            this.log.info(`core missing or incomplete (${standing ? 'blocks standing' : 'no blocks'}, ` +
+                `${filled ? 'fill ok' : 'fill incomplete'}); rebuilding`);
+            // The watchdog is the safety net, so it is allowed past the rate limit.
+            this.refill('watchdog', { viaChat: !filled, force: true });
         }, this.watchdogMs);
         this.watchdog.unref?.();
     }
@@ -305,6 +365,7 @@ class Core {
         if (this.isOwn(location)) return false;
         // Changes made by our own fill are not damage.
         if (this.refilling || Date.now() < this.graceUntil) return false;
+        if (Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
 
         this.blocks.set(keyOf(location), false);
 
