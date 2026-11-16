@@ -6,6 +6,7 @@ const { chatTextFromPacket, chatEventFromPacket, parseChatLine } = require('../m
 const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
 const { playerInfoEntries } = require('../minecraft/players');
 const { Core } = require('../core');
+const { ClickTokens } = require('../clicktokens');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -20,6 +21,7 @@ class Bot extends EventEmitter {
         this.registry = registry;
         this.log = logger.child(server.id);
         this.core = new Core({ bot: this, config: config.core, logger: this.log });
+        this.clickTokens = new ClickTokens({ logger: this.log, uuidFor: name => this.uuidFor(name) });
 
         this.client = null;
         this.position = null;
@@ -129,6 +131,7 @@ class Bot extends EventEmitter {
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
             this.core?.destroy();
+            this.clickTokens?.clear();
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
         });
     }
@@ -149,6 +152,10 @@ class Bot extends EventEmitter {
         if (this.config.logging?.chat) {
             this.log.info(`${chat.verified ? '' : '(system) '}${chat.line}`);
         }
+
+        // A button was clicked: the matching /random line names the clicker and
+        // the action, and never needs to be dispatched as a command.
+        if (this.clickTokens?.handle(chat.line)) return;
 
         const parsed = chat.verified && chat.username
             ? { username: chat.username, message: chat.message }
@@ -283,6 +290,8 @@ class Bot extends EventEmitter {
     destroy() {
         this.destroyed = true;
         this.stop('destroyed');
+        this.core?.destroy();
+        this.clickTokens?.destroy();
         this.removeAllListeners();
     }
 }

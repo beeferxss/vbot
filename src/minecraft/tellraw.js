@@ -109,4 +109,50 @@ function text(value, style = {}) {
     return { text: String(value), ...style };
 }
 
-module.exports = { command, isModern, json, payload, snbt, text };
+const COLOR_CODES = {
+    0: 'black', 1: 'dark_blue', 2: 'dark_green', 3: 'dark_aqua',
+    4: 'dark_red', 5: 'dark_purple', 6: 'gold', 7: 'gray',
+    8: 'dark_gray', 9: 'blue', a: 'green', b: 'aqua', c: 'red',
+    d: 'light_purple', e: 'yellow', f: 'white'
+};
+
+const FORMAT_CODES = { l: 'bold', o: 'italic', n: 'underlined', m: 'strikethrough', k: 'obfuscated' };
+
+// Turns "&aReady &7- 12ms" (or the section-sign form) into coloured parts, so
+// ordinary text replies can carry colour without building components by hand.
+// Returns null when there is nothing to convert.
+function colorize(value) {
+    const source = String(value ?? '');
+    if (!/[&\u00a7][0-9a-fk-or]/i.test(source)) return null;
+
+    const parts = [];
+    let style = {};
+    let buffer = '';
+
+    const flush = () => {
+        if (!buffer) return;
+        parts.push({ text: buffer, ...style });
+        buffer = '';
+    };
+
+    for (let index = 0; index < source.length; index++) {
+        const char = source[index];
+        const code = char === '&' || char === '\u00a7' ? source[index + 1]?.toLowerCase() : null;
+
+        if (code && (code === 'r' || COLOR_CODES[code] || FORMAT_CODES[code])) {
+            flush();
+            if (code === 'r') style = {};
+            else if (COLOR_CODES[code]) style = { color: COLOR_CODES[code] };
+            else style = { ...style, [FORMAT_CODES[code]]: true };
+            index++;
+            continue;
+        }
+
+        buffer += char;
+    }
+
+    flush();
+    return parts.length ? parts : null;
+}
+
+module.exports = { colorize, command, isModern, json, payload, snbt, text };

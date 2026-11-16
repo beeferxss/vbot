@@ -813,6 +813,92 @@ async function main() {
         core.destroy();
     });
 
+    await check('colour codes in replies become components', () => {
+        const { colorize } = require('../src/minecraft/tellraw');
+        const parts = colorize('&aok &7- &c12ms');
+        assert.deepStrictEqual(parts, [
+            { text: 'ok ', color: 'green' },
+            { text: '- ', color: 'gray' },
+            { text: '12ms', color: 'red' }
+        ]);
+        assert.strictEqual(colorize('plain text'), null);
+
+        sent.length = 0;
+        registry.reply(fakeBot, 'Unranked', '&aDone &lbold');
+        const payload = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        // A format code keeps the colour in effect, like in game.
+        assert.deepStrictEqual(payload, [
+            { text: 'Done ', color: 'green' },
+            { text: 'bold', color: 'green', bold: true }
+        ]);
+    });
+
+    await check('click tokens run an action as the player who clicked', async () => {
+        const { ClickTokens } = require('../src/clicktokens');
+        const clicks = new ClickTokens({ logger });
+        const seen = [];
+        const token = clicks.register('selftest', async clicker => seen.push(clicker));
+
+        assert.match(token, /^\/random value \d+\.\.\d+$/);
+        assert.ok(clicks.resolve(token), 'a fresh token resolves');
+
+        assert.strictEqual(clicks.handle('Steve issued server command: Hans /random value 1..2'), false);
+        assert.strictEqual(clicks.handle(`Steve issued server command: ${token}`), true);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.deepStrictEqual(seen.map(clicker => clicker.name), ['Steve']);
+
+        // Unknown numbers do nothing, and a button source can be dropped.
+        assert.strictEqual(clicks.handle('Steve issued server command: /random value 7..8'), false);
+        assert.strictEqual(clicks.invalidate('selftest'), 1);
+        assert.strictEqual(clicks.handle(`Steve issued server command: ${token}`), false);
+        clicks.destroy();
+    });
+
+    await check('core status colours its name and offers a refill button', async () => {
+        const { ClickTokens } = require('../src/clicktokens');
+        const clicks = new ClickTokens({ logger });
+        const named = [];
+        const core = new Core({
+            bot: {
+                client: { version: '1.20.4' },
+                position: { x: 0, y: 70, z: 0 },
+                chat: command => named.push(command),
+                write: () => true,
+                log: logger
+            },
+            config: {
+                enabled: true,
+                name: '{"text":"vbot","color":"green"}',
+                area: { size: 2, y: 64 },
+                refill: { enabled: true }
+            },
+            logger
+        });
+        core.reset({ x: 0, y: 70, z: 0 });
+
+        const statusBot = { ...fakeBot, core, clickTokens: clicks };
+        sent.length = 0;
+        await registry.dispatch({ bot: statusBot, parsed: parseChatLine('<VojtaV12> v:core status') });
+
+        const parts = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        const name = parts.find(part => part.text === 'vbot');
+        assert.ok(name, 'the configured name is shown');
+        assert.strictEqual(name.color, 'green', 'the name keeps its colour');
+
+        const button = parts.find(part => part.clickEvent?.action === 'run_command');
+        assert.ok(button, 'the refill button runs a command');
+        assert.match(button.clickEvent.value, /^\/random value \d+\.\.\d+$/);
+
+        // Clicking it as an owner refills the core for real.
+        named.length = 0;
+        assert.strictEqual(clicks.handle(`VojtaV12 issued server command: ${button.clickEvent.value}`), true);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.ok(named.some(command => command.startsWith('/fill 0 64 0 1 65 1 ')), 'the click refilled the core');
+
+        core.destroy();
+        clicks.destroy();
+    });
+
     await check('uuid and whoami commands answer', async () => {
         assert.match(await run('<Steve> v:uuid Notch'), /offline: [0-9a-f-]{36}/);
         assert.match(await run('<Steve> v:whoami'), /You are admin/);

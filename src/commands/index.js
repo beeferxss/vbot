@@ -147,6 +147,9 @@ class CommandRegistry {
             argString: args.join(' '),
             prefix,
             reply,
+            // A button that runs `action(clicker)` when clicked, even though the
+            // bot prefix is not a server command. Null when no tokens exist.
+            clickToken: (source, action) => (bot.clickTokens ? bot.clickTokens.register(source, action) : null),
             replyPrivate: text => reply(`/msg ${parsed.username} ${text}`),
             // Commands are run through the core command blocks when it is up,
             // so they do not appear as bot chat. Chat is the bootstrap path.
@@ -199,7 +202,10 @@ class CommandRegistry {
 }
 
 function toComponent(text) {
-    if (typeof text === 'string') return { text };
+    if (typeof text === 'string') {
+        // "&a" colour codes become real components; plain text stays plain.
+        return tellraw.colorize(text) || { text };
+    }
     if (text === null || text === undefined) return { text: '' };
     return text;
 }

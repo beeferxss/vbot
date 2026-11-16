@@ -55,6 +55,39 @@ class Core {
             `name ${this.name ? this.name : 'none'}`;
     }
 
+    // The configured name as a component, so it keeps its colours in chat.
+    nameParts() {
+        if (!this.name) return [{ text: 'none', color: 'dark_gray' }];
+        let component = this.name;
+        try {
+            component = JSON.parse(this.name);
+        } catch {
+            return [{ text: this.name, color: 'white' }];
+        }
+        return Array.isArray(component) ? component : [component];
+    }
+
+    // Status as tellraw parts rather than one string, so the name is coloured.
+    statusParts() {
+        if (!this.enabled) return [{ text: 'core is disabled in config', color: 'gray' }];
+        if (this.origin.x === null) {
+            return [{ text: 'core not placed yet (no position seen)', color: 'gray' }];
+        }
+
+        const { origin, bounds } = this;
+        return [
+            { text: 'core ', color: 'gray' },
+            { text: `${this.size}^3`, color: 'aqua' },
+            { text: ` at ${origin.x} ${origin.y} ${origin.z}..${bounds.x} ${bounds.y} ${bounds.z}, `, color: 'gray' },
+            {
+                text: this.ready ? 'ready' : this.refilling ? 'refilling' : 'not ready',
+                color: this.ready ? 'green' : 'yellow'
+            },
+            { text: `, cursor ${this.cursor}/${this.volume}, name `, color: 'dark_gray' },
+            ...this.nameParts()
+        ];
+    }
+
     // Grid-aligned to the bot's chunk so the core stays put while it walks.
     reset(position = this.bot.position) {
         if (!this.enabled) return false;
