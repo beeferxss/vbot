@@ -7,6 +7,7 @@ const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
 const { playerInfoEntries } = require('../minecraft/players');
 const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
+const { SelfCare } = require('../selfcare');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -25,6 +26,11 @@ class Bot extends EventEmitter {
             logger: this.log,
             uuidFor: name => this.uuidFor(name),
             onCommand: (suggestion, clicker) => this.runSuggestion(suggestion, clicker)
+        });
+        this.selfCare = new SelfCare({
+            bot: this,
+            config: config.selfCare || {},
+            logger: this.log
         });
 
         this.client = null;
@@ -86,11 +92,12 @@ class Bot extends EventEmitter {
         // client is recognised by identity instead of by removing handlers.
         const isCurrent = () => this.client === client;
 
-        client.on('login', () => {
+        client.on('login', packet => {
             this.attempts = 0;
             this.state = 'ready';
             this.disconnectReason = null;
             this.log.info(`connected as ${this.server.username}`);
+            this.selfCare?.onLoginPacket(packet);
             this.emit('ready');
             this.applyNick();
             // Give the position packet a moment to arrive before placing anything.
@@ -110,6 +117,9 @@ class Bot extends EventEmitter {
         }
 
         client.on('block_change', packet => this.core?.onBlockChange(packet));
+        client.on('entity_status', packet => this.selfCare?.onEntityStatus(packet));
+        client.on('game_state_change', packet => this.selfCare?.onGameStateChange(packet));
+        client.on('respawn', packet => this.selfCare?.onRespawn(packet));
 
         for (const event of CHAT_PACKETS) {
             client.on(event, packet => this.handleChatEvent(event, packet));
@@ -325,6 +335,7 @@ class Bot extends EventEmitter {
         this.stop('destroyed');
         this.core?.destroy();
         this.clickTokens?.destroy();
+        this.selfCare?.destroy();
         this.removeAllListeners();
     }
 }

@@ -38,6 +38,20 @@ function defaults() {
             admin: [],
             trusted: []
         },
+        selfCare: {
+            enabled: true,
+            // Ask for op when we have none, then stay in creative.
+            creative: true,
+            commandSpy: true,
+            vanish: true,
+            // Undo a mute as soon as the server announces it.
+            unmute: true,
+            // One-shot per session; both need a name to send.
+            nick: false,
+            nickName: null,
+            username: false,
+            usernameName: null
+        },
         storage: {
             path: 'data/vbot.sqlite'
         },

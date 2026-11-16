@@ -426,6 +426,39 @@ async function main() {
         assert.strictEqual(sent.length, after, 'destroy stops the watchdog');
     });
 
+    await check('selfcare unmutes and keeps command spy on', async () => {
+        const EventEmitter = require('node:events');
+        const { SelfCare } = require('../src/selfcare');
+
+        const sent = [];
+        const bot = new EventEmitter();
+        bot.server = { username: 'vbot' };
+        bot.client = { uuid: '00000000-0000-0000-0000-000000000001', entityId: 7, chat: () => {} };
+        bot.chat = command => (sent.push(command), true);
+        bot.core = { ready: true, run: command => (sent.push(command), { x: 0, y: 64, z: 0 }) };
+
+        const care = new SelfCare({ bot, config: {}, logger });
+        care.onReady();
+
+        // A mute is undone as soon as the server says it happened.
+        care.onMessage({ line: 'You have been muted for 5 minutes' });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.ok(
+            sent.some(command => command.startsWith('mute 00000000-0000-0000-0000-000000000001')),
+            'a mute should be lifted'
+        );
+
+        // Command spy is confirmed by its own message and then left alone.
+        sent.length = 0;
+        care.onMessage({ line: 'Successfully enabled commandspy' });
+        assert.strictEqual(care.spyOn, true);
+        care.tick();
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.ok(!sent.some(command => command.startsWith('c ')), 'spy is not re-enabled when it is on');
+
+        care.destroy();
+    });
+
     await check('core reads the fill result the server reports', () => {
         const core = new Core({
             bot: { position: { x: 0, y: 70, z: 0 }, chat: () => {}, write: () => true, log: logger },

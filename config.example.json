@@ -78,6 +78,17 @@
     "nick": "vbot",
     "reply": "tellraw"
   },
+  "selfCare": {
+    "enabled": true,
+    "creative": true,
+    "commandSpy": true,
+    "vanish": true,
+    "unmute": true,
+    "nick": false,
+    "nickName": null,
+    "username": false,
+    "usernameName": null
+  },
   "permissions": {
     "keys": {
       "owner": "",
