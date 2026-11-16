@@ -1,12 +1,12 @@
 'use strict';
 
-const { LEVEL, levelName } = require('../permissions');
+const { levelName } = require('../permissions');
 
 module.exports = {
     name: 'core',
     description: 'Run a command through the core command blocks, or manage it',
     usage: 'core [status|reset|refill|<command>]',
-    level: 'admin',
+    level: 'public',
 
     async execute(ctx) {
         const core = ctx.bot.core;
@@ -21,11 +21,6 @@ module.exports = {
             const parts = core.statusParts();
             const token = core.origin.x !== null
                 ? ctx.clickToken('core-refill', async clicker => {
-                    const level = ctx.permissions.levelFor({ name: clicker.name, uuid: clicker.uuid });
-                    if (level < LEVEL.ADMIN) {
-                        ctx.bot.registry.reply(ctx.bot, clicker.name, 'Only admins can refill the core.');
-                        return;
-                    }
                     core.refill('button', { viaChat: true });
                     ctx.bot.registry.reply(ctx.bot, clicker.name, 'Refilling the core.');
                 })

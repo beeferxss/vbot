@@ -1024,7 +1024,8 @@ async function main() {
         assert.match(output, /public: .*help/);
         assert.match(output, /trusted: identity/);
         assert.match(output, /public: alts /);
-        assert.match(output, /admin: core/);
+        assert.match(output, /public: .*core/, 'the core command is public');
+        assert.match(output, /admin: refill/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
@@ -1390,7 +1391,7 @@ async function main() {
         const helpReply = decodeReply(sent[0]);
         assert.match(helpReply, /v:core \[status/);
         assert.match(helpReply, /Run a command through the core/);
-        assert.match(helpReply, /\[admin\]/, 'the clicker sees the rank of the command');
+        assert.match(helpReply, /\[public\]/, 'the clicker sees the rank of the command');
 
         // A button that runs a privileged command keeps the clicker's rank: an
         // owner is still the owner when they click.
