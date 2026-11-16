@@ -1,0 +1,10 @@
+{
+    "kbpw": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
+    }
+}
