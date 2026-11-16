@@ -8,6 +8,8 @@ const { Permissions } = require('./permissions');
 const { Tokens } = require('./auth/tokens');
 const { CommandRegistry } = require('./commands');
 const { BotManager } = require('./bot/manager');
+const { attachConsole } = require('./console');
+const { createDiscordBridge } = require('./discord');
 
 async function main() {
     let config;
@@ -40,6 +42,8 @@ async function main() {
     process.on('uncaughtException', error => logger.error('uncaught exception:', error));
 
     const manager = new BotManager({ config, store, permissions, registry, logger });
+    // Commands such as `servers` and `netmsg` need every bot, not just their own.
+    registry.manager = manager;
     manager.on('ready', bot => logger.info(`${bot.id} ready`));
     manager.on('disconnect', (bot, reason) => logger.warn(`${bot.id} disconnected: ${reason || 'unknown'}`));
     manager.on('failed', bot => logger.error(`${bot.id} stopped retrying`));
@@ -55,11 +59,17 @@ async function main() {
     }
     logger.info(`vbot started with ${bots.length} bot(s)`);
 
+    const consoleUI = attachConsole({ manager, config, logger });
+    const discord = createDiscordBridge({ config, manager, logger, registry });
+    if (discord) discord.start();
+
     let stopping = false;
     const shutdown = async signal => {
         if (stopping) return;
         stopping = true;
         logger.info(`${signal} received, shutting down`);
+        consoleUI?.close();
+        discord?.destroy();
         await manager.destroyAll();
         store.close();
         process.exit(0);

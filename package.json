@@ -14,8 +14,10 @@
     "node": ">=22.5"
   },
   "dependencies": {
+    "discord.js": "^14.28.1",
     "minecraft-data": "^3.119.0",
     "minecraft-protocol": "^1.67.0",
+    "prismarine-chunk": "^1.41.0",
     "prismarine-nbt": "^2.8.0"
   }
 }

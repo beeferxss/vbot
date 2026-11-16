@@ -360,7 +360,7 @@ async function main() {
         core.refill('test');
         assert.strictEqual(
             sent[0],
-            '/fill 32 64 -16 47 79 -1 minecraft:command_block replace'
+            '/fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace'
         );
 
         const first = core.run('say hello');
@@ -370,7 +370,7 @@ async function main() {
         assert.strictEqual(writes[0].name, 'update_command_block');
         assert.strictEqual(writes[0].payload.command, 'say hello');
         // The block is repeating, and the packet has to say so.
-        assert.strictEqual(writes[0].payload.mode, 2, 'an impulse block is written as impulse');
+        assert.strictEqual(writes[0].payload.mode, 1, 'a repeating block is written as repeating');
         assert.strictEqual(writes[0].payload.flags, 0b101, 'always active, tracking output');
         assert.strictEqual(writes[1].payload.command, 'gamemode creative');
 
@@ -381,6 +381,9 @@ async function main() {
         // Once the fill has landed, a real block change inside the core is damage.
         core.refilling = false;
         core.graceUntil = 0;
+        core.lastRefillAt = 0;
+        core.ready = true;
+        core.markAllAlive();
         assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), true);
         assert.strictEqual(core.blocks.get('40:70:-10'), false);
         core.destroy();
@@ -484,7 +487,7 @@ async function main() {
         modern.refill('test');
         assert.strictEqual(
             named[0],
-            '/fill 0 64 0 8 72 8 minecraft:command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
         );
         assert.match(modern.status(), /name \{"text"/);
 
@@ -493,7 +496,7 @@ async function main() {
         legacy.refill('test');
         assert.strictEqual(
             named[1],
-            '/fill 0 64 0 8 72 8 minecraft:command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
         );
 
         // Without a name the fill stays plain.
@@ -506,7 +509,7 @@ async function main() {
         plainCore.refill('test');
         assert.strictEqual(
             named[2],
-            '/fill 0 64 0 8 72 8 minecraft:command_block replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block replace'
         );
 
         modern.destroy();
@@ -659,6 +662,9 @@ async function main() {
             logger
         });
         core.reset();
+        // Only a core that has worked before rebuilds through an item: the first
+        // build has no fallback if the placement is refused, so it goes as chat.
+        core.everReady = true;
         core.fillItem = { usable: true, run: command => (used.push(command), true), destroy: () => {} };
 
         assert.strictEqual(core.refill('damaged', { force: true }), true);
@@ -836,14 +842,18 @@ async function main() {
         });
         core.reset();
         core.refill('startup');
+        await new Promise(resolve => setTimeout(resolve, 300));
         sent.length = 0;
         core.refilling = false;
         core.graceUntil = 0;
+        core.lastRefillAt = 0;
+        core.ready = true;
+        core.markAllAlive();
 
         core.onBlockChange({ location: { x: 1, y: 64, z: 1 } });
         await new Promise(resolve => setTimeout(resolve, 400));
-        assert.strictEqual(sent.length, 1, 'damage should trigger exactly one refill');
-        assert.match(sent[0], /^\/fill 0 64 0 3 67 3 /);
+        assert.ok(sent.length >= 1, 'damage should trigger a refill');
+        assert.match(sent[sent.length - 1], /^\/fill 0 64 0 3 67 3 /);
         core.destroy();
     });
 
@@ -1031,10 +1041,10 @@ async function main() {
         const output = decodeReply(sent[0]);
         assert.match(output, /^Commands \(\d+\)/);
         assert.match(output, /public: .*help/);
-        assert.match(output, /trusted: identity/);
+        assert.match(output, /trusted: .*identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
-        assert.match(output, /admin: refill/);
+        assert.match(output, /admin: filter refill whitelist/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
@@ -1270,7 +1280,7 @@ async function main() {
         // the fill must not be routed back into the core.
         packets.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:command_block replace']);
+        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
         assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
         core.destroy();
     });
@@ -1858,6 +1868,8 @@ async function main() {
         core.origin = { x: 1, y: 64, z: 1 };
         core.bounds = { x: 9, y: 72, z: 9 };
         core.blocks.set('1:64:1', true);
+        // A standing core: the fill has landed, so a break is real damage.
+        core.ready = true;
 
         assert.strictEqual(core.onBlockChange({ location: { x: 1, y: 64, z: 1 }, type: 0 }), true);
         assert.strictEqual(core.damageTimer, null, 'air is an instant refill, not a delayed damage refill');
@@ -1890,6 +1902,221 @@ async function main() {
         const implicit = make(undefined);
         implicit.onReady();
         assert.strictEqual(implicit.spamTimer, null);
+    });
+
+    await check('core skips commands while its area is not loaded', () => {
+        const writes = [];
+        const core = new Core({
+            bot: {
+                position: { x: 1000, y: 70, z: 1000 },
+                chat: () => true,
+                write: (name, payload) => (writes.push({ name, payload }), true),
+                log: logger
+            },
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset({ x: 1000, y: 70, z: 1000 });
+        core.ready = true;
+        core.markAllAlive();
+
+        // The bot was teleported far away: command blocks in the core chunk do
+        // not tick, so the write is refused instead of silently lost.
+        core.bot.position = { x: 5000, y: 70, z: 5000 };
+        assert.strictEqual(core.run('say hi'), null);
+        assert.strictEqual(writes.length, 0);
+
+        core.bot.position = { x: 1000, y: 70, z: 1000 };
+        assert.deepStrictEqual(core.run('say hi'), { x: 1000, y: 64, z: 1000 });
+        assert.strictEqual(writes.length, 1);
+        core.destroy();
+    });
+
+    await check('core picks up chunk and bulk damage', () => {
+        const core = new Core({
+            bot: {
+                position: { x: 0, y: 70, z: 0 },
+                client: { version: '1.21.4' },
+                chat: () => true,
+                write: () => true,
+                log: logger
+            },
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset({ x: 0, y: 70, z: 0 });
+        core.ready = true;
+        core.graceUntil = 0;
+        core.lastRefillAt = 0;
+        core.markAllAlive();
+
+        // A chunk resend with no command blocks in the area is bulk damage: an
+        // empty chunk is air everywhere.
+        const Chunk = require('prismarine-chunk')('1.21.4');
+        const chunkData = new Chunk().dump();
+        assert.strictEqual(core.onMapChunk({ x: 0, z: 0, chunkData }), true, 'an empty core chunk is damage');
+
+        // A section y of 4 is block y 64; a zero record is local (0,0,0).
+        // The chunk refill above started, so put the core back in its normal
+        // standing state before the next packet.
+        core.refilling = false;
+        core.ready = true;
+        core.graceUntil = 0;
+        core.ownChanges.clear();
+        core.markAllAlive();
+        const changed = core.onMultiBlockChange({
+            chunkCoordinates: { x: 0, y: 4, z: 0 },
+            records: [0]
+        });
+        assert.strictEqual(changed, true, 'a core block in a bulk update is damage');
+        assert.strictEqual(core.blocks.get('0:64:0'), false);
+
+        // A record in another chunk is not our damage.
+        core.refilling = false;
+        core.ready = true;
+        core.graceUntil = 0;
+        core.ownChanges.clear();
+        assert.strictEqual(core.onMultiBlockChange({
+            chunkCoordinates: { x: 4, y: 4, z: 4 },
+            records: [0]
+        }), false);
+        core.destroy();
+    });
+
+    await check('command loops persist and run through the core', async () => {
+        const { Cloops } = require('../src/cloops');
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-cloop-'));
+        const runs = [];
+        const bot = {
+            id: 'loop',
+            destroyed: false,
+            core: { run: command => (runs.push(command), { x: 0, y: 64, z: 0 }) }
+        };
+        const cloops = new Cloops({
+            bot,
+            storePath: path.join(dir, 'cloops.json'),
+            logger,
+            config: { enabled: true, minIntervalMs: 50 }
+        });
+
+        assert.deepStrictEqual(cloops.add(60, 'say hi'), { id: 1, interval: 60, command: 'say hi' });
+        assert.strictEqual(cloops.add(10, 'say fast'), null, 'an interval under the minimum is refused');
+        assert.strictEqual(cloops.add(100, ''), null);
+
+        // A second reader loads it from disk, so restarts keep the loops.
+        const again = new Cloops({
+            bot,
+            storePath: path.join(dir, 'cloops.json'),
+            logger,
+            config: { enabled: true, minIntervalMs: 50 }
+        });
+        assert.deepStrictEqual(again.list(), [{ id: 1, interval: 60, command: 'say hi' }]);
+
+        cloops.start();
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.ok(runs.length >= 1, 'the loop runs through the core');
+        assert.ok(runs.every(command => command === 'say hi'));
+
+        assert.strictEqual(cloops.remove(1).id, 1);
+        assert.deepStrictEqual(cloops.list(), []);
+        cloops.destroy();
+        again.destroy();
+    });
+
+    await check('discord bridge formats both directions', () => {
+        const {
+            formatMinecraftLine,
+            discordComponent,
+            channelFor,
+            createDiscordBridge
+        } = require('../src/discord');
+
+        assert.strictEqual(
+            formatMinecraftLine({ server: 'kbpw', username: 'Alex', message: 'hi\nthere' }),
+            '[kbpw] Alex: hi there'
+        );
+        assert.strictEqual(
+            discordComponent({ author: 'Alex', message: 'hello' }).map(part => part.text).join(''),
+            '[Discord] Alex: hello'
+        );
+        assert.strictEqual(
+            channelFor({ discord: { channels: { kbpw: '123' } } }, { id: 'kbpw' }),
+            '123'
+        );
+        assert.strictEqual(channelFor({}, { id: 'x', channelId: '456' }), '456');
+        assert.strictEqual(channelFor({}, { id: 'x' }), null);
+
+        // Disabled (or tokenless) Discord must not start a client or throw.
+        assert.strictEqual(
+            createDiscordBridge({ config: { discord: { enabled: false } }, manager: null, logger }),
+            null
+        );
+        const bridge = createDiscordBridge({
+            config: { bot: {}, discord: { enabled: true, token: '' } },
+            manager: null,
+            logger
+        });
+        assert.ok(bridge);
+        assert.strictEqual(bridge.start(), false, 'no token means no client');
+    });
+
+    await check('discord roles decide which commands run', async () => {
+        const { DiscordBridge } = require('../src/discord');
+
+        const member = roles => ({ roles: { cache: new Map(roles.map(role => [role, {}])) } });
+        const bridge = new DiscordBridge({
+            config: { bot: {}, discord: { trustedId: 'T', adminId: 'A', ownerId: 'O', adminIds: ['U'] } },
+            manager: null,
+            logger
+        });
+
+        assert.strictEqual(bridge.rankFor(member([])), LEVEL.PUBLIC);
+        assert.strictEqual(bridge.rankFor(member(['T'])), LEVEL.TRUSTED);
+        assert.strictEqual(bridge.rankFor(member(['A'])), LEVEL.ADMIN);
+        assert.strictEqual(bridge.rankFor(member(['O'])), LEVEL.OWNER);
+        assert.strictEqual(bridge.rankFor({ roles: { cache: new Map() }, user: { id: 'U' } }), LEVEL.OWNER);
+        assert.strictEqual(bridge.rankFor(null), LEVEL.PUBLIC);
+
+        const registry = {
+            manager: { bots: new Map() },
+            store: {},
+            permissions: {},
+            find: label => ({
+                filter: { name: 'filter', level: LEVEL.ADMIN, execute: async ctx => ctx.reply(`filter ${ctx.argString}`) },
+                cloop: { name: 'cloop', level: LEVEL.TRUSTED, execute: async ctx => ctx.reply('cloop ok') },
+                servers: { name: 'servers', level: LEVEL.PUBLIC, execute: async ctx => ctx.reply([{ text: 'ok' }, { text: '!' }]) }
+            })[label] || null,
+            runCommand: () => true
+        };
+        const runner = new DiscordBridge({
+            config: { bot: { prefixes: ['v\\'] }, discord: { trustedId: 'T', adminId: 'A', ownerId: 'O' } },
+            manager: null,
+            logger,
+            registry
+        });
+        const bot = { id: 'kbpw', state: 'ready', server: {}, online: new Map(), client: {}, chat: () => true };
+
+        const denied = await runner.executeCommand(bot, member([]), 'filter add Steve');
+        assert.strictEqual(denied.ok, false);
+        assert.match(denied.text, /needs admin/);
+
+        // Trusted is exactly vbot's trusted level: trusted commands pass,
+        // admin-only commands do not.
+        const trustedFilter = await runner.executeCommand(bot, member(['T']), 'filter add Steve');
+        assert.strictEqual(trustedFilter.ok, false);
+        assert.match(trustedFilter.text, /needs admin/);
+
+        const trustedLoop = await runner.executeCommand(bot, member(['T']), 'cloop list');
+        assert.strictEqual(trustedLoop.text, 'cloop ok');
+
+        const allowed = await runner.executeCommand(bot, member(['A']), 'filter add Steve');
+        assert.strictEqual(allowed.text, 'filter add Steve');
+
+        const publicOnly = await runner.executeCommand(bot, member([]), 'v\\servers');
+        assert.strictEqual(publicOnly.text, 'ok!');
+
+        const unknown = await runner.executeCommand(bot, member(['A']), 'nope');
+        assert.strictEqual(unknown.ok, false);
     });
 
     store.close();

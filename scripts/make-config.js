@@ -32,9 +32,20 @@ if (process.env.BOT_PREFIXES) {
     config.bot.prefixes = process.env.BOT_PREFIXES.split(',').map(value => value.trim()).filter(Boolean);
 }
 
+// The Discord token is the only secret the bridge needs; channels and role ids
+// stay in the committed config. Without it the bridge stays off, so a run
+// without the secret is still a working bot.
+const discordToken = String(process.env.DISCORD_TOKEN || '').trim();
+if (discordToken) {
+    config.discord = config.discord || {};
+    config.discord.token = discordToken;
+    config.discord.enabled = true;
+}
+
 fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
 
 console.log(`config.json written: ${enabled.length} server(s) enabled`);
 for (const server of enabled) {
     console.log(`  ${server.id} -> ${server.host}:${server.port} as ${server.username}`);
 }
+console.log(config.discord?.enabled ? 'Discord bridge enabled from DISCORD_TOKEN' : 'Discord bridge disabled: no DISCORD_TOKEN secret');

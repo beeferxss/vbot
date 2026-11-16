@@ -80,6 +80,32 @@ function defaults() {
             level: 'info',
             chat: true
         },
+        // Local terminal control. Only starts when stdin is a TTY.
+        console: {
+            enabled: true
+        },
+        // Two-way chat with Discord. Channels come from discord.channels[<id>]
+        // or from the server's own channelId.
+        discord: {
+            enabled: false,
+            token: '',
+            guildId: '',
+            commandPrefix: '!',
+            channels: {},
+            trustedId: '',
+            adminId: '',
+            ownerId: '',
+            adminIds: [],
+            relay: {
+                chat: true,
+                discord: true
+            }
+        },
+        // Persistent per-server command loops (cloop).
+        cloops: {
+            enabled: true,
+            minIntervalMs: 100
+        },
         chat: {
             // "auto" trusts unsigned chat until the server proves it signs
             // player chat; true always trusts it; false never does.
@@ -146,6 +172,7 @@ function normalizeServer(entry, index) {
         username,
         auth: entry.auth === 'microsoft' ? 'microsoft' : 'offline',
         version: entry.version ?? false,
+        channelId: entry.channelId ? String(entry.channelId) : null,
         nick: entry.nick ?? null,
         prefix: entry.prefix ?? null
     };

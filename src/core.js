@@ -7,7 +7,7 @@
 const tellraw = require('./minecraft/tellraw');
 const { FillItem } = require('./fillitem');
 
-const OWN_CHANGE_MS = 2500;
+const OWN_CHANGE_MS = 5000;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
@@ -27,17 +27,21 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        this.block = String(this.config.refill?.block || 'minecraft:command_block');
+        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
         this.mode = String(this.config.refill?.mode || 'replace');
         this.refillEnabled = this.config.refill?.enabled !== false;
 
+        // prismarine-chunk is loaded lazily, per protocol version, for the
+        // chunk checks; a version without data must not break the core.
+        this.chunkFactories = new Map();
         this.origin = { x: null, y: this.y, z: null };
         this.bounds = { x: null, y: this.y + this.size - 1, z: null };
         this.cursor = 0;
         this.ready = false;
+        this.everReady = false;
         this.refilling = false;
         this.damageTimer = null;
         this.ownChanges = new Map();
@@ -45,6 +49,10 @@ class Core {
         // key -> alive. Populated when a fill lands, then pruned by block changes.
         this.blocks = new Map();
         this.graceUntil = 0;
+        // Last block update seen inside the area. A fill that never reached the
+        // world sends none, which is how an item refill is checked.
+        this.lastChangeAt = 0;
+        this.verifyTimer = null;
         this.watchdog = null;
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
         // A burst of refills through the blocks, for when the area has to be back
@@ -65,10 +73,21 @@ class Core {
         this.client = null;
         this.queryId = 1;
         this.queries = new Map();
+        // Log throttling to avoid console spam under load.
+        this._lastLog = new Map();
     }
 
     get volume() {
         return this.size ** 3;
+    }
+
+    logEvery(key, ms, level, ...args) {
+        const now = Date.now();
+        const last = this._lastLog.get(key) || 0;
+        if (now - last < ms) return false;
+        this._lastLog.set(key, now);
+        (this.log[level] || this.log.info).call(this.log, ...args);
+        return true;
     }
 
     status() {
@@ -106,7 +125,7 @@ class Core {
             const blocks = Number(success[1]);
             this.lastFill = { blocks, expected: this.volume, ok: true, at: Date.now() };
             this.fillFailures = 0;
-            this.log.info(blocks === 0
+            this.log.debug(blocks === 0
                 ? 'core fill changed nothing: the core is already in place'
                 : `core fill changed ${blocks} block(s)`);
             return true;
@@ -122,13 +141,14 @@ class Core {
             if (this.survivor()) {
                 this.markAllAlive();
                 this.ready = true;
+                this.everReady = true;
                 this.lastFill = { blocks: 0, expected: this.volume, ok: true, at: Date.now() };
                 this.fillFailures = 0;
-                this.log.info('core fill changed nothing: the core is already in place');
+                this.log.debug('core fill changed nothing: the core is already in place');
             } else {
                 this.lastFill = { blocks: 0, expected: this.volume, ok: false, at: Date.now() };
                 this.fillFailures += 1;
-                this.log.warn(
+                this.logEvery('fill-failed', 5000, 'warn',
                     'core fill failed and no core blocks are standing ' +
                     '(not opped, protected area, or an unloaded chunk?)'
                 );
@@ -182,7 +202,7 @@ class Core {
         this.ready = false;
         this.ownChanges.clear();
         this.blocks.clear();
-        this.log.info(`core area ${this.origin.x} ${this.origin.y} ${this.origin.z}`);
+        this.log.debug(`core area ${this.origin.x} ${this.origin.y} ${this.origin.z}`);
         return true;
     }
 
@@ -202,54 +222,105 @@ class Core {
 
         const command = this.fillCommand();
 
-        // Plain chat, never routed back into the core: a fill must reach the
-        // server even when the core is the thing that is broken.
-        const send = typeof this.bot.sendChat === 'function'
-            ? text => this.bot.sendChat(text)
-            : text => this.bot.chat(text);
-
         // Whatever is left of the core refills it: writing the fill into a
-        // surviving block needs no item and no chat.
+        // surviving block needs no item and no chat. Try all known survivors
+        // before falling back. Explicit refill commands (viaChat) skip this.
         let viaCore = false;
-        const survivor = !viaChat && !this.refilling ? this.survivor() : null;
-
-        if (survivor) {
-            this.markOwn(survivor);
-            viaCore = Boolean(this.bot.write?.('update_command_block', {
-                location: survivor,
-                command,
-                mode: this.blockMode(),
-                flags: 0b101
-            }));
-            if (!viaCore) this.blocks.set(keyOf(survivor), false);
+        let usedSurvivor = null;
+        if (!viaChat && !this.refilling && this.everReady && this.origin.x !== null) {
+            for (const [id, alive] of this.blocks) {
+                if (!alive) continue;
+                const [sx, sy, sz] = id.split(':').map(Number);
+                const cell = { x: sx, y: sy, z: sz };
+                this.markOwn(cell);
+                const ok = Boolean(this.bot.write?.('update_command_block', {
+                    location: cell,
+                    command,
+                    mode: this.blockMode(),
+                    flags: 0b101
+                }));
+                if (ok) {
+                    viaCore = true;
+                    usedSurvivor = cell;
+                    break;
+                }
+                this.ownChanges.delete(keyOf(cell));
+                this.blocks.set(keyOf(cell), false);
+            }
         }
 
-        // Next: place a command block item carrying the fill.
-        const viaItem = !viaChat && !viaCore && this.placeFill(command);
+        // Next: place a command block item carrying the fill. That only happens
+        // once the core has worked before: the very first fill has nothing to
+        // fall back on, and a packet write cannot confirm that a block was
+        // actually placed, so the first build goes out as chat.
+        const viaItem = !viaChat && !viaCore && this.everReady && this.placeFill(command);
         if (viaItem) viaCore = true;
 
         // Chat is the last resort, never a second attempt on top of a block: a
         // server that silences command block output would otherwise get every
-        // fill twice.
-        if (!viaCore) send(`/${command}`);
+        // fill twice. Explicit refill commands request chat directly.
+        if (!viaCore) this.sendFill(command);
 
         this.refilling = true;
-        this.ready = false;
+        // Keep the core usable across rebuilds once it has worked at least once.
+        if (!this.everReady) this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
         let place = 'chat';
         if (viaItem) place = 'a placed command block';
-        else if (viaCore && survivor) place = `block ${survivor.x} ${survivor.y} ${survivor.z}`;
-        this.log.info(`core refill (${reason}) via ${place}`);
+        else if (viaCore && usedSurvivor) place = `block ${usedSurvivor.x} ${usedSurvivor.y} ${usedSurvivor.z}`;
+        if (reason === 'startup' || reason === 'manual' || reason === 'command') {
+            this.log.info(`core refill (${reason}) via ${place}`);
+        } else {
+            this.log.debug(`core refill (${reason}) via ${place}`);
+        }
+
+        // An item refill is the only path that cannot report failure: every
+        // packet is accepted even when the server refuses the placement. Check
+        // for a real block update and send the fill as chat if nothing changed.
+        if (viaItem) this.verifyItemFill(command);
 
         setTimeout(() => {
             this.refilling = false;
             this.ready = true;
+            this.everReady = true;
             this.lastRefillAt = Date.now();
             this.markAllAlive();
         }, REFILL_SETTLE_MS).unref?.();
 
         return true;
+    }
+
+    // Plain chat, never routed back into the core: a fill has to reach the
+    // server even when the core itself is the thing that is broken.
+    sendFill(command) {
+        const text = String(command || '').trim();
+        if (!text) return false;
+        const withSlash = text.startsWith('/') ? text : `/${text}`;
+        if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(withSlash) !== false;
+        if (typeof this.bot.client?.chat === 'function') {
+            this.bot.client.chat(withSlash);
+            return true;
+        }
+        if (typeof this.bot.chat === 'function') return this.bot.chat(withSlash) !== false;
+        return false;
+    }
+
+    verifyItemFill(command) {
+        if (this.verifyTimer) clearTimeout(this.verifyTimer);
+        const startedAt = Date.now();
+        const wait = Math.max(700, (this.fillItem?.breakDelayMs || 250) + 450);
+        this.verifyTimer = setTimeout(() => {
+            this.verifyTimer = null;
+            if (!this.enabled || this.bot.destroyed) return;
+            // Any block update inside the area means the fill reached the world.
+            if (this.lastChangeAt >= startedAt) return;
+            this.fillFailures += 1;
+            this.logEvery('item-fill-unconfirmed', 10000, 'warn',
+                'the refill item did not fill the core (placement refused?); sending the fill as chat');
+            this.sendFill(command);
+        }, wait);
+        this.verifyTimer.unref?.();
     }
 
     // Places the fill as a command block item and breaks only that block. False
@@ -338,9 +409,24 @@ class Core {
         if (!text) return null;
         if (this.origin.x === null && !this.reset()) return null;
 
+        if (!this.areaLoaded()) {
+            this.logEvery('core-unloaded', 15000, 'warn',
+                'core area is not loaded around the bot (teleported away?); commands will retry once it is');
+            return null;
+        }
+
+        // If we somehow lost track of liveness after the core has been
+        // established, assume blocks are present and let writes/air-break
+        // detection correct it. This keeps the core reusable.
+        if (this.blocks.size === 0 && this.origin.x !== null && this.everReady) this.markAllAlive();
+        // If every known block is marked dead, don't get stuck: assume alive and
+        // let real failures/air breaks correct it.
+        if (this.blocks.size > 0 && !this.survivor() && this.everReady) this.markAllAlive();
+
         for (let attempt = 0; attempt < this.volume; attempt++) {
             const cell = this.nextCell();
             if (!cell) return null;
+            // Only skip blocks we positively know are dead.
             if (this.blocks.get(keyOf(cell)) === false) continue;
 
             this.markOwn(cell);
@@ -353,17 +439,25 @@ class Core {
                 })
                 : false;
 
-            if (sent) {
+            if (sent !== false) {
+                // Treat unknown blocks as alive once a write succeeds.
+                if (!this.blocks.has(keyOf(cell))) this.blocks.set(keyOf(cell), true);
+                else this.blocks.set(keyOf(cell), true);
                 this.lastLocation = cell;
                 return cell;
             }
 
             this.ownChanges.delete(keyOf(cell));
             this.blocks.set(keyOf(cell), false);
-            this.log.warn(`core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
+            this.logEvery('block-reject', 5000, 'debug', `core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
         }
 
-        this.log.warn('no core block accepted the command');
+        // Last resort: request refill so the area can recover, then fail this
+        // command (callers can retry on next tick). Avoid spamming forced refills.
+        if (this.refillEnabled && Date.now() - (this.lastRefillAt || 0) > REFILL_MIN_INTERVAL_MS) {
+            this.refill('run-fallback', { force: true });
+        }
+        this.logEvery('run-failed', 5000, 'warn', 'no core block accepted the command');
         return null;
     }
 
@@ -375,6 +469,11 @@ class Core {
         this.client = client;
 
         client.on('nbt_query_response', packet => this.onQueryResponse(packet));
+        // A core can also be damaged in bulk: a chunk resend or a multi-block
+        // update never fires block_change for each cell.
+        client.on('map_chunk', packet => this.onMapChunk(packet));
+        client.on('map_chunk_bulk', packet => this.onMapChunk(packet));
+        client.on('multi_block_change', packet => this.onMultiBlockChange(packet));
         client.on('packet', (data, meta) => {
             const name = meta?.name || '';
             if (!/query.*nbt|nbt.*query/i.test(name)) return;
@@ -488,17 +587,20 @@ class Core {
     inside(x, y, z) {
         if (this.origin.x === null) return false;
         const { origin, bounds } = this;
+        x = Math.floor(Number(x)); y = Math.floor(Number(y)); z = Math.floor(Number(z));
         return x >= origin.x && x <= bounds.x &&
             y >= origin.y && y <= bounds.y &&
             z >= origin.z && z <= bounds.z;
     }
 
-    markOwn({ x, y, z }) {
-        this.ownChanges.set(`${x}:${y}:${z}`, Date.now() + OWN_CHANGE_MS);
+    markOwn(loc) {
+        if (!loc) return;
+        this.ownChanges.set(keyOf(loc), Date.now() + OWN_CHANGE_MS);
     }
 
-    isOwn({ x, y, z }) {
-        const key = `${x}:${y}:${z}`;
+    isOwn(loc) {
+        if (!loc) return false;
+        const key = keyOf(loc);
         const expires = this.ownChanges.get(key);
         if (!expires) return false;
         if (Date.now() >= expires) {
@@ -506,6 +608,129 @@ class Core {
             return false;
         }
         return true;
+    }
+
+    // prismarine-chunk is a native-format parser: one factory per version.
+    chunkFactory() {
+        const version = this.bot?.client?.version || this.bot?.version || null;
+        if (!version) return null;
+        if (this.chunkFactories.has(version)) return this.chunkFactories.get(version);
+        let factory = null;
+        try {
+            // eslint-disable-next-line global-require
+            factory = require('prismarine-chunk')(version);
+        } catch {
+            factory = null;
+        }
+        this.chunkFactories.set(version, factory);
+        return factory;
+    }
+
+    // Chunk packet coordinates are chunk coordinates, so the core is only
+    // affected by the one chunk it sits in.
+    chunkMatches(x, z) {
+        if (this.origin.x === null) return false;
+        return Math.floor(this.origin.x / 16) === Number(x) &&
+            Math.floor(this.origin.z / 16) === Number(z);
+    }
+
+    // Whatever a block turns out to be: any command block counts, because the
+    // configured block can be repeating, chain or impulse.
+    blockName(block) {
+        return String(block?.name || block?.type || '').replace(/^minecraft:/, '');
+    }
+
+    // Bulk damage: a chunk resend replaces every block in the core at once.
+    onMapChunk(packet) {
+        if (!this.enabled || !this.refillEnabled) return false;
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
+        if (!packet || !this.chunkMatches(packet.x, packet.z)) return false;
+        if (!packet.chunkData) return false;
+
+        const Factory = this.chunkFactory();
+        if (!Factory) return false;
+
+        let chunk;
+        try {
+            chunk = new Factory();
+            chunk.load(packet.chunkData, packet.bitMap || 0);
+        } catch {
+            return false; // unparsable chunk data is never damage
+        }
+
+        let damaged = 0;
+        for (let x = this.origin.x; x <= this.bounds.x; x++) {
+            for (let y = this.origin.y; y <= this.bounds.y; y++) {
+                for (let z = this.origin.z; z <= this.bounds.z; z++) {
+                    let name;
+                    try {
+                        const block = chunk.getBlock({ x: x & 15, y, z: z & 15 });
+                        name = this.blockName(block);
+                    } catch {
+                        continue; // unknown block data: ignore, never damage
+                    }
+                    if (!name) continue;
+                    const ours = name.includes('command_block');
+                    this.blocks.set(keyOf({ x, y, z }), ours);
+                    if (!ours) damaged += 1;
+                }
+            }
+        }
+
+        if (damaged >= 4) {
+            this.lastChangeAt = Date.now();
+            this.logEvery('chunk-damage', 10000, 'debug',
+                `core chunk reload has ${damaged} non-command block(s); refilling`);
+            this.refill('map_chunk_damage');
+            return true;
+        }
+        return false;
+    }
+
+    // Bulk damage: a list of changed blocks in one packet.
+    onMultiBlockChange(packet) {
+        if (!this.enabled || !this.refillEnabled) return false;
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
+        if (!packet || !Array.isArray(packet.records)) return false;
+
+        const section = packet.chunkCoordinates;
+        if (!section || typeof section.x !== 'number') return false;
+        if (!this.chunkMatches(section.x, section.z)) return false;
+
+        let damaged = 0;
+        for (const record of packet.records) {
+            if (typeof record !== 'number') continue;
+            // 1.16.2+ packs a section local position into the varint.
+            const x = section.x * 16 + ((record >>> 8) & 0xF);
+            const y = (Number(section.y) || 0) * 16 + (record & 0xF);
+            const z = section.z * 16 + ((record >>> 4) & 0xF);
+            if (!this.inside(x, y, z)) continue;
+            if (this.isOwn({ x, y, z })) continue;
+            this.blocks.set(keyOf({ x, y, z }), false);
+            damaged += 1;
+        }
+
+        if (damaged > 0) {
+            this.lastChangeAt = Date.now();
+            this.logEvery('multi-block-damage', 10000, 'debug',
+                `core multi-block update damaged ${damaged} block(s); refilling`);
+            this.refill('multi_block_change');
+            return true;
+        }
+        return false;
+    }
+
+    // Command blocks only tick in loaded chunks. If the bot has been teleported
+    // (or the server dropped the chunk) a write is silently lost, so it is
+    // better to refuse and let the caller retry.
+    areaLoaded() {
+        const position = this.bot?.position;
+        if (!position || this.origin.x === null) return true; // cannot tell
+        const centerX = this.origin.x + (this.size - 1) / 2;
+        const centerZ = this.origin.z + (this.size - 1) / 2;
+        const radius = this.size + 32;
+        return Math.abs(position.x - centerX) <= radius &&
+            Math.abs(position.z - centerZ) <= radius;
     }
 
     onReady() {
@@ -528,64 +753,82 @@ class Core {
     startWatchdog() {
         if (this.watchdog || !this.enabled || !this.refillEnabled) return;
         this.watchdog = setInterval(() => {
-            if (!this.enabled || this.refilling) return;
-            const standing = this.survivor() !== null;
-            // Only a fill we know was refused counts as unfinished; a fill that
-            // changed nothing is a core that is already in place.
-            const filled = this.lastFill?.ok !== false;
-            if (this.ready && standing && filled) return;
+            if (!this.enabled || this.refilling || this.spamTimer) return;
             if (this.origin.x === null && !this.reset()) return;
 
+            const standing = this.aliveCount();
+            // Only rebuild when the core is not usable. Readiness alone is not a
+            // reason: a fill the server answered with "nothing changed" must not
+            // keep the watchdog filling through chat forever.
+            if (this.ready && standing > 0) return;
+
             // A server that keeps refusing needs backoff, not a fill every tick.
-            if (!filled && this.fillFailures >= 3 && Date.now() - (this.lastFill?.at || 0) < 30000) {
+            if (standing === 0 && this.fillFailures >= 2 && Date.now() - (this.lastRefillAt || 0) < 10000) {
                 return;
             }
 
-            this.log.info(`core missing or incomplete (${standing ? 'blocks standing' : 'no blocks'}, ` +
-                `${filled ? 'fill ok' : 'fill incomplete'}); rebuilding`);
-            // The watchdog is the safety net, so it is allowed past the rate limit.
-            this.refill('watchdog', { viaChat: !filled, force: true });
+            this.logEvery('watchdog-rebuild', 10000, 'debug',
+                `core missing or incomplete (${standing} block(s) standing); rebuilding`);
+            // Reuse a survivor when one is standing; with nothing left the fill
+            // has to go through chat.
+            this.refill('watchdog', { force: standing === 0, viaChat: standing === 0 });
         }, this.watchdogMs);
         this.watchdog.unref?.();
     }
 
-    // Anything that changes a block inside the core that we did not write
-    // ourselves means the area lost a block and needs rebuilding.
+    aliveCount() {
+        let alive = 0;
+        for (const value of this.blocks.values()) if (value) alive += 1;
+        return alive;
+    }
+
+    // Core blocks can change often while commands are written into them.
+    // Air is always a break. Other non-own changes may mean the block was
+    // altered; treat as damage but coalesce repairs so heavy command traffic
+    // (covered by own-change tracking) does not thrash refills.
     onBlockChange(packet) {
         if (!this.enabled || !this.refillEnabled) return false;
         const location = packet?.location;
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;
+        this.lastChangeAt = Date.now();
         if (this.isOwn(location)) return false;
+        // Only a core that is actually standing can be damaged. Reacting before
+        // the first fill lands (or while a fill is in flight) turned the fill's
+        // own updates into endless rebuilds.
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
 
-        // A core block that became air was broken outright, which no fill of ours
-        // ever does: rebuild at once instead of waiting out the damage delay.
-        const broken = isAir(packet);
+        const k = keyOf(location);
 
-        // Changes made by our own fill are not damage.
-        if (!broken && (this.refilling || Date.now() < this.graceUntil)) return false;
-        if (!broken && Date.now() - this.lastRefillAt < REFILL_GRACE_MS) return false;
-
-        this.blocks.set(keyOf(location), false);
-
-        if (broken) {
+        // A core block that became air was broken outright: rebuild at once.
+        if (isAir(packet)) {
+            this.blocks.set(k, false);
             this.log.debug(`core block ${location.x} ${location.y} ${location.z} went to air; refilling`);
             this.refill('broken', { force: true });
             return true;
         }
 
-        if (this.damageTimer) return false;
+        // External/non-own change: mark damaged and coalesce refill. Readiness
+        // is deliberately left alone: the rest of the core still runs commands,
+        // and a false "not ready" made every routed command fall back to chat.
+        this.blocks.set(k, false);
+        if (Date.now() - this.lastRefillAt < REFILL_MIN_INTERVAL_MS) return true;
+        if (this.damageTimer) clearTimeout(this.damageTimer);
         this.damageTimer = setTimeout(() => {
             this.damageTimer = null;
-            // Damage is its own reason to refill: the fill that just ran did not
-            // take, so waiting out the look-before-you-refill gap helps nobody.
-            this.refill('damaged', { force: true });
-        }, DAMAGE_DELAY_MS).unref?.();
+            if (!this.enabled || !this.refillEnabled) return;
+            this.refill(this.survivor() ? 'damaged' : 'broken', { force: !this.survivor() });
+        }, DAMAGE_DELAY_MS);
+        this.damageTimer.unref?.();
         return true;
     }
 
     destroy() {
         this.fillItem?.destroy();
+        if (this.verifyTimer) {
+            clearTimeout(this.verifyTimer);
+            this.verifyTimer = null;
+        }
         if (this.spamTimer) {
             clearInterval(this.spamTimer);
             this.spamTimer = null;
@@ -606,7 +849,14 @@ class Core {
             this.watchdog = null;
         }
         this.ownChanges.clear();
+        // A reconnect rebuilds the core: the old blocks may be gone, and a stale
+        // "alive" map would send commands into nothing.
+        this.blocks.clear();
+        this.everReady = false;
         this.ready = false;
+        this.refilling = false;
+        this.lastFill = null;
+        this.fillFailures = 0;
     }
 }
 
@@ -682,7 +932,11 @@ function parseLastOutput(nbt) {
     return flattenComponent(raw) || null;
 }
 
-function keyOf({ x, y, z }) {
+function keyOf(loc) {
+    if (!loc) return '';
+    const x = Math.floor(Number(loc.x));
+    const y = Math.floor(Number(loc.y));
+    const z = Math.floor(Number(loc.z));
     return `${x}:${y}:${z}`;
 }
 

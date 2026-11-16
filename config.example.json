@@ -7,6 +7,7 @@
         "enabled": false,
         "host": "chayapak1.dev",
         "port": 25565,
+        "channelId": "1532880964852912360",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -16,6 +17,7 @@
         "enabled": false,
         "host": "91.99.119.210",
         "port": 25565,
+        "channelId": "1571143032689131631",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -25,6 +27,7 @@
         "enabled": true,
         "host": "kbpw.de",
         "port": 25565,
+        "channelId": "1571546119736135690",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -34,6 +37,7 @@
         "enabled": false,
         "host": "qwertyad.one",
         "port": 25565,
+        "channelId": "1571143294719631380",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -43,6 +47,7 @@
         "enabled": false,
         "host": "kaboom.hcesaropz.dev",
         "port": 25565,
+        "channelId": "1532881552009203812",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -52,6 +57,7 @@
         "enabled": false,
         "host": "kaboom.pw",
         "port": 25565,
+        "channelId": "1450456463871971481",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -61,6 +67,7 @@
         "enabled": false,
         "host": "chipmunk.land",
         "port": 17891,
+        "channelId": "1450456420343480370",
         "username": "vbot",
         "auth": "offline",
         "version": false
@@ -124,6 +131,28 @@
     "level": "info",
     "chat": true
   },
+  "console": {
+    "enabled": true
+  },
+  "cloops": {
+    "enabled": true,
+    "minIntervalMs": 100
+  },
+  "discord": {
+    "enabled": false,
+    "token": "",
+    "guildId": "",
+    "commandPrefix": "!",
+    "channels": {},
+    "trustedId": "1450509583360725002",
+    "adminId": "1450487330409287832",
+    "ownerId": "1450509314648178908",
+    "adminIds": [],
+    "relay": {
+      "chat": true,
+      "discord": true
+    }
+  },
   "chat": {
     "trustUnsigned": "auto"
   },
@@ -136,7 +165,7 @@
     },
     "refill": {
       "enabled": true,
-      "block": "minecraft:command_block",
+      "block": "minecraft:repeating_command_block",
       "mode": "replace",
       "intervalMs": 1000,
       "spamMs": 150,

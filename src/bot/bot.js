@@ -9,6 +9,11 @@ const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
 const { IpLookup } = require('../iplookup');
+const path = require('node:path');
+const { Filter } = require('../filter');
+const { Whitelist } = require('../whitelist');
+const { Cloops } = require('../cloops');
+const { attachTabComplete } = require('../tabcomplete');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -44,8 +49,28 @@ class Bot extends EventEmitter {
             logger: this.log
         });
 
+        const dataDir = path.join(require('../config').ROOT || process.cwd(), 'data');
+        this.filter = new Filter({
+            bot: this,
+            storePath: path.join(dataDir, 'filter.json'),
+            logger: this.log
+        });
+        this.whitelist = new Whitelist({
+            bot: this,
+            storePath: path.join(dataDir, 'whitelist.json'),
+            logger: this.log
+        });
+        this.cloops = new Cloops({
+            bot: this,
+            storePath: path.join(dataDir, 'cloops.json'),
+            config: config.cloops || {},
+            logger: this.log
+        });
+        attachTabComplete(this);
+
         this.client = null;
         this.position = null;
+        this.connectedAt = null;
         // Filled in from the server's own registries at login.
         this.registries = { item: null, components: null };
         this.state = 'idle';
@@ -117,6 +142,7 @@ class Bot extends EventEmitter {
         client.on('login', packet => {
             this.attempts = 0;
             this.state = 'ready';
+            this.connectedAt = Date.now();
             this.disconnectReason = null;
             this.log.info(
                 `connected as ${this.server.username} ` +
@@ -129,6 +155,9 @@ class Bot extends EventEmitter {
             this.startPlayerScan();
             // Give the position packet a moment to arrive before placing anything.
             setTimeout(() => this.core?.onReady(), 1500).unref?.();
+            this.filter?.start();
+            this.whitelist?.start();
+            this.cloops?.start();
         });
 
         for (const event of ['player_info', 'player_info_update']) {
@@ -172,6 +201,7 @@ class Bot extends EventEmitter {
             if (!isCurrent()) return;
             this.client = null;
             this.state = 'offline';
+            this.connectedAt = null;
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
@@ -184,6 +214,9 @@ class Bot extends EventEmitter {
             this.listed.clear();
             if (this.scanTimer) clearInterval(this.scanTimer);
             this.scanTimer = null;
+            this.filter?.destroy();
+            this.whitelist?.destroy();
+            this.cloops?.destroy();
             this.core?.destroy();
             this.clickTokens?.clear();
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
@@ -568,6 +601,9 @@ class Bot extends EventEmitter {
             clearInterval(this.scanTimer);
             this.scanTimer = null;
         }
+        this.filter?.destroy();
+        this.whitelist?.destroy();
+        this.cloops?.destroy();
         this.core?.destroy();
         this.clickTokens?.destroy();
         this.selfCare?.destroy();
