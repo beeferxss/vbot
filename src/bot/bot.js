@@ -54,6 +54,7 @@ class Bot extends EventEmitter {
         // simply not support chat signing, so unsigned chat is all there is.
         this.signedChatSeen = false;
         this.nickSent = false;
+        this.prefixSent = false;
     }
 
     get connection() {
@@ -110,6 +111,7 @@ class Bot extends EventEmitter {
             this.selfCare?.onLoginPacket(packet);
             this.emit('ready');
             this.applyNick();
+            this.applyPrefixTag();
             // Give the position packet a moment to arrive before placing anything.
             setTimeout(() => this.core?.onReady(), 1500).unref?.();
         });
@@ -155,6 +157,7 @@ class Bot extends EventEmitter {
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
+            this.prefixSent = false;
             this.online.clear();
             this.core?.destroy();
             this.clickTokens?.clear();
@@ -328,6 +331,27 @@ class Bot extends EventEmitter {
             this.log.info(`setting nickname to ${nick}`);
             this.chat(`/nick ${nick}`);
         }, 1000).unref?.();
+    }
+
+    // The chat tag, set with /prefix. Per server wins, same as the nick.
+    tagPrefix() {
+        const tag = this.server.prefix ?? this.config.bot?.prefix;
+        if (typeof tag !== 'string') return null;
+        const trimmed = tag.trim();
+        return trimmed || null;
+    }
+
+    // The server keeps the prefix, so it is only sent once per session - and a
+    // moment after the nick, since both plugins can be picky about order.
+    applyPrefixTag() {
+        const tag = this.tagPrefix();
+        if (!tag || this.prefixSent) return;
+        this.prefixSent = true;
+        setTimeout(() => {
+            if (this.state !== 'ready') return;
+            this.log.info(`setting chat prefix to ${tag}`);
+            this.chat(`/prefix ${tag}`);
+        }, 1200).unref?.();
     }
 
     // Raw packet write, used by the core to fill command blocks.

@@ -75,6 +75,7 @@
   },
   "bot": {
     "prefixes": ["v\\", "°"],
+    "prefix": "&a[prefix: v\\]",
     "nick": "vbot",
     "reply": "tellraw"
   },

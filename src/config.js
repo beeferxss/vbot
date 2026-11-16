@@ -25,6 +25,9 @@ function defaults() {
         },
         bot: {
             prefixes: ['v\\', '\u00b0'],
+            // Chat tag set with /prefix, not to be confused with the command
+            // prefixes above. "&" colour codes are passed through as written.
+            prefix: '&a[prefix: v\\]',
             nick: null,
             // "tellraw" replies privately and needs the bot to be opped;
             // "chat" replies in normal chat.
@@ -127,7 +130,8 @@ function normalizeServer(entry, index) {
         username,
         auth: entry.auth === 'microsoft' ? 'microsoft' : 'offline',
         version: entry.version ?? false,
-        nick: entry.nick ?? null
+        nick: entry.nick ?? null,
+        prefix: entry.prefix ?? null
     };
 }
 

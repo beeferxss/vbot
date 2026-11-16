@@ -301,6 +301,46 @@ async function main() {
         config.bot.nick = 'vbot';
     });
 
+    await check('the chat prefix is styled and per server wins', () => {
+        assert.strictEqual(bot.tagPrefix(), '&a[prefix: v\\]');
+
+        const perServer = new Bot({
+            server: {
+                id: 'tag',
+                host: '127.0.0.1',
+                port: 1,
+                username: 'vbot',
+                auth: 'offline',
+                prefix: '&b[other]'
+            },
+            config,
+            store,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        assert.strictEqual(perServer.tagPrefix(), '&b[other]');
+
+        // The tag is set with /prefix, not to be confused with the command
+        // prefixes the bot listens for.
+        const sent = [];
+        const tagged = new Bot({
+            server: { id: 'tag2', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline' },
+            config,
+            store,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        tagged.state = 'ready';
+        tagged.chat = message => (sent.push(message), true);
+        tagged.applyPrefixTag();
+        return new Promise(resolve => setTimeout(() => {
+            assert.deepStrictEqual(sent, ['/prefix &a[prefix: v\\]']);
+            resolve();
+        }, 1400));
+    });
+
     await check('core fills its area and rotates through blocks', () => {
         const sent = [];
         const writes = [];
