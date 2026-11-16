@@ -139,7 +139,7 @@
     "minIntervalMs": 100
   },
   "discord": {
-    "enabled": false,
+    "enabled": true,
     "token": "",
     "guildId": "",
     "commandPrefix": "!",
