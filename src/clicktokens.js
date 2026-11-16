@@ -23,13 +23,18 @@ const CLEANUP_MS = 60 * 1000;
 const PATTERNS = [
     /([A-Za-z0-9_.-]{1,32})\s+issued server command:\s*\/random\s+value\s+(\d+)\.\.(\d+)/i,
     /([A-Za-z0-9_.-]{1,32})\s+executed command:\s*\/random\s+value\s+(\d+)\.\.(\d+)/i,
-    /^\s*(?:\[[^\]]{0,32}\]\s*)*([A-Za-z0-9_.-]{1,32})\s*[:>]\s*\/random\s+value\s+(\d+)\.\.(\d+)/i
+    /([A-Za-z0-9_.-]{1,32})\s+(?:ran|used) command:?\s*\/random\s+value\s+(\d+)\.\.(\d+)/i,
+    /^\s*(?:\[[^\]]{0,32}\]\s*)*([A-Za-z0-9_.-]{1,32})\s*[:>]\s*\/random\s+value\s+(\d+)\.\.(\d+)/i,
+    // Last resort: the name is whatever comes before the command.
+    /([A-Za-z0-9_.-]{2,32})[^\n]{0,40}\/random\s+value\s+(\d+)\.\.(\d+)/i
 ];
 
 class ClickTokens {
-    constructor({ logger, uuidFor = null }) {
+    constructor({ logger, uuidFor = null, onCommand = null }) {
         this.log = logger;
         this.uuidFor = uuidFor;
+        // Called as onCommand(suggestion, clicker) for a transformed button.
+        this.onCommand = onCommand;
         this.tokens = new Map();
         this.timer = setInterval(() => this.prune(), CLEANUP_MS);
         this.timer.unref?.();
@@ -66,6 +71,28 @@ class ClickTokens {
             return null;
         }
         return entry;
+    }
+
+    // Turns every suggest_command into a real button automatically, so nothing
+    // has to be wired up per command: clicking runs the command as the clicker.
+    transform(component, source = 'reply') {
+        if (Array.isArray(component)) {
+            return component.map(part => this.transform(part, source));
+        }
+        if (!component || typeof component !== 'object') return component;
+
+        const out = { ...component };
+        if (out.click?.action === 'suggest_command' && typeof out.click.value === 'string') {
+            const suggestion = out.click.value.trim();
+            if (suggestion && this.onCommand) {
+                const token = this.register(source, clicker => this.onCommand(suggestion, clicker));
+                out.click = { action: 'run_command', value: token };
+            }
+        }
+        if (Array.isArray(out.extra)) {
+            out.extra = out.extra.map(part => this.transform(part, source));
+        }
+        return out;
     }
 
     // Drops every token for a button source, so a stale button stops working.

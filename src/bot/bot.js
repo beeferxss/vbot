@@ -21,7 +21,11 @@ class Bot extends EventEmitter {
         this.registry = registry;
         this.log = logger.child(server.id);
         this.core = new Core({ bot: this, config: config.core, logger: this.log });
-        this.clickTokens = new ClickTokens({ logger: this.log, uuidFor: name => this.uuidFor(name) });
+        this.clickTokens = new ClickTokens({
+            logger: this.log,
+            uuidFor: name => this.uuidFor(name),
+            onCommand: (suggestion, clicker) => this.runSuggestion(suggestion, clicker)
+        });
 
         this.client = null;
         this.position = null;
@@ -202,6 +206,24 @@ class Bot extends EventEmitter {
 
         if (this.server.auth === 'offline') return offlineUuid(name);
         return null;
+    }
+
+    // Runs something a player clicked as that player, with their own rank. The
+    // click line is server output, so it is not a signed message: ranks that
+    // depend on signed chat still need a token.
+    runSuggestion(suggestion, clicker) {
+        const message = String(suggestion || '').trim();
+        if (!message || !clicker?.name) return false;
+
+        const parsed = {
+            username: clicker.name,
+            message,
+            uuid: clicker.uuid ?? this.uuidFor(clicker.name)
+        };
+        this.registry
+            .dispatch({ bot: this, parsed, verified: false, clicked: true })
+            .catch(error => this.log.error(`clicked command failed: ${error.message}`));
+        return true;
     }
 
     // The server keeps the nickname, so it only has to be set once per session.

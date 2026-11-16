@@ -854,6 +854,41 @@ async function main() {
         clicks.destroy();
     });
 
+    await check('suggestions become working buttons automatically', async () => {
+        const { ClickTokens } = require('../src/clicktokens');
+        const clicks = new ClickTokens({
+            logger,
+            uuidFor: () => null,
+            onCommand: (suggestion, clicker) => registry.dispatch({
+                bot: { ...fakeBot, clickTokens: clicks },
+                parsed: { username: clicker.name, message: suggestion, uuid: null },
+                verified: false
+            })
+        });
+        const clickBot = { ...fakeBot, clickTokens: clicks };
+
+        sent.length = 0;
+        await registry.dispatch({ bot: clickBot, parsed: parseChatLine('<Unranked> v:help') });
+        const parts = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+
+        const helpPart = parts.find(part => part.text === 'help');
+        assert.ok(helpPart, 'help is listed');
+        assert.strictEqual(helpPart.clickEvent.action, 'run_command', 'a suggestion becomes a button');
+        assert.match(helpPart.clickEvent.value, /^\/random value \d+\.\.\d+$/);
+        assert.ok(
+            !parts.some(part => part.clickEvent?.action === 'suggest_command'),
+            'nothing is left as a suggestion'
+        );
+
+        // Clicking runs the command as the player who clicked.
+        sent.length = 0;
+        assert.strictEqual(clicks.handle(`Steve issued server command: ${helpPart.clickEvent.value}`), true);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.match(decodeReply(sent[0]), /Commands \(\d+\)/);
+
+        clicks.destroy();
+    });
+
     await check('core status colours its name and offers a refill button', async () => {
         const { ClickTokens } = require('../src/clicktokens');
         const clicks = new ClickTokens({ logger });

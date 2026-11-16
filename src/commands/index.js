@@ -86,7 +86,7 @@ class CommandRegistry {
 
         const [label, ...argv] = body.split(/\s+/);
         const command = this.find(label);
-        const reply = text => this.reply(bot, parsed.username, text);
+        const reply = text => this.reply(bot, parsed.username, text, command?.name || label);
 
         if (!command) {
             reply(`Unknown command "${label}". Try ${prefix}help`);
@@ -170,9 +170,13 @@ class CommandRegistry {
     // opped) can be switched to "chat" with bot.reply. Text may be a plain
     // string or a tellraw component (an object or an array of parts), which is
     // how commands add colour and click events.
-    reply(bot, username, text) {
+    reply(bot, username, text, source = 'reply') {
         const mode = this.config.bot?.reply || 'tellraw';
-        const component = toComponent(text);
+        let component = toComponent(text);
+
+        // Every suggestion becomes a working button, the way the reference does
+        // it: clicking runs the command as the player, through a click token.
+        if (bot.clickTokens?.transform) component = bot.clickTokens.transform(component, source);
 
         if (mode === 'tellraw' && username) {
             const version = bot?.client?.version || this.config.minecraft?.version || null;
