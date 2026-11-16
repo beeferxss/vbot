@@ -224,20 +224,30 @@ class Core {
         };
 
         // Whatever is left of the core refills it: writing the fill into a
-        // surviving block needs no item and no chat. Only reuse a survivor once
-        // the core has actually been established.
+        // surviving block needs no item and no chat. Try all known survivors
+        // before falling back. Explicit refill commands (viaChat) skip this.
         let viaCore = false;
-        const survivor = !viaChat && !this.refilling && this.everReady ? this.survivor() : null;
-
-        if (survivor) {
-            this.markOwn(survivor);
-            viaCore = Boolean(this.bot.write?.('update_command_block', {
-                location: survivor,
-                command,
-                mode: this.blockMode(),
-                flags: 0b101
-            }));
-            if (!viaCore) this.blocks.set(keyOf(survivor), false);
+        let usedSurvivor = null;
+        if (!viaChat && !this.refilling && this.everReady && this.origin.x !== null) {
+            for (const [id, alive] of this.blocks) {
+                if (!alive) continue;
+                const [sx, sy, sz] = id.split(':').map(Number);
+                const cell = { x: sx, y: sy, z: sz };
+                this.markOwn(cell);
+                const ok = Boolean(this.bot.write?.('update_command_block', {
+                    location: cell,
+                    command,
+                    mode: this.blockMode(),
+                    flags: 0b101
+                }));
+                if (ok) {
+                    viaCore = true;
+                    usedSurvivor = cell;
+                    break;
+                }
+                this.ownChanges.delete(keyOf(cell));
+                this.blocks.set(keyOf(cell), false);
+            }
         }
 
         // Next: place a command block item carrying the fill.
@@ -246,7 +256,7 @@ class Core {
 
         // Chat is the last resort, never a second attempt on top of a block: a
         // server that silences command block output would otherwise get every
-        // fill twice.
+        // fill twice. Explicit refill commands request chat directly.
         if (!viaCore) send(`/${command}`);
 
         this.refilling = true;
@@ -256,7 +266,7 @@ class Core {
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
         let place = 'chat';
         if (viaItem) place = 'a placed command block';
-        else if (viaCore && survivor) place = `block ${survivor.x} ${survivor.y} ${survivor.z}`;
+        else if (viaCore && usedSurvivor) place = `block ${usedSurvivor.x} ${usedSurvivor.y} ${usedSurvivor.z}`;
         if (reason === 'startup' || reason === 'manual' || reason === 'command') {
             this.log.info(`core refill (${reason}) via ${place}`);
         } else {
