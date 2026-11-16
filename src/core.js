@@ -66,10 +66,21 @@ class Core {
         this.client = null;
         this.queryId = 1;
         this.queries = new Map();
+        // Log throttling to avoid console spam under load.
+        this._lastLog = new Map();
     }
 
     get volume() {
         return this.size ** 3;
+    }
+
+    logEvery(key, ms, level, ...args) {
+        const now = Date.now();
+        const last = this._lastLog.get(key) || 0;
+        if (now - last < ms) return false;
+        this._lastLog.set(key, now);
+        (this.log[level] || this.log.info).call(this.log, ...args);
+        return true;
     }
 
     status() {
@@ -107,7 +118,7 @@ class Core {
             const blocks = Number(success[1]);
             this.lastFill = { blocks, expected: this.volume, ok: true, at: Date.now() };
             this.fillFailures = 0;
-            this.log.info(blocks === 0
+            this.log.debug(blocks === 0
                 ? 'core fill changed nothing: the core is already in place'
                 : `core fill changed ${blocks} block(s)`);
             return true;
@@ -126,11 +137,11 @@ class Core {
                 this.everReady = true;
                 this.lastFill = { blocks: 0, expected: this.volume, ok: true, at: Date.now() };
                 this.fillFailures = 0;
-                this.log.info('core fill changed nothing: the core is already in place');
+                this.log.debug('core fill changed nothing: the core is already in place');
             } else {
                 this.lastFill = { blocks: 0, expected: this.volume, ok: false, at: Date.now() };
                 this.fillFailures += 1;
-                this.log.warn(
+                this.logEvery('fill-failed', 5000, 'warn',
                     'core fill failed and no core blocks are standing ' +
                     '(not opped, protected area, or an unloaded chunk?)'
                 );
@@ -184,7 +195,7 @@ class Core {
         this.ready = false;
         this.ownChanges.clear();
         this.blocks.clear();
-        this.log.info(`core area ${this.origin.x} ${this.origin.y} ${this.origin.z}`);
+        this.log.debug(`core area ${this.origin.x} ${this.origin.y} ${this.origin.z}`);
         return true;
     }
 
@@ -246,7 +257,11 @@ class Core {
         let place = 'chat';
         if (viaItem) place = 'a placed command block';
         else if (viaCore && survivor) place = `block ${survivor.x} ${survivor.y} ${survivor.z}`;
-        this.log.info(`core refill (${reason}) via ${place}`);
+        if (reason === 'startup' || reason === 'manual' || reason === 'command') {
+            this.log.info(`core refill (${reason}) via ${place}`);
+        } else {
+            this.log.debug(`core refill (${reason}) via ${place}`);
+        }
 
         setTimeout(() => {
             this.refilling = false;
@@ -379,13 +394,15 @@ class Core {
 
             this.ownChanges.delete(keyOf(cell));
             this.blocks.set(keyOf(cell), false);
-            this.log.warn(`core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
+            this.logEvery('block-reject', 5000, 'debug', `core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
         }
 
-        // Last resort: force a refill attempt so the area can recover, then fail
-        // this command (callers can retry on next tick).
-        if (this.refillEnabled) this.refill('run-fallback', { force: true });
-        this.log.warn('no core block accepted the command');
+        // Last resort: request refill so the area can recover, then fail this
+        // command (callers can retry on next tick). Avoid spamming forced refills.
+        if (this.refillEnabled && Date.now() - (this.lastRefillAt || 0) > REFILL_MIN_INTERVAL_MS) {
+            this.refill('run-fallback', { force: true });
+        }
+        this.logEvery('run-failed', 5000, 'warn', 'no core block accepted the command');
         return null;
     }
 
@@ -563,7 +580,8 @@ class Core {
                 return;
             }
 
-            this.log.info(`core missing or incomplete (${standing ? 'blocks standing' : 'no blocks'}, ` +
+            this.logEvery('watchdog-rebuild', 10000, 'debug',
+                `core missing or incomplete (${standing ? 'blocks standing' : 'no blocks'}, ` +
                 `${filled ? 'fill ok' : 'fill incomplete'}); rebuilding`);
             // The watchdog is the safety net, so it is allowed past the rate limit.
             this.refill('watchdog', { viaChat: !filled, force: true });
