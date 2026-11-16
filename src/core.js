@@ -13,6 +13,8 @@ const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
 const DEFAULT_SPAM_MS = 250;
 const DEFAULT_SPAM_SECONDS = 10;
+// A fill written into a block should answer within a tick or two.
+const FILL_CONFIRM_MS = 1500;
 // A fill's own block updates can arrive a second or more later, and a refill
 // twice in a row is never useful, so both the grace and the rate limit are
 // generous. Without them one slow update looped refills forever.
@@ -28,7 +30,9 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        this.block = String(this.config.refill?.block || 'minecraft:command_block');
+        // Repeating on purpose: an impulse block only runs when it is powered or
+        // updated, so writing a command into one would do nothing.
+        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
@@ -233,6 +237,18 @@ class Core {
 
         if (!viaCore) send(`/${command}`);
 
+        // Nothing came back means it never ran: send the same fill as chat, which
+        // always reaches the server, rather than sit there doing nothing.
+        if (viaCore) {
+            const startedAt = Date.now();
+            setTimeout(() => {
+                if (this.lastFill && this.lastFill.at >= startedAt) return;
+                if (viaItem) this.fillItem.broken = true;
+                this.log.warn('the fill did not run through the block; sending it as chat instead');
+                send(`/${command}`);
+            }, FILL_CONFIRM_MS).unref?.();
+        }
+
         this.refilling = true;
         this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
@@ -256,7 +272,7 @@ class Core {
     // when the server or the version will not take the item.
     placeFill(command) {
         if (!this.fillItem?.usable) return false;
-        if (!this.fillItem.run(command)) return false;
+        if (!this.fillItem.run(command, this.blockMode())) return false;
         this.itemFills += 1;
         return true;
     }

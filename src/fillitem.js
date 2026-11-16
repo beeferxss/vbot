@@ -1,10 +1,10 @@
 'use strict';
 
-// Filling the core with a command block *item* rather than by writing into the
-// core: the bot puts a command block in its hotbar with the fill baked in and
-// "always active" set, places it in the air, and breaks that one block a moment
-// later. An impulse command block runs its command the instant it is placed, so
-// one placement is one fill - and nothing in the core has to be touched.
+// Refilling by giving the bot a command block *item* and placing it, instead of
+// writing into the core: the block is put in the air at the bot's feet, the fill
+// is written into that one block, and it is broken again a moment later. An
+// impulse block would have to be triggered, so the item is a repeating block,
+// which runs whatever it holds every tick until it is broken.
 //
 // Everything goes through packets: no /give, no chat.
 
@@ -13,74 +13,32 @@ const nbt = require('prismarine-nbt');
 const HOTBAR_SLOT = 36;          // first hotbar slot, packet slot numbering
 const BREAK_DELAY_MS = 250;
 const FACE_UP = 1;
+const BLOCK = 'repeating_command_block';
 
-function atLeast(version, want) {
-    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
-    if (!match) return true; // unknown: assume a current server
-    const have = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
-    for (let index = 0; index < want.length; index++) {
-        if (have[index] !== want[index]) return have[index] > want[index];
-    }
-    return true;
-}
-
-// 1.20.5 moved item data from NBT into typed data components.
+// 1.20.5 stopped sending an absent item as "present: false".
 function usesComponents(version) {
-    return atLeast(version, [1, 20, 5]);
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
+    if (!match) return true;
+    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
+    if (major !== 1) return major > 1;
+    if (minor !== 20) return minor > 20;
+    return patch >= 5;
 }
 
-// 1.21.5 stopped describing a component's NBT in the packet and started sending
-// it as raw anonymous-NBT bytes, so the same tag has to be encoded by hand.
-function usesNbtBytes(version) {
-    return atLeast(version, [1, 21, 5]);
-}
-
-function anonymousNbt(value) {
-    const size = nbt.proto.sizeOf(value, 'anonymousNbt');
-    const buffer = Buffer.alloc(size);
-    nbt.proto.write(value, buffer, 0, 'anonymousNbt');
-    return buffer;
-}
-
-// The same tag, in whatever form this version's packets want it.
-function componentData(value, version) {
-    return usesNbtBytes(version) ? anonymousNbt(value) : value;
-}
-
-// BlockEntityTag is where a command block keeps its command (and `auto`, the
-// "always active" flag that makes it run as it is placed). The `id` is not
-// optional in the modern block_entity_data component: vanilla wants to know
-// which block entity this tag belongs to, and drops an item without it.
-function blockEntityTag(command) {
-    return nbt.comp({
-        id: nbt.string('minecraft:command_block'),
-        Command: nbt.string(command),
-        auto: nbt.byte(1),
-        TrackOutput: nbt.byte(1)
-    });
-}
-
-// The item as the server wants it: components on 1.20.5+, NBT before that.
-function commandBlockItem({ version, itemId, command }) {
+// A plain block item: no components, so nothing has to be translated between
+// versions and there is no id in the packet to get wrong.
+function plainItem(version, itemId) {
     if (usesComponents(version)) {
-        const tag = blockEntityTag(command);
         return {
-            present: true,
             itemCount: 1,
             itemId,
-            addedComponentCount: 1,
+            addedComponentCount: 0,
             removedComponentCount: 0,
-            components: [{ type: 'block_entity_data', data: componentData(tag, version) }],
+            components: [],
             removeComponents: []
         };
     }
-
-    return {
-        present: true,
-        itemCount: 1,
-        itemId,
-        nbtData: nbt.comp({ BlockEntityTag: blockEntityTag(command) })
-    };
+    return { present: true, itemCount: 1, itemId };
 }
 
 class FillItem {
@@ -89,6 +47,7 @@ class FillItem {
         this.log = logger;
         this.data = data;
         this.breakDelayMs = Number(config.breakDelayMs) > 0 ? Number(config.breakDelayMs) : BREAK_DELAY_MS;
+        this.block = String(config.itemBlock || BLOCK);
         this.sequence = 0;
         this.timer = null;
         this.placed = null;
@@ -115,55 +74,6 @@ class FillItem {
         return true;
     }
 
-    // The server's own registry beats any bundled data: a proxy can renumber
-    // everything, and a wrong number is a wrong item or a disconnect.
-    get itemId() {
-        const fromServer = this.bot?.registries?.item?.get?.('command_block');
-        if (fromServer !== undefined) return fromServer;
-        return this.mcd()?.itemsByName?.command_block?.id;
-    }
-
-    // What this protocol would put on the wire for the component we need.
-    componentId() {
-        const mappings = this.mcd()?.protocol?.types?.SlotComponentType?.[1]?.mappings;
-        if (!mappings) return undefined;
-        const found = Object.entries(mappings).find(([, value]) => value === 'block_entity_data');
-        return found ? Number(found[0]) : undefined;
-    }
-
-    // Needs a client, a version the data knows, and a command block in that data.
-    get usable() {
-        if (this.broken) return false;
-        if (!this.bot || typeof this.bot.write !== 'function') return false;
-        return this.itemId !== undefined;
-    }
-
-    // A component the server does not know is worse than no item at all.
-    numbersMatch() {
-        const server = this.bot?.registries?.components?.get?.('block_entity_data');
-        const ours = this.componentId();
-        if (server === undefined || ours === undefined || server === ours) return true;
-
-        this.broken = true;
-        this.log.warn(
-            `this server numbers block_entity_data ${server} but the protocol sends ${ours}; ` +
-            'refilling through the core blocks instead'
-        );
-        return false;
-    }
-
-    // Creative is the only mode where a creative slot is accepted at all.
-    get creative() {
-        const mode = this.bot?.selfCare?.gamemode;
-        return mode === null || mode === undefined || mode === 1;
-    }
-
-    noteSlot(packet) {
-        if (Number(packet?.slot) !== HOTBAR_SLOT) return;
-        const item = packet?.item;
-        if (item && (item.itemCount ?? 0) > 0) this.confirmed = true;
-    }
-
     mcd() {
         if (this.data === null) {
             try {
@@ -172,16 +82,6 @@ class FillItem {
             } catch {
                 this.data = false;
             }
-            if (this.data === false) {
-                this.log.warn(
-                    `no item data for protocol ${this.version() ?? 'unknown'}, so refill items are off ` +
-                    '(pin minecraft.version to a version this bot knows)'
-                );
-            }
-        }
-        if (this.data && !this.data.itemsByName?.command_block) {
-            this.log.warn(`the item data for ${this.version()} has no command_block`);
-            this.broken = true;
         }
         return this.data || null;
     }
@@ -190,18 +90,44 @@ class FillItem {
         return this.bot?.client?.version || this.bot?.version || null;
     }
 
+    // The server's own registry beats any bundled data: its position is the id.
+    itemId() {
+        const fromServer = this.bot?.registries?.item?.get?.(this.block);
+        if (fromServer !== undefined) return fromServer;
+        return this.mcd()?.itemsByName?.[this.block]?.id;
+    }
+
+    get usable() {
+        if (this.broken) return false;
+        if (!this.bot || typeof this.bot.write !== 'function') return false;
+        return this.itemId() !== undefined;
+    }
+
+    // Creative is the only mode where a creative slot is accepted at all.
+    get creative() {
+        const mode = this.bot?.selfCare?.gamemode;
+        return mode === null || mode === undefined || mode === 1;
+    }
+
     nextSequence() {
         this.sequence = (this.sequence + 1) % 32768;
         return this.sequence;
     }
 
-    // Two packets: the item into the hotbar, and the hotbar slot selected.
-    give(command) {
-        const itemId = this.itemId;
-        if (itemId === undefined) return false;
+    noteSlot(packet) {
+        if (Number(packet?.slot) !== HOTBAR_SLOT) return;
+        const item = packet?.item;
+        if (item && (item.itemCount ?? 0) > 0) this.confirmed = true;
+    }
 
-        const item = commandBlockItem({ version: this.version(), itemId, command });
-        if (!this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item })) return false;
+    // Two packets: the item into the hotbar, and the hotbar slot selected.
+    give() {
+        const itemId = this.itemId();
+        if (itemId === undefined) return false;
+        if (!this.bot.write('set_creative_slot', {
+            slot: HOTBAR_SLOT,
+            item: plainItem(this.version(), itemId)
+        })) return false;
         return this.bot.write('held_item_slot', { slotId: 0 });
     }
 
@@ -232,6 +158,17 @@ class FillItem {
         return sent ? target : null;
     }
 
+    // The block is repeating, so the command runs on the next tick and keeps
+    // running until the block is gone.
+    writeCommand(location, command, mode) {
+        return this.bot.write('update_command_block', {
+            location,
+            command,
+            mode,
+            flags: 0b101
+        });
+    }
+
     // Only ever this block: the core is not touched.
     breakAt(location) {
         this.bot.write('block_dig', {
@@ -242,8 +179,7 @@ class FillItem {
         });
     }
 
-    // A creative slot is only cleared by overwriting it with nothing, which is
-    // a different shape before and after 1.20.5.
+    // A creative slot is only cleared by overwriting it with nothing.
     emptyItem() {
         if (usesComponents(this.version())) {
             return { itemCount: 0, components: [], removeComponents: [] };
@@ -255,18 +191,16 @@ class FillItem {
         return this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item: this.emptyItem() });
     }
 
-    // Give, place, and break that block after a moment. One cycle at a time:
-    // the next placement would land in the block still standing.
-    run(command) {
+    // Give, place, fill that block, and break it after a moment. One cycle at a
+    // time: the next placement would land in the block still standing.
+    run(command, mode) {
         if (!this.usable) return false;
         if (this.timer) return false;
-
-        if (!this.numbersMatch()) return false;
 
         if (!this.creative) {
             this.log.warn(
                 `refill items need creative mode (the bot is in gamemode ${this.bot?.selfCare?.gamemode}); ` +
-                'refilling through the core blocks instead'
+                'refilling through the core instead'
             );
             this.broken = true;
             return false;
@@ -274,13 +208,15 @@ class FillItem {
 
         this.confirmed = false;
         this.lastSendAt = Date.now();
-        if (!this.give(command)) return false;
+        if (!this.give()) return false;
+
         const placed = this.place();
         if (!placed) {
             this.clear();
             return false;
         }
 
+        this.writeCommand(placed, String(command || '').replace(/^\//, ''), mode);
         this.placed = placed;
         this.timer = setTimeout(() => {
             this.timer = null;
@@ -296,7 +232,7 @@ class FillItem {
     }
 
     // The slot never came back: this server will not take the item, so stop
-    // asking and leave refills to the core blocks.
+    // asking and leave refills to the core.
     checkGiven() {
         if (this.confirmed) {
             this.misses = 0;
@@ -308,10 +244,7 @@ class FillItem {
             `the command block item did not arrive (version ${this.version() ?? 'unknown'}, ` +
             `attempt ${this.misses}); is the bot opped and in creative?`
         );
-        if (this.misses >= 2) {
-            this.broken = true;
-            this.log.warn('giving up on refill items: refilling through the core blocks instead');
-        }
+        if (this.misses >= 2) this.broken = true;
     }
 
     destroy() {
@@ -321,11 +254,4 @@ class FillItem {
     }
 }
 
-module.exports = {
-    FillItem,
-    commandBlockItem,
-    usesComponents,
-    usesNbtBytes,
-    blockEntityTag,
-    HOTBAR_SLOT
-};
+module.exports = { FillItem, plainItem, usesComponents, HOTBAR_SLOT, nbt };

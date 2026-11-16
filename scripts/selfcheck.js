@@ -360,7 +360,7 @@ async function main() {
         core.refill('test');
         assert.strictEqual(
             sent[0],
-            '/fill 32 64 -16 47 79 -1 minecraft:command_block replace'
+            '/fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace'
         );
 
         const first = core.run('say hello');
@@ -369,8 +369,8 @@ async function main() {
         assert.notDeepStrictEqual(second, first, 'commands must use different blocks');
         assert.strictEqual(writes[0].name, 'update_command_block');
         assert.strictEqual(writes[0].payload.command, 'say hello');
-        // An impulse block is written as impulse, not as repeating.
-        assert.strictEqual(writes[0].payload.mode, 2);
+        // The block is repeating, and the packet has to say so.
+        assert.strictEqual(writes[0].payload.mode, 1);
         assert.strictEqual(writes[0].payload.flags, 0b101, 'always active, tracking output');
         assert.strictEqual(writes[1].payload.command, 'gamemode creative');
 
@@ -475,7 +475,7 @@ async function main() {
         modern.refill('test');
         assert.strictEqual(
             named[0],
-            '/fill 0 64 0 8 72 8 minecraft:command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
         );
         assert.match(modern.status(), /name \{"text"/);
 
@@ -484,7 +484,7 @@ async function main() {
         legacy.refill('test');
         assert.strictEqual(
             named[1],
-            '/fill 0 64 0 8 72 8 minecraft:command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
         );
 
         // Without a name the fill stays plain.
@@ -497,7 +497,7 @@ async function main() {
         plainCore.refill('test');
         assert.strictEqual(
             named[2],
-            '/fill 0 64 0 8 72 8 minecraft:command_block replace'
+            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block replace'
         );
 
         modern.destroy();
@@ -505,83 +505,63 @@ async function main() {
         plainCore.destroy();
     });
 
-    await check('a command block item carries the fill and is broken again', async () => {
-        const nbt = require('prismarine-nbt');
-        const { FillItem, commandBlockItem, usesComponents, usesNbtBytes } = require('../src/fillitem');
-        const data = { itemsByName: { command_block: { id: 418 } } };
+    await check('a command block item is placed, filled and broken again', async () => {
+        const { FillItem, plainItem, usesComponents } = require('../src/fillitem');
+        const data = { itemsByName: { repeating_command_block: { id: 419 } } };
 
-        // 1.20.5+ keeps the command in data components, older versions in NBT.
+        // A plain item: no components, so there is nothing to translate.
         assert.strictEqual(usesComponents('1.21.4'), true);
         assert.strictEqual(usesComponents('1.20.4'), false);
-        // 1.21.5+ sends a component's NBT as bytes rather than structured fields.
-        assert.strictEqual(usesNbtBytes('1.21.4'), false);
-        assert.strictEqual(usesNbtBytes('1.21.5'), true);
+        assert.deepStrictEqual(plainItem('1.21.4', 419), {
+            itemCount: 1,
+            itemId: 419,
+            addedComponentCount: 0,
+            removedComponentCount: 0,
+            components: [],
+            removeComponents: []
+        });
+        assert.deepStrictEqual(plainItem('1.20.4', 394), { present: true, itemCount: 1, itemId: 394 });
 
-        const modern = commandBlockItem({ version: '1.21.4', itemId: 418, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
-        assert.strictEqual(modern.present, true);
-        assert.strictEqual(modern.itemCount, 1);
-        assert.strictEqual(modern.itemId, 418);
-        assert.deepStrictEqual(modern.components.map(c => c.type), ['block_entity_data']);
-        assert.strictEqual(
-            modern.components[0].data.value.id.value,
-            'minecraft:command_block',
-            'the tag has to name its block entity'
-        );
-        assert.strictEqual(
-            modern.components[0].data.value.Command.value,
-            'fill 1 2 3 4 5 6 minecraft:command_block replace'
-        );
-        assert.strictEqual(modern.components[0].data.value.auto.value, 1, 'always active');
-
-        // 1.21.5 turned that component into raw anonymous NBT bytes; sending the
-        // structured form there throws and the item never arrives at all.
-        const bytes = commandBlockItem({ version: '1.21.5', itemId: 418, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
-        assert.strictEqual(Buffer.isBuffer(bytes.components[0].data), true);
-        const decoded = nbt.proto.read(bytes.components[0].data, 0, 'anonymousNbt').value.value;
-        assert.strictEqual(decoded.Command.value, 'fill 1 2 3 4 5 6 minecraft:command_block replace');
-        assert.strictEqual(decoded.auto.value, 1, 'always active');
-
-        const legacy = commandBlockItem({ version: '1.20.4', itemId: 373, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
-        assert.strictEqual(legacy.present, true);
-        assert.strictEqual(legacy.nbtData.value.BlockEntityTag.value.Command.value.length > 0, true);
-
-        // The packets: item into the hotbar, place it, break only that block.
         const writes = [];
         const itemBot = {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
-        const fillItem = new FillItem({
-            bot: itemBot,
-            logger,
-            data,
-            config: { breakDelayMs: 40 }
-        });
+        const fillItem = new FillItem({ bot: itemBot, logger, data, config: { breakDelayMs: 40 } });
 
         assert.strictEqual(fillItem.usable, true);
-        assert.strictEqual(fillItem.run('fill 1 2 3 4 5 6 minecraft:command_block replace'), true);
-        assert.strictEqual(fillItem.run('anything'), false, 'one placement at a time');
+        assert.strictEqual(
+            fillItem.run('fill 1 2 3 4 5 6 minecraft:repeating_command_block replace', 1),
+            true
+        );
+        assert.strictEqual(fillItem.run('anything', 1), false, 'one placement at a time');
 
-        assert.deepStrictEqual(writes.map(write => write.name), ['set_creative_slot', 'held_item_slot', 'block_place']);
+        assert.deepStrictEqual(writes.map(write => write.name), [
+            'set_creative_slot',
+            'held_item_slot',
+            'block_place',
+            'update_command_block'
+        ]);
         assert.strictEqual(writes[0].payload.slot, 36);
-        assert.strictEqual(writes[0].payload.item.present, true);
+        assert.strictEqual(writes[0].payload.item.itemId, 419);
+        assert.strictEqual(writes[0].payload.item.components.length, 0, 'the item carries no data');
         assert.strictEqual(writes[1].payload.slotId, 0);
         assert.deepStrictEqual(writes[2].payload.location, { x: 10, y: 63, z: -4 }, 'the block the bot stands on');
         assert.strictEqual(writes[2].payload.direction, 1, 'placed on its top face');
+        // The command goes into the placed block, which repeats, so it runs.
+        assert.deepStrictEqual(writes[3].payload.location, { x: 10, y: 64, z: -4 });
+        assert.strictEqual(writes[3].payload.mode, 1, 'repeating');
+        assert.match(writes[3].payload.command, /^fill 1 2 3 4 5 6 /);
 
         await new Promise(resolve => setTimeout(resolve, 90));
 
-        // Every protocol the bot can speak has to encode the item and the two
-        // block packets, or the placement never leaves the client.
+        // Every protocol the bot can speak encodes these packets, or nothing
+        // leaves the client at all.
         const mc = require('minecraft-protocol');
         for (const version of ['1.20.1', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
-            const data = require('minecraft-data')(version);
-            const item = commandBlockItem({
-                version,
-                itemId: data.itemsByName.command_block.id,
-                command: 'fill 1 2 3 4 5 6 minecraft:command_block replace'
-            });
+            const d = require('minecraft-data')(version);
+            const item = plainItem(version, d.itemsByName.repeating_command_block.id);
             const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
             assert.ok(
                 serializer.createPacketBuffer({ name: 'set_creative_slot', params: { slot: 36, item } }).length > 0,
@@ -601,6 +581,10 @@ async function main() {
                     sequence: 1
                 }
             }).length > 0, `${version} should encode the placement`);
+            assert.ok(serializer.createPacketBuffer({
+                name: 'update_command_block',
+                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
+            }).length > 0, `${version} should encode the command write`);
         }
 
         const dig = writes.find(write => write.name === 'block_dig');
@@ -627,9 +611,9 @@ async function main() {
         });
         assert.strictEqual(registryBot.noteRegistry({
             id: 'minecraft:item',
-            entries: [{ key: 'minecraft:air' }, { key: 'minecraft:stone' }, { key: 'minecraft:command_block' }]
+            entries: [{ key: 'minecraft:air' }, { key: 'minecraft:stone' }, { key: 'minecraft:repeating_command_block' }]
         }), true);
-        assert.strictEqual(registryBot.registries.item.get('command_block'), 2);
+        assert.strictEqual(registryBot.registries.item.get('repeating_command_block'), 2);
         assert.strictEqual(registryBot.noteRegistry({
             id: 'minecraft:data_component_type',
             entries: [{ key: 'minecraft:custom_data' }, { key: 'minecraft:block_entity_data' }]
@@ -644,32 +628,18 @@ async function main() {
             client: { version: '1.21.4' },
             position: { x: 0, y: 64, z: 0 },
             write: (name, payload) => (writes.push({ name, payload }), true),
-            registries: { item: new Map([['command_block', 281]]), components: null }
+            registries: { item: new Map([['repeating_command_block', 281]]), components: null }
         };
-        const item = new FillItem({ bot, logger, data: { itemsByName: { command_block: { id: 418 } } } });
-        assert.strictEqual(item.itemId, 281);
+        const item = new FillItem({
+            bot,
+            logger,
+            data: { itemsByName: { repeating_command_block: { id: 419 } } }
+        });
+        assert.strictEqual(item.itemId(), 281);
         assert.strictEqual(item.usable, true);
-        item.give('fill 1 2 3 4 5 6 minecraft:command_block replace');
+        item.give();
         assert.strictEqual(writes[0].payload.item.itemId, 281);
         item.destroy();
-
-        // A component id the server does not agree with is refused outright.
-        const mismatch = new FillItem({
-            bot: {
-                ...bot,
-                registries: { item: new Map([['command_block', 281]]), components: new Map([['block_entity_data', 7]]) }
-            },
-            logger,
-            data: {
-                itemsByName: { command_block: { id: 418 } },
-                protocol: { types: { SlotComponentType: [0, { mappings: { 60: 'block_entity_data' } }] } }
-            }
-        });
-        assert.strictEqual(mismatch.componentId(), 60);
-        assert.strictEqual(mismatch.numbersMatch(), false);
-        assert.strictEqual(mismatch.broken, true);
-        assert.strictEqual(mismatch.usable, false, 'and it stops being used');
-        mismatch.destroy();
     });
 
     await check('refills place a command block item before anything else', async () => {
@@ -1290,7 +1260,7 @@ async function main() {
         // the fill must not be routed back into the core.
         packets.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:command_block replace']);
+        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
         assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
         core.destroy();
     });
