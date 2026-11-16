@@ -21,11 +21,10 @@ module.exports = {
         else if (uuid) source = 'derived (offline)';
 
         const rank = ctx.permissions.levelFor({ name, uuid });
-        const messages = player?.messages ?? 0;
         const lastSeen = player
             ? new Date(player.last_seen).toISOString().slice(0, 16).replace('T', ' ')
             : 'never';
 
-        ctx.reply(`${name} — ${uuid || 'no uuid'} (${source}), rank ${levelName(rank)}, ${messages} msgs, last seen ${lastSeen}`);
+        ctx.reply(`${name} — ${uuid || 'no uuid'} (${source}), rank ${levelName(rank)}, last seen ${lastSeen}`);
     }
 };

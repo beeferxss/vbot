@@ -246,6 +246,55 @@ async function main() {
     });
 
     // --- commands -----------------------------------------------------------
+    await check('database stores only identity and ranks', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-schema-'));
+        const scratch = new Store(path.join(dir, 'vbot.sqlite')).open();
+        const columns = table =>
+            scratch.db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
+
+        assert.deepStrictEqual(columns('players'), ['name_key', 'name', 'uuid', 'first_seen', 'last_seen']);
+        assert.deepStrictEqual(columns('users'), ['name_key', 'name', 'uuid', 'level', 'granted_by', 'granted_at']);
+
+        const tables = scratch.db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .all()
+            .map(row => row.name)
+            .filter(name => !name.startsWith('sqlite_'));
+        assert.deepStrictEqual(tables.sort(), ['players', 'users'], `unexpected tables: ${tables}`);
+        scratch.close();
+    });
+
+    await check('older databases lose the dropped column and table', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-migrate-'));
+        const file = path.join(dir, 'vbot.sqlite');
+        const { DatabaseSync } = require('node:sqlite');
+        const old = new DatabaseSync(file);
+        old.exec(`
+            CREATE TABLE players (
+                name_key TEXT PRIMARY KEY, name TEXT NOT NULL, uuid TEXT,
+                first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL,
+                messages INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+            INSERT INTO players VALUES ('steve', 'Steve', NULL, 111, 222, 42);
+            INSERT INTO meta VALUES ('noise', 'drop me');
+        `);
+        old.close();
+
+        const migrated = new Store(file).open();
+        const columns = migrated.db.prepare('PRAGMA table_info(players)').all().map(row => row.name);
+        assert.ok(!columns.includes('messages'), 'message counter should be gone');
+        const steve = migrated.getPlayer('Steve');
+        assert.strictEqual(steve.first_seen, 111);
+        assert.strictEqual(steve.last_seen, 222);
+        const tables = migrated.db
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .all()
+            .map(row => row.name);
+        assert.ok(!tables.includes('meta'), 'meta table should be dropped');
+        migrated.close();
+    });
+
     await check('store checkpoints the WAL before the database is committed', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-db-'));
         const file = path.join(dir, 'vbot.sqlite');

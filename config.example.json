@@ -7,7 +7,7 @@
         "enabled": false,
         "host": "chayapak1.dev",
         "port": 25565,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       },
@@ -16,7 +16,7 @@
         "enabled": false,
         "host": "91.99.119.210",
         "port": 25565,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       },
@@ -25,7 +25,7 @@
         "enabled": true,
         "host": "kbpw.de",
         "port": 25565,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       },
@@ -34,7 +34,7 @@
         "enabled": false,
         "host": "qwertyad.one",
         "port": 25565,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       },
@@ -43,7 +43,7 @@
         "enabled": false,
         "host": "kaboom.hcesaropz.dev",
         "port": 25565,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       },
@@ -52,7 +52,7 @@
         "enabled": false,
         "host": "kaboom.pw",
         "port": 25565,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       },
@@ -61,7 +61,7 @@
         "enabled": false,
         "host": "chipmunk.land",
         "port": 17891,
-        "username": "random",
+        "username": "vbot",
         "auth": "offline",
         "version": false
       }

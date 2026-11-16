@@ -80,8 +80,7 @@ class Bot extends EventEmitter {
             this.attempts = 0;
             this.state = 'ready';
             this.disconnectReason = null;
-            this.log.info('connected');
-            this.store.touchPlayer(this.server.username, this.uuidFor(this.server.username));
+            this.log.info(`connected as ${this.server.username}`);
             this.emit('ready');
         });
 
