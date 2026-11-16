@@ -2023,6 +2023,43 @@ async function main() {
         again.destroy();
     });
 
+    await check('discord bridge formats both directions', () => {
+        const {
+            formatMinecraftLine,
+            discordComponent,
+            channelFor,
+            createDiscordBridge
+        } = require('../src/discord');
+
+        assert.strictEqual(
+            formatMinecraftLine({ server: 'kbpw', username: 'Alex', message: 'hi\nthere' }),
+            '[kbpw] Alex: hi there'
+        );
+        assert.strictEqual(
+            discordComponent({ author: 'Alex', message: 'hello' }).map(part => part.text).join(''),
+            '[Discord] Alex: hello'
+        );
+        assert.strictEqual(
+            channelFor({ discord: { channels: { kbpw: '123' } } }, { id: 'kbpw' }),
+            '123'
+        );
+        assert.strictEqual(channelFor({}, { id: 'x', channelId: '456' }), '456');
+        assert.strictEqual(channelFor({}, { id: 'x' }), null);
+
+        // Disabled (or tokenless) Discord must not start a client or throw.
+        assert.strictEqual(
+            createDiscordBridge({ config: { discord: { enabled: false } }, manager: null, logger }),
+            null
+        );
+        const bridge = createDiscordBridge({
+            config: { bot: {}, discord: { enabled: true, token: '' } },
+            manager: null,
+            logger
+        });
+        assert.ok(bridge);
+        assert.strictEqual(bridge.start(), false, 'no token means no client');
+    });
+
     store.close();
 
     console.log(results.join('\n'));

@@ -9,6 +9,7 @@ const { Tokens } = require('./auth/tokens');
 const { CommandRegistry } = require('./commands');
 const { BotManager } = require('./bot/manager');
 const { attachConsole } = require('./console');
+const { createDiscordBridge } = require('./discord');
 
 async function main() {
     let config;
@@ -59,6 +60,8 @@ async function main() {
     logger.info(`vbot started with ${bots.length} bot(s)`);
 
     const consoleUI = attachConsole({ manager, config, logger });
+    const discord = createDiscordBridge({ config, manager, logger });
+    if (discord) discord.start();
 
     let stopping = false;
     const shutdown = async signal => {
@@ -66,6 +69,7 @@ async function main() {
         stopping = true;
         logger.info(`${signal} received, shutting down`);
         consoleUI?.close();
+        discord?.destroy();
         await manager.destroyAll();
         store.close();
         process.exit(0);

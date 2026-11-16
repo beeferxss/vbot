@@ -131,6 +131,18 @@
     "enabled": true,
     "minIntervalMs": 100
   },
+  "discord": {
+    "enabled": false,
+    "token": "",
+    "guildId": "",
+    "commandPrefix": "!",
+    "channels": {},
+    "adminIds": [],
+    "relay": {
+      "chat": true,
+      "discord": true
+    }
+  },
   "chat": {
     "trustUnsigned": "auto"
   },
