@@ -80,7 +80,7 @@
     "reply": "tellraw"
   },
   "list": {
-    "scanMs": 20000
+    "scanMs": 10000
   },
   "alts": {
     "enabled": true,
@@ -97,10 +97,10 @@
     "commandSpy": true,
     "vanish": true,
     "unmute": true,
-    "nick": false,
-    "nickName": null,
-    "username": false,
-    "usernameName": null
+    "nick": true,
+    "nickName": "&2V&aB&2O&aT",
+    "username": true,
+    "usernameName": "vbot"
   },
   "permissions": {
     "keys": {
@@ -134,7 +134,7 @@
       "block": "minecraft:command_block",
       "mode": "replace",
       "intervalMs": 1000,
-      "spamMs": 1,
+      "spamMs": 150,
       "auto": true,
       "item": true,
       "breakDelayMs": 250
