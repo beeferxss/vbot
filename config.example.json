@@ -131,10 +131,10 @@
     },
     "refill": {
       "enabled": true,
-      "block": "minecraft:repeating_command_block",
+      "block": "minecraft:command_block",
       "mode": "replace",
       "intervalMs": 1000,
-      "spamMs": 250,
+      "spamMs": 1,
       "item": true,
       "breakDelayMs": 250
     }

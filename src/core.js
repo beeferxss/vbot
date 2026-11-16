@@ -11,7 +11,7 @@ const OWN_CHANGE_MS = 2500;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
-const DEFAULT_SPAM_MS = 250;
+const DEFAULT_SPAM_MS = 1;
 const DEFAULT_SPAM_SECONDS = 10;
 // A fill written into a block should answer within a tick or two.
 const FILL_CONFIRM_MS = 1500;
@@ -30,9 +30,7 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        // Repeating on purpose: an impulse block only runs when it is powered or
-        // updated, so writing a command into one would do nothing.
-        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
+        this.block = String(this.config.refill?.block || 'minecraft:command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
@@ -213,16 +211,10 @@ class Core {
             ? text => this.bot.sendChat(text)
             : text => this.bot.chat(text);
 
-        // Fastest first: place a command block item carrying the fill, which runs
-        // the moment it lands, and break that one block again a moment later.
+        // Whatever is left of the core refills it: writing the fill into a
+        // surviving block needs no item and no chat.
         let viaCore = false;
-        const viaItem = !viaChat && this.placeFill(command);
-        if (viaItem) viaCore = true;
-
-        // Next best: reuse a block that is still standing, writing the fill into
-        // it without a chat command. Only when neither works does an automatic
-        // refill fall back to chat.
-        const survivor = !viaChat && !viaCore && !this.refilling ? this.survivor() : null;
+        const survivor = !viaChat && !this.refilling ? this.survivor() : null;
 
         if (survivor) {
             this.markOwn(survivor);
@@ -234,6 +226,10 @@ class Core {
             }));
             if (!viaCore) this.blocks.set(keyOf(survivor), false);
         }
+
+        // Next: place a command block item carrying the fill.
+        const viaItem = !viaChat && !viaCore && this.placeFill(command);
+        if (viaItem) viaCore = true;
 
         if (!viaCore) send(`/${command}`);
 
@@ -302,8 +298,10 @@ class Core {
 
             // Our own fills change blocks; none of that is damage.
             this.graceUntil = Date.now() + REFILL_GRACE_MS;
+            // Into the core's own blocks: there is no faster path, and at this
+            // interval nothing else could keep up.
             const command = this.fillCommand();
-            if (this.placeFill(command) || this.run(command)) this.spam.count += 1;
+            if (this.run(command)) this.spam.count += 1;
         }, every);
         this.spamTimer.unref?.();
 

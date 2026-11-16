@@ -93,12 +93,12 @@ function defaults() {
             area: { size: 9, y: 64 },
             refill: {
                 enabled: true,
-                block: 'minecraft:repeating_command_block',
+                block: 'minecraft:command_block',
                 mode: 'replace',
                 // How often a missing core is rebuilt, in milliseconds.
                 intervalMs: 1000,
                 // How fast "refill" spams fills through the core blocks.
-                spamMs: 250,
+                spamMs: 1,
                 // Refill by placing a command block item and breaking it again:
                 // the fill runs on placement and the core is never written to.
                 item: true,
