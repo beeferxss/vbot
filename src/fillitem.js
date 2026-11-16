@@ -14,14 +14,37 @@ const HOTBAR_SLOT = 36;          // first hotbar slot, packet slot numbering
 const BREAK_DELAY_MS = 250;
 const FACE_UP = 1;
 
+function atLeast(version, want) {
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
+    if (!match) return true; // unknown: assume a current server
+    const have = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
+    for (let index = 0; index < want.length; index++) {
+        if (have[index] !== want[index]) return have[index] > want[index];
+    }
+    return true;
+}
+
 // 1.20.5 moved item data from NBT into typed data components.
 function usesComponents(version) {
-    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
-    if (!match) return true;
-    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
-    if (major !== 1) return major > 1;
-    if (minor !== 20) return minor > 20;
-    return patch >= 5;
+    return atLeast(version, [1, 20, 5]);
+}
+
+// 1.21.5 stopped describing a component's NBT in the packet and started sending
+// it as raw anonymous-NBT bytes, so the same tag has to be encoded by hand.
+function usesNbtBytes(version) {
+    return atLeast(version, [1, 21, 5]);
+}
+
+function anonymousNbt(value) {
+    const size = nbt.proto.sizeOf(value, 'anonymousNbt');
+    const buffer = Buffer.alloc(size);
+    nbt.proto.write(value, buffer, 0, 'anonymousNbt');
+    return buffer;
+}
+
+// The same tag, in whatever form this version's packets want it.
+function componentData(value, version) {
+    return usesNbtBytes(version) ? anonymousNbt(value) : value;
 }
 
 // BlockEntityTag is where a command block keeps its command (and `auto`, the
@@ -45,8 +68,11 @@ function commandBlockItem({ version, itemId, command }) {
             addedComponentCount: 2,
             removedComponentCount: 0,
             components: [
-                { type: 'block_entity_data', data: tag },
-                { type: 'custom_data', data: nbt.comp({ BlockEntityTag: tag }) }
+                { type: 'block_entity_data', data: componentData(tag, version) },
+                {
+                    type: 'custom_data',
+                    data: componentData(nbt.comp({ BlockEntityTag: tag }), version)
+                }
             ],
             removeComponents: []
         };
@@ -69,13 +95,31 @@ class FillItem {
         this.sequence = 0;
         this.timer = null;
         this.placed = null;
+        // The server sends the slot back when it accepts a creative slot, so an
+        // item that never comes back was never given.
+        this.confirmed = false;
+        this.misses = 0;
+        this.broken = false;
     }
 
     // Needs a client, a version the data knows, and a command block in that data.
     get usable() {
+        if (this.broken) return false;
         if (!this.bot || typeof this.bot.write !== 'function') return false;
         const data = this.mcd();
         return Boolean(data?.itemsByName?.command_block?.id !== undefined);
+    }
+
+    // Creative is the only mode where a creative slot is accepted at all.
+    get creative() {
+        const mode = this.bot?.selfCare?.gamemode;
+        return mode === null || mode === undefined || mode === 1;
+    }
+
+    noteSlot(packet) {
+        if (Number(packet?.slot) !== HOTBAR_SLOT) return;
+        const item = packet?.item;
+        if (item && (item.itemCount ?? 0) > 0) this.confirmed = true;
     }
 
     mcd() {
@@ -86,6 +130,16 @@ class FillItem {
             } catch {
                 this.data = false;
             }
+            if (this.data === false) {
+                this.log.warn(
+                    `no item data for protocol ${this.version() ?? 'unknown'}, so refill items are off ` +
+                    '(pin minecraft.version to a version this bot knows)'
+                );
+            }
+        }
+        if (this.data && !this.data.itemsByName?.command_block) {
+            this.log.warn(`the item data for ${this.version()} has no command_block`);
+            this.broken = true;
         }
         return this.data || null;
     }
@@ -166,6 +220,16 @@ class FillItem {
         if (!this.usable) return false;
         if (this.timer) return false;
 
+        if (!this.creative) {
+            this.log.warn(
+                `refill items need creative mode (the bot is in gamemode ${this.bot?.selfCare?.gamemode}); ` +
+                'refilling through the core blocks instead'
+            );
+            this.broken = true;
+            return false;
+        }
+
+        this.confirmed = false;
         if (!this.give(command)) return false;
         const placed = this.place();
         if (!placed) {
@@ -180,10 +244,30 @@ class FillItem {
             this.placed = null;
             this.breakAt(location);
             this.clear();
+            this.checkGiven();
         }, this.breakDelayMs);
         this.timer.unref?.();
 
         return true;
+    }
+
+    // The slot never came back: this server will not take the item, so stop
+    // asking and leave refills to the core blocks.
+    checkGiven() {
+        if (this.confirmed) {
+            this.misses = 0;
+            return;
+        }
+
+        this.misses += 1;
+        this.log.warn(
+            `the command block item did not arrive (version ${this.version() ?? 'unknown'}, ` +
+            `attempt ${this.misses}); is the bot opped and in creative?`
+        );
+        if (this.misses >= 2) {
+            this.broken = true;
+            this.log.warn('giving up on refill items: refilling through the core blocks instead');
+        }
     }
 
     destroy() {
@@ -193,4 +277,11 @@ class FillItem {
     }
 }
 
-module.exports = { FillItem, commandBlockItem, usesComponents, blockEntityTag, HOTBAR_SLOT };
+module.exports = {
+    FillItem,
+    commandBlockItem,
+    usesComponents,
+    usesNbtBytes,
+    blockEntityTag,
+    HOTBAR_SLOT
+};

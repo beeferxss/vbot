@@ -506,12 +506,16 @@ async function main() {
     });
 
     await check('a command block item carries the fill and is broken again', async () => {
-        const { FillItem, commandBlockItem, usesComponents } = require('../src/fillitem');
+        const nbt = require('prismarine-nbt');
+        const { FillItem, commandBlockItem, usesComponents, usesNbtBytes } = require('../src/fillitem');
         const data = { itemsByName: { command_block: { id: 418 } } };
 
         // 1.20.5+ keeps the command in data components, older versions in NBT.
         assert.strictEqual(usesComponents('1.21.4'), true);
         assert.strictEqual(usesComponents('1.20.4'), false);
+        // 1.21.5+ sends a component's NBT as bytes rather than structured fields.
+        assert.strictEqual(usesNbtBytes('1.21.4'), false);
+        assert.strictEqual(usesNbtBytes('1.21.5'), true);
 
         const modern = commandBlockItem({ version: '1.21.4', itemId: 418, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
         assert.strictEqual(modern.present, true);
@@ -523,6 +527,14 @@ async function main() {
             'fill 1 2 3 4 5 6 minecraft:command_block replace'
         );
         assert.strictEqual(modern.components[0].data.value.auto.value, 1, 'always active');
+
+        // 1.21.5 turned that component into raw anonymous NBT bytes; sending the
+        // structured form there throws and the item never arrives at all.
+        const bytes = commandBlockItem({ version: '1.21.5', itemId: 418, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
+        assert.strictEqual(Buffer.isBuffer(bytes.components[0].data), true);
+        const decoded = nbt.proto.read(bytes.components[0].data, 0, 'anonymousNbt').value.value;
+        assert.strictEqual(decoded.Command.value, 'fill 1 2 3 4 5 6 minecraft:command_block replace');
+        assert.strictEqual(decoded.auto.value, 1, 'always active');
 
         const legacy = commandBlockItem({ version: '1.20.4', itemId: 373, command: 'fill 1 2 3 4 5 6 minecraft:command_block replace' });
         assert.strictEqual(legacy.present, true);

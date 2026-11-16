@@ -116,7 +116,10 @@ class Bot extends EventEmitter {
             this.attempts = 0;
             this.state = 'ready';
             this.disconnectReason = null;
-            this.log.info(`connected as ${this.server.username}`);
+            this.log.info(
+                `connected as ${this.server.username} ` +
+                `(protocol ${client.version ?? 'unknown'}, gamemode ${packet.gameMode ?? '?'})`
+            );
             this.selfCare?.onLoginPacket(packet);
             this.emit('ready');
             this.applyNick();
@@ -140,6 +143,8 @@ class Bot extends EventEmitter {
         }
 
         client.on('block_change', packet => this.core?.onBlockChange(packet));
+        // The server answers a creative slot with the slot it settled on.
+        client.on('set_slot', packet => this.core?.fillItem?.noteSlot(packet));
         client.on('entity_status', packet => this.selfCare?.onEntityStatus(packet));
         client.on('game_state_change', packet => this.selfCare?.onGameStateChange(packet));
         client.on('respawn', packet => this.selfCare?.onRespawn(packet));

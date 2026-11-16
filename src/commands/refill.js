@@ -33,10 +33,14 @@ module.exports = {
 
         if (first === 'status') {
             const status = core.spamStatus();
+            const item = core.fillItem;
+            const how = item?.usable
+                ? 'place a command block item'
+                : `write into core blocks (${item?.broken ? 'items refused by this server or not in creative' : 'item path unavailable'})`;
             ctx.reply(status.running
                 ? `Spam refill: every ${status.intervalMs}ms, ${status.count} fill(s), ` +
-                  `${Math.ceil(status.leftMs / 1000)}s left.`
-                : `Spam refill is not running (would use every ${status.intervalMs}ms).`);
+                  `${Math.ceil(status.leftMs / 1000)}s left, ${how}.`
+                : `Spam refill is not running (would use every ${status.intervalMs}ms, ${how}).`);
             return;
         }
 
