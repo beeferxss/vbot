@@ -527,7 +527,8 @@ async function main() {
 
     const sent = [];
     const fakeBot = {
-        client: { latency: 12 },
+        // Pre-1.21.5, so replies use the JSON component shape the tests parse.
+        client: { latency: 12, version: '1.21.4' },
         registry,
         log: logger,
         chat: text => sent.push(text),
@@ -608,6 +609,28 @@ async function main() {
         const detail = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         assert.strictEqual(detail[0].clickEvent.value, 'v:ping ');
         assert.match(decodeReply(sent[0]), /ping — .*latency.* \[public\]/);
+    });
+
+    await check('1.21.5+ servers get the SNBT component shape', async () => {
+        const modernBot = { ...fakeBot, client: { latency: 12, version: '1.21.5' } };
+        sent.length = 0;
+        await registry.dispatch({ bot: modernBot, parsed: parseChatLine('<Unranked> v:help') });
+
+        // Clicking only works with the new field names, which is the whole point.
+        assert.match(sent[0], /^\/tellraw Unranked \[?\{text:'Commands'/);
+        assert.match(sent[0], /click_event:\{action:'suggest_command',command:'v:help '\}/);
+        assert.match(sent[0], /hover_event:\{action:'show_text',value:\{text:'/);
+        assert.ok(!sent[0].includes('clickEvent'), 'the old field name is ignored by 1.21.5+');
+        assert.ok(!sent[0].includes('hoverEvent'));
+
+        // Newer numbering still counts as modern.
+        const { isModern } = require('../src/minecraft/tellraw');
+        for (const version of ['1.21.5', '1.21.6', '1.22', '26.1.2']) {
+            assert.strictEqual(isModern(version), true, `${version} should use the modern shape`);
+        }
+        for (const version of ['1.21.4', '1.21', '1.20.4', '1.8.9']) {
+            assert.strictEqual(isModern(version), false, `${version} should use the JSON shape`);
+        }
     });
 
     await check('unknown commands and rank gates reply instead of throwing', async () => {

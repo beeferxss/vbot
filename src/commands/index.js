@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { LEVEL, levelName, parseLevel } = require('../permissions');
+const tellraw = require('../minecraft/tellraw');
 
 class CommandRegistry {
     constructor({ dir, config, permissions, store, logger, tokens = null }) {
@@ -171,7 +172,8 @@ class CommandRegistry {
         const component = toComponent(text);
 
         if (mode === 'tellraw' && username) {
-            return bot.chat(`/tellraw ${username} ${JSON.stringify(component)}`);
+            const version = bot?.client?.version || this.config.minecraft?.version || null;
+            return bot.chat(tellraw.command(username, component, version));
         }
         // Chat has no formatting, so flatten the component to its text.
         return bot.chat(plainText(component));

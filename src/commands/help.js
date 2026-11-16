@@ -6,21 +6,32 @@ const RANK_COLOR = { public: 'gray', trusted: 'green', admin: 'red', owner: 'lig
 const COMMAND_COLOR = 'aqua';
 const LOCKED_COLOR = 'dark_gray';
 
+function usageOf(prefix, command) {
+    return `${prefix}${command.usage || command.name}`;
+}
+
 // Clicking a command puts it in the chat bar ready to edit; it does not run
 // anything by itself, since the player still has to press enter.
-function clickable(prefix, name) {
+function clickable(prefix, command) {
     return {
-        text: name,
+        text: command.name,
         color: COMMAND_COLOR,
-        clickEvent: { action: 'suggest_command', value: `${prefix}${name} ` }
+        click: { action: 'suggest_command', value: `${prefix}${command.name} ` },
+        hover: { text: `${usageOf(prefix, command)}\n${command.description || 'no description'}` }
     };
 }
 
 // A command you cannot use is still listed, so everyone can see what the bot
 // offers, but it is greyed out and not clickable.
 function entry(prefix, level, command) {
-    if (command.level <= level) return clickable(prefix, command.name);
-    return { text: command.name, color: LOCKED_COLOR };
+    if (command.level <= level) return clickable(prefix, command);
+    return {
+        text: command.name,
+        color: LOCKED_COLOR,
+        hover: {
+            text: `${usageOf(prefix, command)}\n${command.description || 'no description'}\nneeds ${levelName(command.level)}`
+        }
+    };
 }
 
 module.exports = {
@@ -39,9 +50,14 @@ module.exports = {
                 ctx.reply(`No command "${ctx.args[0]}".`);
                 return;
             }
-            const usage = `${ctx.prefix}${command.usage || command.name}`;
+            const usage = usageOf(ctx.prefix, command);
             const parts = [
-                { text: usage, color: COMMAND_COLOR, clickEvent: { action: 'suggest_command', value: `${usage} ` } },
+                {
+                    text: usage,
+                    color: COMMAND_COLOR,
+                    click: { action: 'suggest_command', value: `${usage} ` },
+                    hover: { text: 'Click to put this in chat' }
+                },
                 { text: ' — ', color: 'dark_gray' },
                 { text: command.description || 'no description', color: 'gray' },
                 { text: ` [${levelName(command.level)}]`, color: RANK_COLOR[levelName(command.level)] }
