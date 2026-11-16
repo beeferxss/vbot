@@ -97,14 +97,59 @@ class FillItem {
         this.confirmed = false;
         this.misses = 0;
         this.broken = false;
+        this.lastSendAt = 0;
+    }
+
+    // A kick right after a placement is the placement's fault. One is enough:
+    // reconnecting just to be kicked again teaches nothing.
+    onDisconnect() {
+        if (!this.lastSendAt) return false;
+        if (Date.now() - this.lastSendAt > 2000) return false;
+
+        this.broken = true;
+        this.lastSendAt = 0;
+        this.log.warn(
+            'the refill command block item got the bot disconnected; ' +
+            'using the core blocks instead (set core.refill.item false to skip it)'
+        );
+        return true;
+    }
+
+    // The server's own registry beats any bundled data: a proxy can renumber
+    // everything, and a wrong number is a wrong item or a disconnect.
+    get itemId() {
+        const fromServer = this.bot?.registries?.item?.get?.('command_block');
+        if (fromServer !== undefined) return fromServer;
+        return this.mcd()?.itemsByName?.command_block?.id;
+    }
+
+    // What this protocol would put on the wire for the component we need.
+    componentId() {
+        const mappings = this.mcd()?.protocol?.types?.SlotComponentType?.[1]?.mappings;
+        if (!mappings) return undefined;
+        const found = Object.entries(mappings).find(([, value]) => value === 'block_entity_data');
+        return found ? Number(found[0]) : undefined;
     }
 
     // Needs a client, a version the data knows, and a command block in that data.
     get usable() {
         if (this.broken) return false;
         if (!this.bot || typeof this.bot.write !== 'function') return false;
-        const data = this.mcd();
-        return Boolean(data?.itemsByName?.command_block?.id !== undefined);
+        return this.itemId !== undefined;
+    }
+
+    // A component the server does not know is worse than no item at all.
+    numbersMatch() {
+        const server = this.bot?.registries?.components?.get?.('block_entity_data');
+        const ours = this.componentId();
+        if (server === undefined || ours === undefined || server === ours) return true;
+
+        this.broken = true;
+        this.log.warn(
+            `this server numbers block_entity_data ${server} but the protocol sends ${ours}; ` +
+            'refilling through the core blocks instead'
+        );
+        return false;
     }
 
     // Creative is the only mode where a creative slot is accepted at all.
@@ -152,8 +197,7 @@ class FillItem {
 
     // Two packets: the item into the hotbar, and the hotbar slot selected.
     give(command) {
-        const data = this.mcd();
-        const itemId = data?.itemsByName?.command_block?.id;
+        const itemId = this.itemId;
         if (itemId === undefined) return false;
 
         const item = commandBlockItem({ version: this.version(), itemId, command });
@@ -217,6 +261,8 @@ class FillItem {
         if (!this.usable) return false;
         if (this.timer) return false;
 
+        if (!this.numbersMatch()) return false;
+
         if (!this.creative) {
             this.log.warn(
                 `refill items need creative mode (the bot is in gamemode ${this.bot?.selfCare?.gamemode}); ` +
@@ -227,6 +273,7 @@ class FillItem {
         }
 
         this.confirmed = false;
+        this.lastSendAt = Date.now();
         if (!this.give(command)) return false;
         const placed = this.place();
         if (!placed) {

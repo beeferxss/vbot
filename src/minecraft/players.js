@@ -30,11 +30,18 @@ function playerInfoEntries(packet) {
             // 1.19.3+: an entry can be re-listed or hidden with "listed".
             const listed = typeof entry.listed === 'boolean' ? entry.listed : undefined;
 
+            // 1.8+ carries the gamemode of every listed player, which is how the
+            // bot learns its own when the login packet does not say.
+            const gamemode = Number.isFinite(Number(entry.gamemode ?? entry.gameMode))
+                ? Number(entry.gamemode ?? entry.gameMode)
+                : undefined;
+
             const key = `${name.toLowerCase()}:${uuid || ''}`;
             if (seen.has(key)) continue;
             seen.add(key);
             const entryOut = { name, uuid: uuid || null };
             if (listed !== undefined) entryOut.listed = listed;
+            if (gamemode !== undefined) entryOut.gamemode = gamemode;
             found.push(entryOut);
         }
     }

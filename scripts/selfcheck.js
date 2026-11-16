@@ -613,6 +613,65 @@ async function main() {
         fillItem.destroy();
     });
 
+    await check('item numbers come from the server registries', async () => {
+        const { FillItem } = require('../src/fillitem');
+
+        // A registry packet is a list; the position in it is the id.
+        const registryBot = new Bot({
+            server: { id: 'reg', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline' },
+            config,
+            store,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        assert.strictEqual(registryBot.noteRegistry({
+            id: 'minecraft:item',
+            entries: [{ key: 'minecraft:air' }, { key: 'minecraft:stone' }, { key: 'minecraft:command_block' }]
+        }), true);
+        assert.strictEqual(registryBot.registries.item.get('command_block'), 2);
+        assert.strictEqual(registryBot.noteRegistry({
+            id: 'minecraft:data_component_type',
+            entries: [{ key: 'minecraft:custom_data' }, { key: 'minecraft:block_entity_data' }]
+        }), true);
+        assert.strictEqual(registryBot.registries.components.get('block_entity_data'), 1);
+        assert.strictEqual(registryBot.noteRegistry({ id: 'minecraft:item', entries: [] }), false);
+        registryBot.destroy();
+
+        // The server's number is what gets sent, not the bundled one.
+        const writes = [];
+        const bot = {
+            client: { version: '1.21.4' },
+            position: { x: 0, y: 64, z: 0 },
+            write: (name, payload) => (writes.push({ name, payload }), true),
+            registries: { item: new Map([['command_block', 281]]), components: null }
+        };
+        const item = new FillItem({ bot, logger, data: { itemsByName: { command_block: { id: 418 } } } });
+        assert.strictEqual(item.itemId, 281);
+        assert.strictEqual(item.usable, true);
+        item.give('fill 1 2 3 4 5 6 minecraft:command_block replace');
+        assert.strictEqual(writes[0].payload.item.itemId, 281);
+        item.destroy();
+
+        // A component id the server does not agree with is refused outright.
+        const mismatch = new FillItem({
+            bot: {
+                ...bot,
+                registries: { item: new Map([['command_block', 281]]), components: new Map([['block_entity_data', 7]]) }
+            },
+            logger,
+            data: {
+                itemsByName: { command_block: { id: 418 } },
+                protocol: { types: { SlotComponentType: [0, { mappings: { 60: 'block_entity_data' } }] } }
+            }
+        });
+        assert.strictEqual(mismatch.componentId(), 60);
+        assert.strictEqual(mismatch.numbersMatch(), false);
+        assert.strictEqual(mismatch.broken, true);
+        assert.strictEqual(mismatch.usable, false, 'and it stops being used');
+        mismatch.destroy();
+    });
+
     await check('refills place a command block item before anything else', async () => {
         const used = [];
         const core = new Core({

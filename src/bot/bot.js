@@ -46,6 +46,8 @@ class Bot extends EventEmitter {
 
         this.client = null;
         this.position = null;
+        // Filled in from the server's own registries at login.
+        this.registries = { item: null, components: null };
         this.state = 'idle';
         this.attempts = 0;
         this.reconnectTimer = null;
@@ -142,6 +144,7 @@ class Bot extends EventEmitter {
             });
         }
 
+        client.on('registry_data', packet => this.noteRegistry(packet));
         client.on('block_change', packet => this.core?.onBlockChange(packet));
         // The server answers a creative slot with the slot it settled on.
         client.on('set_slot', packet => this.core?.fillItem?.noteSlot(packet));
@@ -173,6 +176,10 @@ class Bot extends EventEmitter {
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
             this.prefixSent = false;
+            this.registries = { item: null, components: null };
+            // A disconnect right after a placed refill block is that block's
+            // doing: stop using it rather than kicking in a loop.
+            this.core?.fillItem?.onDisconnect();
             this.online.clear();
             this.listed.clear();
             if (this.scanTimer) clearInterval(this.scanTimer);
@@ -254,6 +261,38 @@ class Bot extends EventEmitter {
 
     // Online-mode servers send real UUIDs in the player list; offline-mode
     // servers derive them from the name, so nothing needs to arrive at all.
+    // The registries the server sends at login are the only authority on the
+    // numbers packets use: the position of an entry in each list is its id, and
+    // a proxy can hand out different numbers than any bundled data has.
+    noteRegistry(packet) {
+        const name = String(packet?.id || '').replace(/^minecraft:/, '');
+        const entries = packet?.entries;
+        if (!name || !Array.isArray(entries) || !entries.length) return false;
+        if (name !== 'item' && name !== 'data_component_type') return false;
+
+        const ids = new Map();
+        entries.forEach((entry, index) => {
+            const key = String(entry?.key || '').replace(/^minecraft:/, '');
+            if (key) ids.set(key, index);
+        });
+        if (!ids.size) return false;
+
+        if (name === 'item') {
+            this.registries.item = ids;
+            if (ids.has('command_block')) {
+                this.log.info(`item ids: ${ids.size} entries, command_block is ${ids.get('command_block')}`);
+            }
+        } else {
+            this.registries.components = ids;
+            if (ids.has('block_entity_data')) {
+                this.log.info(
+                    `component ids: ${ids.size} entries, block_entity_data is ${ids.get('block_entity_data')}`
+                );
+            }
+        }
+        return true;
+    }
+
     handlePlayerInfo(packet) {
         const entries = playerInfoEntries(packet);
         const actions = Array.isArray(packet?.actions) ? packet.actions.map(String) : [];
@@ -291,6 +330,14 @@ class Bot extends EventEmitter {
             // Every entry means this player is in the tab list. The identity
             // cache is separate: it outlives a player leaving, so it is only
             // rewritten when something actually changed.
+            // Our own entry is where the gamemode comes from on modern servers.
+            if (entry.gamemode !== undefined) {
+                if (uuid && this.uuid && uuid === this.uuid) this.selfCare?.noteGamemode(entry.gamemode);
+                else if (!uuid && name.toLowerCase() === String(this.server.username || '').toLowerCase()) {
+                    this.selfCare?.noteGamemode(entry.gamemode);
+                }
+            }
+
             const isNew = !this.online.has(key);
             this.online.set(key, { name, uuid });
             this.listed.add(key);

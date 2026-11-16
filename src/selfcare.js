@@ -290,6 +290,16 @@ class SelfCare {
         this.creativeRequested = false;
     }
 
+    // The player list carries a gamemode per player, which is how newer servers
+    // tell us ours when the login packet no longer does.
+    noteGamemode(gamemode) {
+        const mode = Number(gamemode);
+        if (!Number.isFinite(mode) || mode === this.gamemode) return;
+        this.gamemode = mode;
+        this.creativeRequested = false;
+        if (this.ready && mode !== 1) this.ensureCreative();
+    }
+
     onGameStateChange(packet) {
         if (!packet || packet.reason !== 'change_game_mode') return;
         this.gamemode = Number(packet.gameMode);
