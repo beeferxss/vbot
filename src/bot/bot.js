@@ -221,17 +221,50 @@ class Bot extends EventEmitter {
     // Online-mode servers send real UUIDs in the player list; offline-mode
     // servers derive them from the name, so nothing needs to arrive at all.
     handlePlayerInfo(packet) {
-        // Older protocols put removal in player_info as action 4.
-        if (Number(packet?.action) === 4) this.handlePlayerRemove(packet);
+        const entries = playerInfoEntries(packet);
+        const actions = Array.isArray(packet?.actions) ? packet.actions.map(String) : [];
 
-        for (const { name, uuid } of playerInfoEntries(packet)) {
-            if (this.known.get(name.toLowerCase()) === uuid) continue;
-            this.known.set(name.toLowerCase(), uuid);
-            this.online.set(name.toLowerCase(), { name, uuid });
-            this.store.linkPlayer(name, uuid);
-            this.log.debug(`identity ${name} -> ${uuid}`);
-            this.emit('player', { name, uuid });
+        // Older protocols put removal in player_info as action 4.
+        if (Number(packet?.action) === 4 || actions.includes('remove_player')) {
+            this.handlePlayerRemove(packet);
+            return;
         }
+
+        // 1.19.3+ can hide a player with update_listed and listed: false, and
+        // that packet carries only a uuid, so the name is looked up below.
+        for (const entry of packet?.entries || []) {
+            if (!entry || entry.listed !== false) continue;
+            const uuid = normalizeUuid(entry.uuid ?? entry.id);
+            if (!uuid) continue;
+            for (const [key, player] of this.online) {
+                if (player.uuid === uuid) this.online.delete(key);
+            }
+        }
+
+        for (const entry of entries) {
+            const { name, listed } = entry;
+            const uuid = entry.uuid || this.uuidFor(name);
+            const key = name.toLowerCase();
+
+            if (listed === false) {
+                this.online.delete(key);
+                continue;
+            }
+
+            // Every entry means this player is in the tab list. The identity
+            // cache is separate: it outlives a player leaving, so it is only
+            // rewritten when something actually changed.
+            this.online.set(key, { name, uuid });
+
+            if (this.known.get(key) !== uuid) {
+                this.known.set(key, uuid);
+                this.store.linkPlayer(name, uuid);
+                this.log.debug(`identity ${name} -> ${uuid}`);
+                this.emit('player', { name, uuid });
+            }
+        }
+
+        this.log.debug(`player list: ${entries.length} entries, ${this.online.size} online`);
     }
 
     // Resolution order: seen in the player list, already stored, then the

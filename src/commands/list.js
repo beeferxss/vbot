@@ -12,7 +12,9 @@ const NAME_COLOURS = ['aqua', 'green', 'gold', 'light_purple', 'yellow'];
 function playersOf(bot) {
     if (!(bot.online instanceof Map) || !bot.online.size) return [];
     return [...bot.online.values()]
-        .filter(player => player && player.name && player.uuid)
+        // An online-mode UUID can be unknown until the tab list says it; the
+        // player is still online, so they are still listed.
+        .filter(player => player && player.name)
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -46,19 +48,26 @@ module.exports = {
 
         shown.forEach((player, index) => {
             if (index > 0) parts.push({ text: '\n' });
+            const uuid = player.uuid;
             parts.push({
                 text: player.name,
-                color: NAME_COLOURS[start % NAME_COLOURS.length + index % NAME_COLOURS.length],
-                hover: { text: `copy ${player.uuid}` },
-                click: { action: 'copy_to_clipboard', value: player.uuid }
+                color: NAME_COLOURS[(start + index) % NAME_COLOURS.length],
+                ...(uuid
+                    ? {
+                        hover: { text: 'Click to copy UUID' },
+                        click: { action: 'copy_to_clipboard', value: uuid }
+                    }
+                    : {})
             });
             parts.push({ text: ' - ', color: 'dark_gray' });
-            parts.push({
-                text: player.uuid,
-                color: 'blue',
-                hover: { text: 'Click to copy UUID' },
-                click: { action: 'copy_to_clipboard', value: player.uuid }
-            });
+            parts.push(uuid
+                ? {
+                    text: uuid,
+                    color: 'blue',
+                    hover: { text: 'Click to copy UUID' },
+                    click: { action: 'copy_to_clipboard', value: uuid }
+                }
+                : { text: 'uuid unknown', color: 'dark_gray' });
         });
 
         if (pages > 1) {

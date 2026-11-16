@@ -1052,6 +1052,41 @@ async function main() {
         clicks.destroy();
     });
 
+    await check('the tab list tracks who is online, not just who was seen', () => {
+        bot.online.clear();
+        bot.known.clear();
+
+        // 1.19.3+ shape: the name lives under "player".
+        bot.handlePlayerInfo({
+            actions: ['add_player'],
+            entries: [
+                { uuid: offlineUuid('Steve'), player: { name: 'Steve' } },
+                { uuid: offlineUuid('Alex'), player: { name: 'Alex' } }
+            ]
+        });
+        assert.strictEqual(bot.online.size, 2, 'both players are online');
+
+        // A reconnect repeats the same names; they must stay listed even though
+        // their identity is already known.
+        bot.handlePlayerInfo({
+            actions: ['add_player'],
+            entries: [{ uuid: offlineUuid('Steve'), player: { name: 'Steve' } }]
+        });
+        assert.strictEqual(bot.online.size, 2, 'already known players are still online');
+
+        // Older protocol: removal arrives as action 4.
+        bot.handlePlayerInfo({ action: 4, data: [{ uuid: offlineUuid('Alex'), name: 'Alex' }] });
+        assert.deepStrictEqual([...bot.online.keys()], ['steve']);
+
+        // 1.19.3+ hides a player with update_listed and a uuid only.
+        bot.handlePlayerInfo({
+            actions: ['update_listed'],
+            entries: [{ uuid: offlineUuid('Steve'), listed: false }]
+        });
+        assert.strictEqual(bot.online.size, 0, 'a hidden player leaves the list');
+        bot.online.clear();
+    });
+
     await check('list pages through the players the tab list reported', async () => {
         const online = new Map();
         for (let index = 0; index < 10; index++) {
