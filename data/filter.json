@@ -1,7 +1,9 @@
 {
     "kbpw": {
         "enabled": true,
-        "players": [],
+        "players": [
+            "vojtav12"
+        ],
         "uuids": [],
         "ips": [],
         "regex": null,
