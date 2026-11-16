@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { isWebhookUrl } = require('./discord');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -72,6 +73,21 @@ function defaults() {
             nickName: null,
             username: false,
             usernameName: null
+        },
+        discord: {
+            enabled: true,
+            // A channel webhook URL (Channel settings -> Integrations -> Webhooks).
+            // Empty means the bridge stays off.
+            webhookUrl: '',
+            // Name the messages are posted under; defaults to the bot's username.
+            username: null,
+            avatarUrl: null,
+            // Relay game chat into the channel.
+            chat: true,
+            // Relay connecting and disconnecting.
+            events: true,
+            // Discord allows about one message per second per webhook.
+            gapMs: 1000
         },
         storage: {
             path: 'data/vbot.sqlite'
@@ -184,6 +200,17 @@ function loadConfig(configPath = process.env.VBOT_CONFIG || path.join(ROOT, 'con
         throw new ConfigError('bot.prefixes must be a non-empty array');
     }
     config.bot.prefixes = config.bot.prefixes.map(prefix => String(prefix)).filter(Boolean);
+
+    const discord = config.discord;
+    discord.enabled = discord.enabled !== false;
+    discord.webhookUrl = String(discord.webhookUrl || '').trim();
+    // A wrong URL is a config mistake worth failing on, not a silent no-op.
+    if (discord.webhookUrl && !isWebhookUrl(discord.webhookUrl)) {
+        throw new ConfigError(
+            'discord.webhookUrl must be a channel webhook (https://discord.com/api/webhooks/<id>/<token>)'
+        );
+    }
+    discord.gapMs = Math.max(0, Number(discord.gapMs) || 1000);
 
     const connection = config.minecraft.connection;
     connection.reconnectDelayMs = Math.max(250, Number(connection.reconnectDelayMs) || 3000);

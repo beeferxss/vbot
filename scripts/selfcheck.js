@@ -1034,7 +1034,7 @@ async function main() {
         assert.match(output, /trusted: identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
-        assert.match(output, /admin: refill/);
+        assert.match(output, /admin: discord refill/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
@@ -1195,6 +1195,86 @@ async function main() {
     });
 
     await check('the refill command toggles spam refills', refillCommandCheck);
+
+    await check('discord posts chat to a webhook and skips the bot plumbing', async () => {
+        const { DiscordBridge, isWebhookUrl, shouldRelay, formatChat, splitContent } = require('../src/discord');
+
+        assert.strictEqual(isWebhookUrl('https://discord.com/api/webhooks/123/abc-DEF'), true);
+        assert.strictEqual(isWebhookUrl('https://discordapp.com/api/v10/webhooks/1/x'), true);
+        assert.strictEqual(isWebhookUrl('https://discord.com/channels/1/2'), false);
+        assert.strictEqual(isWebhookUrl(''), false);
+
+        // Chat belongs in the channel; the bot's own command traffic does not.
+        assert.strictEqual(shouldRelay('<Steve> hi'), true);
+        assert.strictEqual(shouldRelay('[PLAYER_LIST] Steve'), false);
+        assert.strictEqual(shouldRelay('commands.fill.success: Successfully filled 1 block'), false);
+        assert.strictEqual(shouldRelay('vbot issued server command: /tellraw vbot {"text":"hi"}'), false);
+        assert.strictEqual(formatChat('<Steve> hi there'), '**Steve**: hi there');
+        assert.strictEqual(formatChat('Steve joined the game'), 'Steve joined the game');
+        assert.ok(splitContent('x'.repeat(4000)).every(part => part.length <= 1900));
+
+        const posts = [];
+        const bridge = new DiscordBridge({
+            url: 'https://discord.com/api/webhooks/123/token',
+            username: 'vbot',
+            gapMs: 0,
+            fetchImpl: async (url, options) => {
+                posts.push(JSON.parse(options.body));
+                return { ok: true, status: 204 };
+            }
+        });
+        assert.strictEqual(bridge.enabled, true);
+        assert.strictEqual(await bridge.chat('<Steve> hello'), true);
+        assert.strictEqual(posts.length, 1);
+        assert.strictEqual(posts[0].content, '**Steve**: hello');
+        assert.strictEqual(posts[0].username, 'vbot');
+        assert.deepStrictEqual(posts[0].allowed_mentions, { parse: [] }, 'game chat never pings discord');
+
+        assert.strictEqual(await bridge.chat('[PLAYER_LIST] Steve'), false);
+        assert.strictEqual(posts.length, 1, 'the scan output is not relayed');
+
+        // A broken webhook is a warning, not a crash.
+        const broken = new DiscordBridge({
+            url: 'https://discord.com/api/webhooks/1/t',
+            gapMs: 0,
+            fetchImpl: async () => { throw new Error('boom'); }
+        });
+        assert.strictEqual(await broken.event('x'), false);
+        assert.strictEqual(broken.status().failed, 1);
+        assert.strictEqual(new DiscordBridge({ fetchImpl: async () => ({ ok: true }) }).enabled, false);
+    });
+
+    await check('the discord command reports and tests the bridge', async () => {
+        const status = { enabled: true, queued: 0, sent: 3, failed: 1, dropped: 0, lastError: 'http 404' };
+        let tested = false;
+        const discordBot = {
+            ...fakeBot,
+            discord: {
+                enabled: true,
+                status: () => status,
+                event: async () => {
+                    tested = true;
+                    return true;
+                }
+            }
+        };
+
+        sent.length = 0;
+        await registry.dispatch({ bot: discordBot, parsed: parseChatLine('<VojtaV12> v:discord status') });
+        assert.strictEqual(decodeReply(sent[0]), 'Discord: 3 sent, 1 failed, 0 queued (last error: http 404)');
+
+        sent.length = 0;
+        await registry.dispatch({ bot: discordBot, parsed: parseChatLine('<VojtaV12> v:discord test') });
+        assert.strictEqual(tested, true);
+        assert.strictEqual(decodeReply(sent[0]), 'Posted a test message to Discord.');
+
+        sent.length = 0;
+        await registry.dispatch({
+            bot: { ...fakeBot, discord: null },
+            parsed: parseChatLine('<VojtaV12> v:discord status')
+        });
+        assert.match(decodeReply(sent[0]), /No Discord webhook is configured/);
+    });
 
     await check('trusted commands respond with identity data', async () => {
         const output = await run('<Steve> v:identity Alex');
