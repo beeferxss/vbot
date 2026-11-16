@@ -1,6 +1,5 @@
 'use strict';
 
-const crypto = require('node:crypto');
 const { normalizeUuid } = require('./minecraft/uuid');
 
 const LEVEL = {
@@ -22,13 +21,6 @@ function parseLevel(value) {
     }
     const index = NAMES.indexOf(String(value || '').toLowerCase());
     return index === -1 ? null : index;
-}
-
-function safeEqual(a, b) {
-    const left = Buffer.from(String(a));
-    const right = Buffer.from(String(b));
-    if (left.length !== right.length) return false;
-    return crypto.timingSafeEqual(left, right);
 }
 
 class Permissions {
@@ -65,29 +57,6 @@ class Permissions {
         }
 
         return level;
-    }
-
-    keyForLevel(level) {
-        const keys = this.config.keys || {};
-        const name = levelName(level);
-        return name === 'public' ? '' : String(keys[name] || '');
-    }
-
-    // Redeems an auth key in-game. Returns the granted level or null.
-    redeem({ name, uuid, key }) {
-        const provided = String(key || '').trim();
-        if (!provided) return null;
-
-        for (const level of [LEVEL.TRUSTED, LEVEL.ADMIN, LEVEL.OWNER]) {
-            const expected = this.keyForLevel(level);
-            if (expected && safeEqual(expected, provided)) {
-                this.store.setUserLevel(name, level, 'key');
-                if (uuid) this.store.setPlayerUUID(name, uuid);
-                this.logger.info(`${name} authenticated as ${levelName(level)}`);
-                return level;
-            }
-        }
-        return null;
     }
 
     grant(name, level, grantedBy = null) {

@@ -5,6 +5,7 @@ const { loadConfig, ConfigError } = require('./config');
 const { Logger } = require('./logger');
 const { Store } = require('./db');
 const { Permissions } = require('./permissions');
+const { Tokens } = require('./auth/tokens');
 const { CommandRegistry } = require('./commands');
 const { BotManager } = require('./bot/manager');
 
@@ -23,12 +24,14 @@ async function main() {
     const logger = new Logger(config.logging);
     const store = new Store(path.resolve(__dirname, '..', config.storage.path)).open();
     const permissions = new Permissions({ config, store, logger });
+    const tokens = new Tokens({ keys: config.permissions.keys, logger });
     const registry = new CommandRegistry({
         dir: path.join(__dirname, 'commands'),
         config,
         permissions,
         store,
-        logger
+        logger,
+        tokens
     }).loadAll();
 
     // Installed before any socket exists: a first-connect failure must be

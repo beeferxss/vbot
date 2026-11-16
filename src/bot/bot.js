@@ -2,7 +2,7 @@
 
 const EventEmitter = require('node:events');
 const mc = require('minecraft-protocol');
-const { chatTextFromPacket, parseChatLine } = require('../minecraft/chat');
+const { chatTextFromPacket, chatEventFromPacket, parseChatLine } = require('../minecraft/chat');
 const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
 const { playerInfoEntries } = require('../minecraft/players');
 
@@ -87,7 +87,7 @@ class Bot extends EventEmitter {
         }
 
         for (const event of CHAT_PACKETS) {
-            client.on(event, packet => this.handleChat(chatTextFromPacket(packet)));
+            client.on(event, packet => this.handleChatEvent(event, packet));
         }
 
         client.on('disconnect', packet => {
@@ -112,20 +112,37 @@ class Bot extends EventEmitter {
         });
     }
 
-    handleChat(text) {
-        const line = String(text || '').trim();
-        if (!line) return;
+    handleChatEvent(event, packet) {
+        const chat = chatEventFromPacket(event, packet);
+        if (!chat || !chat.line) return;
 
-        if (this.config.logging?.chat) this.log.info(`<chat> ${line}`);
+        // A signed chat packet is the only place a name and uuid are worth
+        // trusting, and it also keeps the identity cache warm between logins.
+        if (chat.verified && chat.username && chat.uuid) {
+            this.known.set(chat.username.toLowerCase(), chat.uuid);
+            this.store.linkPlayer(chat.username, chat.uuid);
+        }
 
-        const parsed = parseChatLine(line);
-        if (parsed) this.store.touchPlayer(parsed.username, this.uuidFor(parsed.username));
-        this.emit('chat', { line, parsed });
+        if (this.config.logging?.chat) {
+            this.log.info(`${chat.verified ? '' : '(system) '}${chat.line}`);
+        }
+
+        const parsed = chat.verified && chat.username
+            ? { username: chat.username, message: chat.message }
+            : parseChatLine(chat.line);
 
         if (parsed) {
-            this.registry.dispatch({ bot: this, parsed, line }).catch(error => {
-                this.log.error(`command dispatch failed: ${error.stack || error.message}`);
-            });
+            const uuid = chat.uuid || (chat.verified ? null : null) || this.uuidFor(parsed.username);
+            parsed.uuid = uuid;
+            this.store.touchPlayer(parsed.username, uuid);
+        }
+
+        this.emit('chat', { line: chat.line, parsed, verified: chat.verified });
+
+        if (parsed) {
+            this.registry
+                .dispatch({ bot: this, parsed, line: chat.line, verified: chat.verified })
+                .catch(error => this.log.error(`command dispatch failed: ${error.stack || error.message}`));
         }
     }
 

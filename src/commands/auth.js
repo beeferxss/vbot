@@ -4,26 +4,24 @@ const { levelName } = require('../permissions');
 
 module.exports = {
     name: 'auth',
-    description: 'Authenticate with a rank key to unlock commands',
-    usage: 'auth <key>',
+    aliases: ['validate', 'val'],
+    description: 'Redeem a short-lived auth token to store your rank',
+    usage: 'auth <token>',
     level: 'public',
 
     async execute(ctx) {
         if (!ctx.args.length) {
-            ctx.reply(`Usage: ${ctx.prefix}auth <key>`);
+            ctx.reply(`Usage: ${ctx.prefix}auth <token> — generate one with: npm run token -- <rank>`);
             return;
         }
 
-        const granted = ctx.permissions.redeem({
-            name: ctx.username,
-            uuid: ctx.store.getPlayer(ctx.username)?.uuid || null,
-            key: ctx.args[0]
-        });
-
+        const granted = ctx.tokens ? ctx.tokens.verify(ctx.args[0]) : null;
         if (granted === null) {
-            ctx.reply('Invalid key.');
+            ctx.reply('Invalid or expired token.');
             return;
         }
+
+        ctx.permissions.grant(ctx.username, granted, 'token');
         ctx.reply(`Authenticated as ${levelName(granted)}.`);
     }
 };

@@ -37,7 +37,8 @@ async function main() {
     const { Store } = require('../src/db');
     const { Permissions, LEVEL } = require('../src/permissions');
     const { CommandRegistry } = require('../src/commands');
-    const { parseChatLine, chatTextFromPacket } = require('../src/minecraft/chat');
+    const { Tokens } = require('../src/auth/tokens');
+    const { parseChatLine, chatTextFromPacket, chatEventFromPacket } = require('../src/minecraft/chat');
     const { flatten } = require('../src/minecraft/text');
     const { normalizeUuid, offlineUuid, shortUuid } = require('../src/minecraft/uuid');
     const { playerInfoEntries } = require('../src/minecraft/players');
@@ -149,6 +150,25 @@ async function main() {
         assert.strictEqual(chatTextFromPacket(null), '');
     });
 
+    await check('player chat packets carry a trusted sender and uuid', () => {
+        const uuid = '069a79f4-44e9-4726-a5be-fca90e38aaf5';
+        const event = chatEventFromPacket('player_chat', {
+            senderUuid: uuid,
+            networkName: { text: '[ADMIN] Alex' },
+            plainMessage: '|>help'
+        });
+        assert.strictEqual(event.verified, true);
+        assert.strictEqual(event.username, 'Alex');
+        assert.strictEqual(event.message, '|>help');
+        assert.strictEqual(event.uuid, uuid);
+
+        // Anything printed by the server is free-form and cannot be trusted to
+        // come from the player it claims to be.
+        const forged = chatEventFromPacket('system_chat', { content: { text: '<Steve> |>help' } });
+        assert.strictEqual(forged.verified, false);
+        assert.deepStrictEqual(parseChatLine(forged.line), { username: 'Steve', message: '|>help' });
+    });
+
     // --- store, permissions, bot -------------------------------------------
     const store = new Store(':memory:').open();
     const config = loadConfig(examplePath);
@@ -177,10 +197,24 @@ async function main() {
         config.permissions.owner = [];
     });
 
-    await check('auth keys grant the matching rank', () => {
-        assert.strictEqual(permissions.redeem({ name: 'Alex', key: 'wrong' }), null);
-        assert.strictEqual(permissions.redeem({ name: 'Alex', key: 'admin-key' }), LEVEL.ADMIN);
-        assert.strictEqual(permissions.levelFor({ name: 'Alex' }), LEVEL.ADMIN);
+    await check('auth tokens prove a rank once and expire', () => {
+        const keys = { trusted: 'trusted-key', admin: 'admin-key', owner: 'owner-key' };
+
+        const adminTokens = new Tokens({ keys });
+        const adminToken = adminTokens.issue(LEVEL.ADMIN).token;
+        assert.strictEqual(adminToken.length, 16);
+        assert.strictEqual(adminTokens.verify(adminToken), LEVEL.ADMIN);
+        assert.strictEqual(adminTokens.verify(adminToken), null, 'replay must be refused');
+
+        const trustedTokens = new Tokens({ keys });
+        const trustedToken = trustedTokens.issue(LEVEL.TRUSTED).token;
+        assert.strictEqual(trustedToken.length, 8);
+        assert.strictEqual(trustedTokens.verify(trustedToken), LEVEL.TRUSTED);
+
+        const unknown = new Tokens({ keys });
+        assert.strictEqual(unknown.verify('deadbeef'), null);
+        assert.strictEqual(unknown.verify(''), null);
+        assert.strictEqual(new Tokens({ keys: {} }).issue(LEVEL.ADMIN), null, 'no key means no token');
     });
 
     const bot = new Bot({
@@ -225,12 +259,14 @@ async function main() {
         assert.ok(fs.statSync(file).size > 0, 'database file should hold data');
     });
 
+    const tokens = new Tokens({ keys: { trusted: 'trusted-key', admin: 'admin-key', owner: 'owner-key' } });
     const registry = new CommandRegistry({
         dir: path.join(ROOT, 'src', 'commands'),
         config,
         permissions,
         store,
-        logger
+        logger,
+        tokens
     }).loadAll();
 
     const sent = [];
@@ -263,7 +299,24 @@ async function main() {
 
     await check('unknown commands and rank gates reply instead of throwing', async () => {
         assert.match(await run('<Unranked> v:nope'), /Unknown command "nope"/);
-        assert.match(await run('<Unranked> v:identity'), /need trusted rank/);
+        assert.match(await run('<Unranked> v:identity'), /needs a trusted token/);
+    });
+
+    await check('a stored rank cannot be borrowed by forged chat', async () => {
+        // Steve is admin in the store, but this line did not arrive as signed
+        // player chat, so it must not inherit that rank.
+        sent.length = 0;
+        await registry.dispatch({
+            bot: fakeBot,
+            parsed: { username: 'Steve', message: 'v:identity Alex' },
+            verified: false
+        });
+        assert.match(sent[0], /needs a trusted token/);
+
+        // The same line with a fresh trusted token is accepted.
+        const token = tokens.issue(LEVEL.TRUSTED).token;
+        const output = await run(`<Unranked> v:identity ${token} Alex`);
+        assert.match(output, /Alex — 069a79f4/);
     });
 
     await check('trusted commands respond with identity data', async () => {

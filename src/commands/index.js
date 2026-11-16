@@ -5,12 +5,13 @@ const path = require('node:path');
 const { LEVEL, levelName, parseLevel } = require('../permissions');
 
 class CommandRegistry {
-    constructor({ dir, config, permissions, store, logger }) {
+    constructor({ dir, config, permissions, store, logger, tokens = null }) {
         this.dir = dir;
         this.config = config;
         this.permissions = permissions;
         this.store = store;
         this.logger = logger;
+        this.tokens = tokens;
         this.commands = new Map();
         this.aliases = new Map();
     }
@@ -75,17 +76,15 @@ class CommandRegistry {
         return found;
     }
 
-    async dispatch({ bot, parsed }) {
+    async dispatch({ bot, parsed, verified = true }) {
         const prefix = this.matchPrefix(parsed.message);
         if (!prefix) return false;
 
         const body = parsed.message.slice(prefix.length).trim();
         if (!body) return false;
 
-        const [label, ...args] = body.split(/\s+/);
+        const [label, ...argv] = body.split(/\s+/);
         const command = this.find(label);
-        const level = this.permissions.levelFor({ name: parsed.username });
-
         const reply = text => bot.chat(text);
 
         if (!command) {
@@ -93,9 +92,30 @@ class CommandRegistry {
             return true;
         }
 
-        if (level < command.level) {
-            reply(`You need ${levelName(command.level)} rank for that.`);
-            return true;
+        // A name is only worth as much as the packet that carried it. System
+        // chat can be printed by anyone ( /sudo, a plugin, a rank prefix ), so
+        // a stored rank or config list only counts for signed player chat.
+        let level = this.permissions.levelFor({
+            name: verified ? parsed.username : null,
+            uuid: parsed.uuid
+        });
+
+        let args = argv;
+
+        // Privileged commands need a token derived from a secret key: it is the
+        // one thing a spoofer cannot produce, and it expires within seconds.
+        if (command.level > level) {
+            const granted = this.tokens ? this.tokens.verify(args[0]) : null;
+            if (granted === null) {
+                reply(`${command.name} needs a ${levelName(command.level)} token: ${prefix}${command.name} <token> ...`);
+                return true;
+            }
+            if (granted < command.level) {
+                reply(`That token is ${levelName(granted)}; ${command.name} needs ${levelName(command.level)}.`);
+                return true;
+            }
+            args = args.slice(1);
+            level = granted;
         }
 
         const ctx = {
@@ -104,9 +124,11 @@ class CommandRegistry {
             config: this.config,
             store: this.store,
             permissions: this.permissions,
+            tokens: this.tokens,
             logger: bot.log,
             username: parsed.username,
-            uuid: typeof bot.uuidFor === 'function' ? bot.uuidFor(parsed.username) : null,
+            uuid: parsed.uuid ?? (typeof bot.uuidFor === 'function' ? bot.uuidFor(parsed.username) : null),
+            verified,
             level,
             levelName: levelName(level),
             args,

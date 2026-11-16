@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "selfcheck": "node scripts/selfcheck.js"
+    "selfcheck": "node scripts/selfcheck.js",
+    "token": "node scripts/token.js"
   },
   "engines": {
     "node": ">=22.5"
