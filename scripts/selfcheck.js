@@ -1714,6 +1714,13 @@ async function main() {
 
         assert.strictEqual(bot.notePlayerList('[PLAYER_LIST] ScanA, ScanB'), true);
         assert.deepStrictEqual([...bot.online.keys()].sort(), ['scana', 'scanb']);
+
+        // Command spy echoes the command itself; that payload is not a player.
+        const before = bot.online.size;
+        assert.strictEqual(bot.notePlayerList(
+            'vbot issued server command: /tellraw vbot {"text":"[PLAYER_LIST]","extra":[{"selector":"@a"}]}'
+        ), false);
+        assert.strictEqual(bot.online.size, before, 'the tellraw payload is not a name list');
         assert.strictEqual(bot.online.get('scanb').vanished, true);
         assert.strictEqual(bot.online.get('scana').vanished, false);
 

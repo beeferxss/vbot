@@ -405,9 +405,13 @@ class Bot extends EventEmitter {
         const names = text.slice(index + PLAYER_LIST_MARKER.length).trim();
         if (!names) return false;
 
+        // The command itself can come back through command spy, and then what
+        // follows the marker is the tellraw payload rather than a name list. Only
+        // real names are taken, so that echo cannot become players.
+        let added = 0;
         for (const raw of names.split(',')) {
             const name = raw.replace(/\u00a7[0-9a-fk-or]/gi, '').trim();
-            if (!name || name.startsWith('@')) continue;
+            if (!/^\w{1,16}$/.test(name)) continue;
 
             const key = name.toLowerCase();
             const existing = this.online.get(key);
@@ -417,7 +421,10 @@ class Bot extends EventEmitter {
                 vanished: !this.listed.has(key)
             });
             if (!existing) this.ipLookup?.queue(name);
+            added += 1;
         }
+
+        if (!added) return false;
 
         this.log.debug(`player scan: ${this.online.size} online, ${[...this.online.values()].filter(p => p.vanished).length} vanished`);
         return true;
