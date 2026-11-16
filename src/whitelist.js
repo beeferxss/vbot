@@ -249,6 +249,15 @@ class Whitelist {
     listIPs() { return this.getServerData().ips; }
     clearIPs() { this.updateServerData(d => { d.ips = []; }); return true; }
 
+    clearAll() {
+        this.updateServerData(d => {
+            d.players = [];
+            d.uuids = [];
+            d.ips = [];
+        });
+        return true;
+    }
+
     rescan() { this.sweep(); return true; }
 }
 

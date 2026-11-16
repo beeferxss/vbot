@@ -38,6 +38,7 @@ class Core {
         this.bounds = { x: null, y: this.y + this.size - 1, z: null };
         this.cursor = 0;
         this.ready = false;
+        this.everReady = false;
         this.refilling = false;
         this.damageTimer = null;
         this.ownChanges = new Map();
@@ -122,6 +123,7 @@ class Core {
             if (this.survivor()) {
                 this.markAllAlive();
                 this.ready = true;
+                this.everReady = true;
                 this.lastFill = { blocks: 0, expected: this.volume, ok: true, at: Date.now() };
                 this.fillFailures = 0;
                 this.log.info('core fill changed nothing: the core is already in place');
@@ -204,9 +206,11 @@ class Core {
 
         // Plain chat, never routed back into the core: a fill must reach the
         // server even when the core is the thing that is broken.
-        const send = typeof this.bot.sendChat === 'function'
-            ? text => this.bot.sendChat(text)
-            : text => this.bot.chat(text);
+        const send = text => {
+            if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(text);
+            if (typeof this.bot.client?.chat === 'function') return this.bot.client.chat(text);
+            return this.bot.chat(text);
+        };
 
         // Whatever is left of the core refills it: writing the fill into a
         // surviving block needs no item and no chat.
@@ -234,7 +238,8 @@ class Core {
         if (!viaCore) send(`/${command}`);
 
         this.refilling = true;
-        this.ready = false;
+        // Keep the core usable across rebuilds once it has worked at least once.
+        if (!this.everReady) this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
         let place = 'chat';
@@ -245,6 +250,7 @@ class Core {
         setTimeout(() => {
             this.refilling = false;
             this.ready = true;
+            this.everReady = true;
             this.lastRefillAt = Date.now();
             this.markAllAlive();
         }, REFILL_SETTLE_MS).unref?.();
@@ -337,6 +343,11 @@ class Core {
         const text = String(command || '').trim().replace(/^\//, '');
         if (!text) return null;
         if (this.origin.x === null && !this.reset()) return null;
+
+        // If we somehow lost track of liveness after the core has been
+        // established, assume blocks are present and let writes/air-break
+        // detection correct it. This keeps the core reusable.
+        if (this.blocks.size === 0 && this.origin.x !== null && this.everReady) this.markAllAlive();
 
         for (let attempt = 0; attempt < this.volume; attempt++) {
             const cell = this.nextCell();

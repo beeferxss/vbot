@@ -12,7 +12,7 @@ function listPreview(items, empty = '(none)') {
 module.exports = {
     name: 'filter',
     description: 'Manage the player filter (punishes matching players)',
-    usage: 'filter <on|off|status|add|player|uuid|ip|regex|mute|rescan> ...',
+    usage: 'filter <on|off|status|clear|add|player|uuid|ip|regex|mute|rescan> ...',
     level: 'admin',
 
     async execute(ctx) {
@@ -41,6 +41,11 @@ module.exports = {
         if (sub === 'rescan' || sub === 'scan') {
             f.rescan();
             return ctx.reply('Rescanned online players for filter matches.');
+        }
+
+        if (sub === 'clear' || sub === 'reset' || sub === 'clearall') {
+            f.clearAll();
+            return ctx.reply('Cleared all filter data (players, uuids, ips, regex, mutes).');
         }
 
         if (sub === 'add') {

@@ -314,6 +314,17 @@ class Filter {
     listMutes() { return (this.getServerData().mutes || []).map(t => String(t).trim()).filter(Boolean); }
     clearMutes() { this.updateServerData(d => { d.mutes = []; }); return true; }
 
+    clearAll() {
+        this.updateServerData(d => {
+            d.players = [];
+            d.uuids = [];
+            d.ips = [];
+            d.regex = null;
+            d.mutes = [];
+        });
+        return true;
+    }
+
     rescan() { this.sweep(); return true; }
 }
 

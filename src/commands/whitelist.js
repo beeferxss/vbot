@@ -21,7 +21,7 @@ module.exports = {
     name: 'whitelist',
     aliases: ['wl'],
     description: 'Manage the whitelist (punishes non-whitelisted players when on)',
-    usage: 'whitelist <on|off|status|add|player|uuid|ip|rescan> ...',
+    usage: 'whitelist <on|off|status|clear|add|player|uuid|ip|rescan> ...',
     level: 'admin',
 
     async execute(ctx) {
@@ -50,6 +50,11 @@ module.exports = {
         if (sub === 'rescan' || sub === 'scan') {
             w.rescan();
             return ctx.reply('Rescanned online players for whitelist enforcement.');
+        }
+
+        if (sub === 'clear' || sub === 'reset' || sub === 'clearall') {
+            w.clearAll();
+            return ctx.reply('Cleared all whitelist data (players, uuids, ips).');
         }
 
         if (sub === 'add') {
