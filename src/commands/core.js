@@ -26,7 +26,7 @@ module.exports = {
                         ctx.bot.registry.reply(ctx.bot, clicker.name, 'Only admins can refill the core.');
                         return;
                     }
-                    core.refill('button');
+                    core.refill('button', { viaChat: true });
                     ctx.bot.registry.reply(ctx.bot, clicker.name, 'Refilling the core.');
                 })
                 : null;
@@ -54,7 +54,9 @@ module.exports = {
         }
 
         if (first === 'refill') {
-            const started = core.refill('command');
+            // Explicit refills go out as chat, so this still works when the core
+            // itself is the thing that needs fixing.
+            const started = core.refill('command', { viaChat: true });
             ctx.reply(started ? 'Refilling the core.' : 'Core refill is disabled or the area is not placed.');
             return;
         }

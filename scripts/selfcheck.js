@@ -452,7 +452,7 @@ async function main() {
         core.destroy();
     });
 
-    await check('every refill goes out as chat, survivors or not', async () => {
+    await check('an automatic refill reuses a surviving block, but an explicit one chats', async () => {
         const sent = [];
         const writes = [];
         const coreBot = {
@@ -474,23 +474,24 @@ async function main() {
         assert.strictEqual(core.ready, true);
         assert.strictEqual(core.blocks.size, 8, 'every cell is recorded once the fill lands');
 
-        // One survivor, and the core is ready: still chat.
+        // One survivor left: an automatic refill writes into it, quietly.
         for (const key of core.blocks.keys()) {
             if (key !== '1:65:1') core.blocks.set(key, false);
         }
         sent.length = 0;
         writes.length = 0;
         core.refill('damaged');
-        assert.strictEqual(writes.length, 0, 'a refill never writes into a block');
-        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+        assert.deepStrictEqual(sent, [], 'a surviving block carries the fill');
+        assert.strictEqual(writes.length, 1);
+        assert.deepStrictEqual(writes[0].payload.location, { x: 1, y: 65, z: 1 });
+        assert.match(writes[0].payload.command, /^fill 0 64 0 1 65 1 /);
 
-        // Nothing left standing: chat too.
+        // v\core refill asks for chat even though a block is available.
         await new Promise(resolve => setTimeout(resolve, 450));
-        for (const key of core.blocks.keys()) core.blocks.set(key, false);
         sent.length = 0;
         writes.length = 0;
-        core.refill('damaged');
-        assert.strictEqual(writes.length, 0);
+        core.refill('command', { viaChat: true });
+        assert.strictEqual(writes.length, 0, 'an explicit refill never writes into a block');
         assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
         core.destroy();
     });
@@ -801,11 +802,12 @@ async function main() {
         routingBot.chat('hello world');
         assert.deepStrictEqual(spoken, ['hello world']);
 
-        // A refill never goes into a block, even though the core is ready.
+        // No fill has landed yet, so there is no block to reuse: chat it is, and
+        // the fill must not be routed back into the core.
         packets.length = 0;
         core.refill('damaged');
         assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
-        assert.strictEqual(packets.length, 0, 'a refill must not be written into a block');
+        assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
         core.destroy();
     });
 

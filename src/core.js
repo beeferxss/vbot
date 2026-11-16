@@ -106,7 +106,9 @@ class Core {
         return true;
     }
 
-    refill(reason = 'manual') {
+    // viaChat forces the fill out as a chat command instead of a block write.
+    // Automatic refills prefer a block; the explicit command asks for chat.
+    refill(reason = 'manual', { viaChat = false } = {}) {
         if (!this.enabled || !this.refillEnabled) return false;
         if (this.origin.x === null && !this.reset()) return false;
 
@@ -115,20 +117,38 @@ class Core {
         const command =
             `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${block} ${this.mode}`;
 
-        // Refills always go out as chat. Writing the fill into a leftover block
-        // cannot be trusted - that block may already be gone, or the write may
-        // be ignored - and a refill is exactly when the core must not depend on
-        // the core.
+        // Plain chat, never routed back into the core: a fill must reach the
+        // server even when the core is the thing that is broken.
         const send = typeof this.bot.sendChat === 'function'
             ? text => this.bot.sendChat(text)
             : text => this.bot.chat(text);
-        send(`/${command}`);
+
+        // Reuse a block that is still standing: writing the fill into it rebuilds
+        // the area without a chat command. Only when nothing is left standing
+        // does an automatic refill fall back to chat.
+        const survivor = !viaChat && !this.refilling ? this.survivor() : null;
+        let viaCore = false;
+
+        if (survivor) {
+            this.markOwn(survivor);
+            viaCore = Boolean(this.bot.write?.('update_command_block', {
+                location: survivor,
+                command,
+                mode: 1,
+                flags: 0b101
+            }));
+            if (!viaCore) this.blocks.set(keyOf(survivor), false);
+        }
+
+        if (!viaCore) send(`/${command}`);
 
         this.refilling = true;
         this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_SETTLE_MS + 500;
-        this.log.info(`core refill (${reason}) via chat`);
+        this.log.info(
+            `core refill (${reason}) via ${viaCore ? `block ${survivor.x} ${survivor.y} ${survivor.z}` : 'chat'}`
+        );
 
         setTimeout(() => {
             this.refilling = false;
