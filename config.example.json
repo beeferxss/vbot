@@ -101,7 +101,7 @@
   "core": {
     "enabled": true,
     "area": {
-      "size": 16,
+      "size": 9,
       "y": 64
     },
     "refill": {

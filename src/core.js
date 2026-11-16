@@ -15,7 +15,7 @@ class Core {
         this.config = config || {};
         this.enabled = this.config.enabled !== false;
 
-        this.size = positive(this.config.area?.size, 16);
+        this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
         this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
         this.mode = String(this.config.refill?.mode || 'replace');

@@ -11,10 +11,6 @@ const LEVEL = {
 
 const NAMES = ['public', 'trusted', 'admin', 'owner'];
 
-// Owners that cannot be removed: an emptied or mistyped config must never be
-// able to lock the actual owner out of their own bot.
-const ALWAYS_OWNER = ['VojtaV12'];
-
 function levelName(level) {
     return NAMES[level] ?? 'public';
 }
@@ -52,8 +48,6 @@ class Permissions {
             if (hit) level = Math.max(level, parseLevel(rank));
         }
 
-        if (ALWAYS_OWNER.some(entry => entry.toLowerCase() === key)) level = LEVEL.OWNER;
-
         const byName = this.store?.getUser(name);
         if (byName) level = Math.max(level, parseLevel(byName.level) ?? LEVEL.PUBLIC);
 
@@ -76,4 +70,4 @@ class Permissions {
     }
 }
 
-module.exports = { ALWAYS_OWNER, LEVEL, NAMES, Permissions, levelName, parseLevel };
+module.exports = { LEVEL, NAMES, Permissions, levelName, parseLevel };

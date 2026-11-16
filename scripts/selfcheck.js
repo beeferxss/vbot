@@ -64,6 +64,7 @@ async function main() {
         assert.strictEqual(config.minecraft.connection.autoReconnect, true);
         assert.strictEqual(config.storage.path, 'data/vbot.sqlite');
         assert.deepStrictEqual(config.permissions.keys, { owner: '', admin: '', trusted: '' });
+        assert.strictEqual(config.core.area.size, 9, 'the core is 9x9x9');
     });
 
     await check('config rejects a server without a host', () => {
@@ -198,15 +199,16 @@ async function main() {
         config.permissions.owner = [];
     });
 
-    await check('the owner is fixed in code and the lists ship blank', () => {
-        const fixed = new Permissions({
-            config: { permissions: { owner: [], admin: [], trusted: [] } },
-            store,
-            logger
-        });
-        assert.strictEqual(fixed.levelFor({ name: 'VojtaV12' }), LEVEL.OWNER);
-        assert.strictEqual(fixed.levelFor({ name: 'vojtav12' }), LEVEL.OWNER, 'names are case-insensitive');
-        assert.strictEqual(fixed.levelFor({ name: 'NotVojtaV12' }), LEVEL.PUBLIC);
+    await check('the owner list in config is what grants owner', () => {
+        config.permissions.owner = ['VojtaV12'];
+        assert.strictEqual(permissions.levelFor({ name: 'VojtaV12' }), LEVEL.OWNER);
+        assert.strictEqual(permissions.levelFor({ name: 'vojtav12' }), LEVEL.OWNER, 'names are case-insensitive');
+        assert.strictEqual(permissions.levelFor({ name: 'NotVojtaV12' }), LEVEL.PUBLIC);
+
+        // Ranks come only from config and the database, never from code.
+        config.permissions.owner = [];
+        assert.strictEqual(permissions.levelFor({ name: 'VojtaV12' }), LEVEL.PUBLIC);
+        config.permissions.owner = ['VojtaV12'];
 
         const shipped = loadConfig(examplePath).permissions;
         assert.deepStrictEqual(shipped.owner, ['VojtaV12']);

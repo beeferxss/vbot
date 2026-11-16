@@ -32,8 +32,8 @@ function defaults() {
         },
         permissions: {
             keys: { owner: '', admin: '', trusted: '' },
-            // Names or uuids, one per entry. VojtaV12 is always owner in code as
-            // well, so an empty list here cannot lock the owner out.
+            // Names or uuids, one per entry. These are the only source of ranks
+            // besides the database, so the owner has to stay listed here.
             owner: ['VojtaV12'],
             admin: [],
             trusted: []
@@ -52,7 +52,7 @@ function defaults() {
         },
         core: {
             enabled: true,
-            area: { size: 16, y: 64 },
+            area: { size: 9, y: 64 },
             refill: { enabled: true, block: 'minecraft:repeating_command_block', mode: 'replace' }
         }
     };
