@@ -313,10 +313,16 @@ async function main() {
         assert.strictEqual(writes[0].payload.command, 'say hello');
         assert.strictEqual(writes[1].payload.command, 'gamemode creative');
 
-        // Our own writes must not look like damage.
+        // Our own writes must not look like damage, and neither may the fill.
         assert.strictEqual(core.onBlockChange({ location: first }), false);
-        assert.strictEqual(core.onBlockChange({ location: { x: 999, y: 999, z: 999 } }), false);
+        assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), false, 'the fill is not damage');
+
+        // Once the fill has landed, a real block change inside the core is damage.
+        core.refilling = false;
+        core.graceUntil = 0;
         assert.strictEqual(core.onBlockChange({ location: { x: 40, y: 70, z: -10 } }), true);
+        assert.strictEqual(core.blocks.get('40:70:-10'), false);
+        core.destroy();
     });
 
     await check('core refills itself when a block is damaged', async () => {
@@ -335,11 +341,60 @@ async function main() {
         core.reset();
         core.refill('startup');
         sent.length = 0;
+        core.refilling = false;
+        core.graceUntil = 0;
 
         core.onBlockChange({ location: { x: 1, y: 64, z: 1 } });
         await new Promise(resolve => setTimeout(resolve, 400));
         assert.strictEqual(sent.length, 1, 'damage should trigger exactly one refill');
         assert.match(sent[0], /^\/fill 0 64 0 3 67 3 /);
+        core.destroy();
+    });
+
+    await check('refill reuses a surviving block, and only chats when none are left', async () => {
+        const sent = [];
+        const writes = [];
+        const coreBot = {
+            position: { x: 0, y: 70, z: 0 },
+            chat: command => sent.push(command),
+            write: (name, payload) => (writes.push({ name, payload }), true),
+            log: logger
+        };
+        const core = new Core({
+            bot: coreBot,
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset();
+
+        // Nothing has been built yet, so the first fill can only go out as chat.
+        core.refill('startup');
+        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+        await new Promise(resolve => setTimeout(resolve, 450));
+        assert.strictEqual(core.ready, true);
+        assert.strictEqual(core.blocks.size, 8, 'every cell is recorded once the fill lands');
+
+        // Seven of the eight blocks are destroyed; the last one still stands.
+        for (const key of core.blocks.keys()) {
+            if (key !== '1:65:1') core.blocks.set(key, false);
+        }
+
+        sent.length = 0;
+        writes.length = 0;
+        core.refill('damaged');
+        assert.deepStrictEqual(sent, [], 'a surviving block carries the fill');
+        assert.strictEqual(writes.length, 1);
+        assert.deepStrictEqual(writes[0].payload.location, { x: 1, y: 65, z: 1 });
+        assert.match(writes[0].payload.command, /^fill 0 64 0 1 65 1 /);
+
+        // With every block gone there is nothing left to write into.
+        await new Promise(resolve => setTimeout(resolve, 450));
+        for (const key of core.blocks.keys()) core.blocks.set(key, false);
+        sent.length = 0;
+        writes.length = 0;
+        core.refill('damaged');
+        assert.strictEqual(writes.length, 0);
+        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
         core.destroy();
     });
 

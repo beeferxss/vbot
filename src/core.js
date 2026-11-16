@@ -29,6 +29,9 @@ class Core {
         this.damageTimer = null;
         this.ownChanges = new Map();
         this.lastRefillAt = 0;
+        // key -> alive. Populated when a fill lands, then pruned by block changes.
+        this.blocks = new Map();
+        this.graceUntil = 0;
     }
 
     get volume() {
@@ -56,6 +59,7 @@ class Core {
         this.cursor = 0;
         this.ready = false;
         this.ownChanges.clear();
+        this.blocks.clear();
         this.log.info(`core area ${this.origin.x} ${this.origin.y} ${this.origin.z}`);
         return true;
     }
@@ -68,51 +72,96 @@ class Core {
         const command =
             `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${this.block} ${this.mode}`;
 
-        // bot.chat routes a /command through a command block when the core is
-        // already up, so later refills never reach chat. The first fill has no
-        // block to run it and is sent as chat, which bootstraps the core.
-        const viaCore = this.ready && !this.refilling;
-        this.bot.chat(`/${command}`);
+        // Reuse a block that is still standing: writing the fill into it rebuilds
+        // the whole area without a chat command. Only when every block is gone
+        // does the fill have to go out as chat.
+        const survivor = this.refilling ? null : this.survivor();
+        let viaCore = false;
+
+        if (survivor) {
+            this.markOwn(survivor);
+            viaCore = Boolean(this.bot.write?.('update_command_block', {
+                location: survivor,
+                command,
+                mode: 1,
+                flags: 0b101
+            }));
+            if (!viaCore) this.blocks.set(keyOf(survivor), false);
+        }
+
+        if (!viaCore) this.bot.chat(`/${command}`);
 
         this.refilling = true;
         this.ready = false;
-        this.log.info(`core refill (${reason})${viaCore ? ' via core' : ' via chat'}`);
+        // The fill itself produces a block change per cell; those are ours.
+        this.graceUntil = Date.now() + REFILL_SETTLE_MS + 500;
+        this.log.info(`core refill (${reason}) via ${viaCore ? `block ${survivor.x} ${survivor.y} ${survivor.z}` : 'chat'}`);
 
         setTimeout(() => {
             this.refilling = false;
             this.ready = true;
             this.lastRefillAt = Date.now();
+            this.markAllAlive();
         }, REFILL_SETTLE_MS).unref?.();
 
         return true;
     }
 
     // Spreads commands over the cube instead of hammering one block, so a
-    // command never lands in the block that is currently executing.
+    // command never lands in the block that is currently executing. Destroyed
+    // blocks are skipped, so a command is never written into nothing.
     run(command) {
         if (!this.enabled) return null;
         const text = String(command || '').trim().replace(/^\//, '');
         if (!text) return null;
         if (this.origin.x === null && !this.reset()) return null;
 
-        const cell = this.nextCell();
-        if (!cell) return null;
+        for (let attempt = 0; attempt < this.volume; attempt++) {
+            const cell = this.nextCell();
+            if (!cell) return null;
+            if (this.blocks.get(keyOf(cell)) === false) continue;
 
-        this.markOwn(cell);
-        const sent = this.bot.write
-            ? this.bot.write('update_command_block', {
-                location: cell,
-                command: text.slice(0, 32000),
-                mode: 1,
-                flags: 0b101
-            })
-            : false;
-        if (!sent) {
-            this.ownChanges.delete(`${cell.x}:${cell.y}:${cell.z}`);
-            this.log.warn('core write failed, falling back to chat');
-            return null;
+            this.markOwn(cell);
+            const sent = this.bot.write
+                ? this.bot.write('update_command_block', {
+                    location: cell,
+                    command: text.slice(0, 32000),
+                    mode: 1,
+                    flags: 0b101
+                })
+                : false;
+
+            if (sent) return cell;
+
+            this.ownChanges.delete(keyOf(cell));
+            this.blocks.set(keyOf(cell), false);
+            this.log.warn(`core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
         }
-        return cell;
+
+        this.log.warn('no core block accepted the command');
+        return null;
+    }
+
+    markAllAlive() {
+        if (this.origin.x === null) return;
+        for (let x = this.origin.x; x <= this.bounds.x; x++) {
+            for (let y = this.origin.y; y <= this.bounds.y; y++) {
+                for (let z = this.origin.z; z <= this.bounds.z; z++) {
+                    this.blocks.set(`${x}:${y}:${z}`, true);
+                }
+            }
+        }
+    }
+
+    // Any block still standing can run the fill, so one is enough.
+    survivor() {
+        if (this.origin.x === null) return null;
+        for (const [id, alive] of this.blocks) {
+            if (!alive) continue;
+            const [x, y, z] = id.split(':').map(Number);
+            return { x, y, z };
+        }
+        return null;
     }
 
     nextCell() {
@@ -164,6 +213,10 @@ class Core {
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;
         if (this.isOwn(location)) return false;
+        // Changes made by our own fill are not damage.
+        if (this.refilling || Date.now() < this.graceUntil) return false;
+
+        this.blocks.set(keyOf(location), false);
 
         if (this.damageTimer) return false;
         this.damageTimer = setTimeout(() => {
@@ -181,6 +234,10 @@ class Core {
         this.ownChanges.clear();
         this.ready = false;
     }
+}
+
+function keyOf({ x, y, z }) {
+    return `${x}:${y}:${z}`;
 }
 
 function positive(value, fallback) {
