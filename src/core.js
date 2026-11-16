@@ -47,6 +47,11 @@ class Core {
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
+        // Where the last command landed, and the queries waiting for an answer.
+        this.lastLocation = null;
+        this.client = null;
+        this.queryId = 1;
+        this.queries = new Map();
     }
 
     get volume() {
@@ -239,7 +244,10 @@ class Core {
                 })
                 : false;
 
-            if (sent) return cell;
+            if (sent) {
+                this.lastLocation = cell;
+                return cell;
+            }
 
             this.ownChanges.delete(keyOf(cell));
             this.blocks.set(keyOf(cell), false);
@@ -248,6 +256,63 @@ class Core {
 
         this.log.warn('no core block accepted the command');
         return null;
+    }
+
+    // Listens for the reply to a block NBT query. The packet is called
+    // nbt_query_response in every version from 1.16 to 1.21; the generic packet
+    // hook is there in case a version renames it.
+    bindClient(client) {
+        if (!client || this.client === client) return;
+        this.client = client;
+
+        client.on('nbt_query_response', packet => this.onQueryResponse(packet));
+        client.on('packet', (data, meta) => {
+            const name = meta?.name || '';
+            if (!/query.*nbt|nbt.*query/i.test(name)) return;
+            this.onQueryResponse(data);
+        });
+    }
+
+    onQueryResponse(packet) {
+        if (!packet) return false;
+        const pending = this.queries.get(packet.transactionId);
+        if (!pending) return false;
+
+        this.queries.delete(packet.transactionId);
+        clearTimeout(pending.timer);
+        pending.resolve(parseLastOutput(packet.nbt));
+        return true;
+    }
+
+    // Runs a command in a core block and returns what the block printed, or null
+    // if nothing answered. The block's output is only readable by asking the
+    // server for the block's NBT, so a query follows the write.
+    runTracked(command, { delay = 150, timeout = 3000 } = {}) {
+        this.lastLocation = null;
+        const cell = this.run(command);
+        if (!cell) return Promise.resolve(null);
+
+        const transactionId = this.queryId++;
+        return new Promise(resolve => {
+            // Both timers are ref'd on purpose: a caller awaiting the result must
+            // keep the process alive until it arrives or times out.
+            const timer = setTimeout(() => {
+                this.queries.delete(transactionId);
+                resolve(null);
+            }, timeout);
+            this.queries.set(transactionId, { resolve, timer });
+
+            const ask = setTimeout(() => {
+                const sent = this.bot.write
+                    ? this.bot.write('query_block_nbt', { transactionId, location: cell })
+                    : false;
+                if (sent !== false) return;
+
+                if (!this.queries.delete(transactionId)) return;
+                clearTimeout(timer);
+                resolve(null);
+            }, delay);
+        });
     }
 
     // The block as written in the fill command, with the configured name.
@@ -378,6 +443,12 @@ class Core {
     }
 
     destroy() {
+        for (const pending of this.queries.values()) {
+            clearTimeout(pending.timer);
+            pending.resolve(null);
+        }
+        this.queries.clear();
+        this.client = null;
         if (this.damageTimer) {
             clearTimeout(this.damageTimer);
             this.damageTimer = null;
@@ -389,6 +460,78 @@ class Core {
         this.ownChanges.clear();
         this.ready = false;
     }
+}
+
+function findKey(node, wanted) {
+    if (!node || typeof node !== 'object') return undefined;
+    if (Object.prototype.hasOwnProperty.call(node, wanted)) return node[wanted];
+    for (const value of Object.values(node)) {
+        const found = findKey(value, wanted);
+        if (found !== undefined) return found;
+    }
+    return undefined;
+}
+
+// 1.20.2+ hands NBT over typed ({type, value}); older versions hand over plain
+// objects. Both end up as plain JS here.
+function simplifyNbt(node) {
+    if (node === null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(simplifyNbt);
+    if (typeof node.type === 'string' && 'value' in node) {
+        const value = node.value;
+        if (node.type === 'compound') {
+            const out = {};
+            for (const key of Object.keys(value || {})) out[key] = simplifyNbt(value[key]);
+            return out;
+        }
+        if (node.type === 'list') {
+            const items = value && Array.isArray(value.value) ? value.value : [];
+            const type = value && value.type;
+            return items.map(item => (type === 'compound' && item && typeof item === 'object'
+                ? simplifyNbt({ type: 'compound', value: item })
+                : simplifyNbt(item)));
+        }
+        return value;
+    }
+    return node;
+}
+
+function flattenComponent(component) {
+    if (component === null || component === undefined) return '';
+    if (typeof component === 'string' || typeof component === 'number' || typeof component === 'boolean') {
+        return String(component);
+    }
+    if (Array.isArray(component)) return component.map(flattenComponent).join('');
+
+    let out = '';
+    if (component.text !== undefined) out += flattenComponent(component.text);
+    else if (component.translate !== undefined) {
+        out += String(component.translate);
+        const args = component.with || component.args;
+        if (Array.isArray(args)) out += ' ' + args.map(flattenComponent).join(' ');
+    }
+    // A component wraps bare strings as { "": "text" }.
+    if (component[''] !== undefined) out += flattenComponent(component['']);
+    if (component.extra) out += flattenComponent(component.extra);
+    return out;
+}
+
+// Pulls LastOutput out of the block's NBT and turns it into plain text.
+function parseLastOutput(nbt) {
+    const found = findKey(nbt, 'LastOutput');
+    if (found === undefined) return null;
+
+    let raw = simplifyNbt(found);
+    if (typeof raw === 'string') {
+        if (!raw) return null;
+        try {
+            raw = JSON.parse(raw);
+        } catch {
+            return raw;
+        }
+    }
+
+    return flattenComponent(raw) || null;
 }
 
 function keyOf({ x, y, z }) {

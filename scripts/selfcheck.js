@@ -459,6 +459,57 @@ async function main() {
         care.destroy();
     });
 
+    await check('runTracked reads the block output back through an nbt query', async () => {
+        const EventEmitter = require('node:events');
+        const client = new EventEmitter();
+        const writes = [];
+        const coreBot = {
+            client: { version: '1.21.4' },
+            position: { x: 0, y: 70, z: 0 },
+            chat: () => {},
+            log: logger,
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const core = new Core({
+            bot: coreBot,
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        core.reset();
+        core.bindClient(client);
+
+        const pending = core.runTracked('list', { delay: 5, timeout: 500 });
+        await new Promise(resolve => setTimeout(resolve, 20));
+
+        const query = writes.find(write => write.name === 'query_block_nbt');
+        assert.ok(query, 'the tracked run asks for the block NBT');
+        assert.deepStrictEqual(query.payload.location, core.lastLocation);
+
+        // Typed NBT, the way 1.20.2+ delivers it.
+        client.emit('nbt_query_response', {
+            transactionId: query.payload.transactionId,
+            nbt: {
+                type: 'compound',
+                value: {
+                    Command: { type: 'string', value: 'list' },
+                    LastOutput: {
+                        type: 'compound',
+                        value: { text: { type: 'string', value: 'There are 2 players online' } }
+                    }
+                }
+            }
+        });
+
+        assert.strictEqual(await pending, 'There are 2 players online');
+
+        // No answer at all resolves to null instead of hanging.
+        const unanswered = core.runTracked('list', { delay: 5, timeout: 40 });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.strictEqual(await unanswered, null);
+
+        core.destroy();
+    });
+
     await check('core reads the fill result the server reports', () => {
         const core = new Core({
             bot: { position: { x: 0, y: 70, z: 0 }, chat: () => {}, write: () => true, log: logger },

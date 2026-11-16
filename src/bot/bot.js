@@ -84,6 +84,7 @@ class Bot extends EventEmitter {
 
         this.client = client;
         this.bind(client);
+        this.core?.bindClient(client);
     }
 
     bind(client) {
