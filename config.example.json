@@ -79,6 +79,9 @@
     "nick": "vbot",
     "reply": "tellraw"
   },
+  "list": {
+    "scanMs": 20000
+  },
   "alts": {
     "enabled": true,
     "lookupCommand": "",

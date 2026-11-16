@@ -41,6 +41,11 @@ function defaults() {
             admin: [],
             trusted: []
         },
+        list: {
+            // How often @a is asked who is online, which is what catches
+            // vanished players. A tab list alone cannot see them.
+            scanMs: 20000
+        },
         alts: {
             enabled: true,
             // The bot cannot see addresses; it reads them back from a server

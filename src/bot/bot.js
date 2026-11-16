@@ -12,6 +12,10 @@ const { IpLookup } = require('../iplookup');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
+// A vanished player is dropped from the tab list but not from a selector, so the
+// bot asks @a who is really online and reads the answer back out of chat.
+const PLAYER_LIST_MARKER = '[PLAYER_LIST]';
+
 class Bot extends EventEmitter {
     constructor({ server, config, store, permissions, registry, logger }) {
         super();
@@ -48,8 +52,13 @@ class Bot extends EventEmitter {
         this.destroyed = false;
         this.disconnectReason = null;
         this.known = new Map();
-        // Who the tab list says is online, as lower-case name -> { name, uuid }.
+        // Who is online, as lower-case name -> { name, uuid, vanished }. Filled
+        // from the tab list and from the selector scan, so vanished players are
+        // in here too.
         this.online = new Map();
+        // Who the tab list itself lists, to tell a vanished player from a listed one.
+        this.listed = new Set();
+        this.scanTimer = null;
         // Set once a signed player chat packet arrives: until then the server may
         // simply not support chat signing, so unsigned chat is all there is.
         this.signedChatSeen = false;
@@ -112,6 +121,7 @@ class Bot extends EventEmitter {
             this.emit('ready');
             this.applyNick();
             this.applyPrefixTag();
+            this.startPlayerScan();
             // Give the position packet a moment to arrive before placing anything.
             setTimeout(() => this.core?.onReady(), 1500).unref?.();
         });
@@ -159,6 +169,9 @@ class Bot extends EventEmitter {
             this.nickSent = false;
             this.prefixSent = false;
             this.online.clear();
+            this.listed.clear();
+            if (this.scanTimer) clearInterval(this.scanTimer);
+            this.scanTimer = null;
             this.core?.destroy();
             this.clickTokens?.clear();
             if (this.connection.autoReconnect && !this.destroyed) this.scheduleReconnect();
@@ -188,6 +201,9 @@ class Bot extends EventEmitter {
 
         // Fill results are the only confirmation that a refill actually ran.
         this.core?.noteMessage(chat.line);
+
+        // The selector scan reports back through chat.
+        if (this.notePlayerList(chat.line)) return;
 
         const parsed = chat.verified && chat.username
             ? { username: chat.username, message: chat.message }
@@ -224,8 +240,11 @@ class Bot extends EventEmitter {
         if (!gone.size) return;
 
         for (const [key, player] of this.online) {
-            if (gone.has(key) || gone.has(player.uuid)) this.online.delete(key);
+            if (!gone.has(key) && !gone.has(player.uuid)) continue;
+            this.online.delete(key);
+            this.listed.delete(key);
         }
+        for (const key of gone) this.listed.delete(key);
     }
 
     // Online-mode servers send real UUIDs in the player list; offline-mode
@@ -247,7 +266,9 @@ class Bot extends EventEmitter {
             const uuid = normalizeUuid(entry.uuid ?? entry.id);
             if (!uuid) continue;
             for (const [key, player] of this.online) {
-                if (player.uuid === uuid) this.online.delete(key);
+                if (player.uuid !== uuid) continue;
+                this.online.delete(key);
+                this.listed.delete(key);
             }
         }
 
@@ -258,6 +279,7 @@ class Bot extends EventEmitter {
 
             if (listed === false) {
                 this.online.delete(key);
+                this.listed.delete(key);
                 continue;
             }
 
@@ -266,6 +288,7 @@ class Bot extends EventEmitter {
             // rewritten when something actually changed.
             const isNew = !this.online.has(key);
             this.online.set(key, { name, uuid });
+            this.listed.add(key);
             if (isNew) this.ipLookup?.queue(name);
 
             if (this.known.get(key) !== uuid) {
@@ -293,6 +316,57 @@ class Bot extends EventEmitter {
 
         if (this.server.auth === 'offline') return offlineUuid(name);
         return null;
+    }
+
+    // Asks the server for every online player. A selector counts vanished
+    // players, a tab list does not, and only the bot is told the answer.
+    scanOnline() {
+        if (this.state !== 'ready' || this.destroyed) return false;
+        const target = this.server.username;
+        if (!target) return false;
+
+        const component = JSON.stringify({
+            text: PLAYER_LIST_MARKER,
+            extra: [{ selector: '@a' }]
+        });
+        return this.chat(`tellraw ${target} ${component}`);
+    }
+
+    startPlayerScan() {
+        if (this.scanTimer) return;
+        const interval = positive(this.config.list?.scanMs, 20000);
+        // The first scan waits for the world to load, like the reference does.
+        setTimeout(() => this.scanOnline(), 3000).unref?.();
+        this.scanTimer = setInterval(() => this.scanOnline(), interval);
+        this.scanTimer.unref?.();
+    }
+
+    // "[PLAYER_LIST] Steve, Alex" -> both are online, and whoever the tab list
+    // does not list is vanished.
+    notePlayerList(line) {
+        const text = String(line || '');
+        const index = text.indexOf(PLAYER_LIST_MARKER);
+        if (index === -1) return false;
+
+        const names = text.slice(index + PLAYER_LIST_MARKER.length).trim();
+        if (!names) return false;
+
+        for (const raw of names.split(',')) {
+            const name = raw.replace(/\u00a7[0-9a-fk-or]/gi, '').trim();
+            if (!name || name.startsWith('@')) continue;
+
+            const key = name.toLowerCase();
+            const existing = this.online.get(key);
+            this.online.set(key, {
+                name,
+                uuid: existing?.uuid ?? this.uuidFor(name),
+                vanished: !this.listed.has(key)
+            });
+            if (!existing) this.ipLookup?.queue(name);
+        }
+
+        this.log.debug(`player scan: ${this.online.size} online, ${[...this.online.values()].filter(p => p.vanished).length} vanished`);
+        return true;
     }
 
     // Runs something a player clicked as that player, with their own rank. The
@@ -429,12 +503,21 @@ class Bot extends EventEmitter {
     destroy() {
         this.destroyed = true;
         this.stop('destroyed');
+        if (this.scanTimer) {
+            clearInterval(this.scanTimer);
+            this.scanTimer = null;
+        }
         this.core?.destroy();
         this.clickTokens?.destroy();
         this.selfCare?.destroy();
         this.ipLookup?.destroy();
         this.removeAllListeners();
     }
+}
+
+function positive(value, fallback) {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 module.exports = { Bot, CHAT_PACKETS };

@@ -1322,6 +1322,63 @@ async function main() {
         bot.online.clear();
     });
 
+    await check('the selector scan finds players the tab list hides', async () => {
+        bot.online.clear();
+        bot.listed.clear();
+
+        bot.handlePlayerInfo({
+            actions: ['add_player'],
+            entries: [
+                { uuid: offlineUuid('ScanA'), player: { name: 'ScanA' } },
+                { uuid: offlineUuid('ScanB'), player: { name: 'ScanB' } }
+            ]
+        });
+
+        // ScanB vanishes: the tab list drops them, the selector still sees them.
+        bot.handlePlayerInfo({
+            actions: ['update_listed'],
+            entries: [{ uuid: offlineUuid('ScanB'), listed: false }]
+        });
+        assert.ok(!bot.online.has('scanb'), 'a hidden player leaves the tab list');
+
+        assert.strictEqual(bot.notePlayerList('[PLAYER_LIST] ScanA, ScanB'), true);
+        assert.deepStrictEqual([...bot.online.keys()].sort(), ['scana', 'scanb']);
+        assert.strictEqual(bot.online.get('scanb').vanished, true);
+        assert.strictEqual(bot.online.get('scana').vanished, false);
+
+        // The scan is sent to the bot alone, and asks @a who is there.
+        const scans = [];
+        const scanBot = new Bot({
+            server: { id: 'scan', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline' },
+            config,
+            store,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        scanBot.state = 'ready';
+        scanBot.chat = message => (scans.push(message), true);
+        assert.strictEqual(scanBot.scanOnline(), true);
+        assert.match(scans[0], /^tellraw vbot /);
+        assert.match(scans[0], /"selector":"@a"/);
+        scanBot.destroy();
+
+        // And the listing shows the vanished player rather than hiding them.
+        sent.length = 0;
+        await registry.dispatch({
+            bot: { ...fakeBot, online: bot.online },
+            parsed: parseChatLine('<Unranked> v:list')
+        });
+        const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        const text = listing.map(part => part.text).join('');
+        assert.match(text, /ScanB/);
+        assert.match(text, /\(vanish\)/);
+        assert.match(text, /1 vanished/);
+
+        bot.online.clear();
+        bot.listed.clear();
+    });
+
     await check('list pages through the players the tab list reported', async () => {
         const online = new Map();
         for (let index = 0; index < 10; index++) {

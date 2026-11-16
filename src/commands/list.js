@@ -39,9 +39,13 @@ module.exports = {
         const start = (page - 1) * PER_PAGE;
         const shown = online.slice(start, start + PER_PAGE);
 
+        // Everyone the bot knows to be online, including vanished players who
+        // are missing from the tab list but still answer to @a.
+        const vanishedCount = online.filter(player => player.vanished === true).length;
         const parts = [
             { text: 'Online ', color: 'gold' },
             { text: `(${online.length}`, color: 'gray' },
+            { text: vanishedCount ? `, ${vanishedCount} vanished` : '', color: 'dark_gray' },
             { text: pages > 1 ? `, page ${page}/${pages})` : ')', color: 'gray' },
             { text: '\n' }
         ];
@@ -50,16 +54,23 @@ module.exports = {
             if (index > 0) parts.push({ text: '\n' });
             const uuid = player.uuid;
             const ip = ctx.bot.ipLookup ? ctx.bot.ipLookup.ipFor(player.name) : null;
+            const vanished = player.vanished === true;
             parts.push({
                 text: player.name,
-                color: NAME_COLOURS[(start + index) % NAME_COLOURS.length],
+                color: vanished
+                    ? 'dark_gray'
+                    : NAME_COLOURS[(start + index) % NAME_COLOURS.length],
                 // The hover carries both facts worth having, so a click can stay
                 // a copy.
-                hover: { text: `${player.name}\n${uuid || 'uuid unknown'}\nip: ${ip || 'not known yet'}` },
+                hover: {
+                    text: `${player.name}\n${uuid || 'uuid unknown'}\nip: ${ip || 'not known yet'}` +
+                        (vanished ? '\nvanished: hidden from the tab list' : '')
+                },
                 ...(uuid
                     ? { click: { action: 'copy_to_clipboard', value: uuid } }
                     : {})
             });
+            if (vanished) parts.push({ text: ' (vanish)', color: 'dark_gray', italic: true });
             parts.push({ text: ' - ', color: 'dark_gray' });
             parts.push(uuid
                 ? {
