@@ -95,7 +95,7 @@
     "enabled": true,
     "creative": true,
     "commandSpy": true,
-    "vanish": true,
+    "vanish": false,
     "unmute": true,
     "nick": true,
     "nickName": "&2V&aB&2O&aT",
