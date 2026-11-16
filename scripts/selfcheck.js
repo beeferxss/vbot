@@ -1558,9 +1558,32 @@ async function main() {
         scanBot.state = 'ready';
         scanBot.chat = message => (scans.push(message), true);
         assert.strictEqual(scanBot.scanOnline(), true);
-        assert.match(scans[0], /^tellraw vbot /);
+        assert.match(scans[0], /^\/tellraw vbot /, 'the slash is what makes it a command');
         assert.match(scans[0], /"selector":"@a"/);
         scanBot.destroy();
+
+        // With a core up, the same scan is written into a block instead of chat.
+        const routed = [];
+        const routedBot = new Bot({
+            server: { id: 'routed', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline' },
+            config,
+            store,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        routedBot.state = 'ready';
+        routedBot.client = { chat: message => (scans.push(message), true) };
+        routedBot.core = {
+            ready: true,
+            run: command => (routed.push(command), { x: 0, y: 0, z: 0 }),
+            destroy: () => {}
+        };
+        scans.length = 0;
+        assert.strictEqual(routedBot.scanOnline(), true);
+        assert.deepStrictEqual(scans, [], 'the scan must not go out as chat');
+        assert.match(routed[0], /^tellraw vbot /);
+        routedBot.destroy();
 
         // And the listing shows the vanished player rather than hiding them.
         sent.length = 0;

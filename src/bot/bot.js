@@ -329,7 +329,9 @@ class Bot extends EventEmitter {
             text: PLAYER_LIST_MARKER,
             extra: [{ selector: '@a' }]
         });
-        return this.chat(`tellraw ${target} ${component}`);
+        // The slash matters: without it this is bot chatter, not a command. With
+        // it the scan runs through a core block like any other command.
+        return this.chat(`/tellraw ${target} ${component}`);
     }
 
     startPlayerScan() {
