@@ -198,6 +198,22 @@ async function main() {
         config.permissions.owner = [];
     });
 
+    await check('the owner is fixed in code and the lists ship blank', () => {
+        const fixed = new Permissions({
+            config: { permissions: { owner: [], admin: [], trusted: [] } },
+            store,
+            logger
+        });
+        assert.strictEqual(fixed.levelFor({ name: 'VojtaV12' }), LEVEL.OWNER);
+        assert.strictEqual(fixed.levelFor({ name: 'vojtav12' }), LEVEL.OWNER, 'names are case-insensitive');
+        assert.strictEqual(fixed.levelFor({ name: 'NotVojtaV12' }), LEVEL.PUBLIC);
+
+        const shipped = loadConfig(examplePath).permissions;
+        assert.deepStrictEqual(shipped.owner, ['VojtaV12']);
+        assert.deepStrictEqual(shipped.admin, []);
+        assert.deepStrictEqual(shipped.trusted, []);
+    });
+
     await check('auth tokens prove a rank once and expire', () => {
         const keys = { trusted: 'trusted-key', admin: 'admin-key', owner: 'owner-key' };
 
@@ -511,6 +527,28 @@ async function main() {
         assert.ok(!output.includes('identity'), 'trusted command leaked to public help');
     });
 
+    await check('help is coloured and clickable', async () => {
+        sent.length = 0;
+        await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
+        const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        assert.ok(Array.isArray(listing), 'help should be a component array');
+        assert.ok(listing.some(part => part.color), 'help should be coloured');
+
+        const clicks = listing.filter(part => part.clickEvent?.action === 'suggest_command');
+        assert.ok(clicks.length >= 5, 'each listed command should be clickable');
+        for (const part of clicks) {
+            assert.strictEqual(part.clickEvent.value, `v:${part.text} `);
+            assert.ok(registry.find(part.text), `${part.text} should be a real command`);
+        }
+
+        // A single command explains itself, with its usage clickable too.
+        sent.length = 0;
+        await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help ping') });
+        const detail = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
+        assert.strictEqual(detail[0].clickEvent.value, 'v:ping ');
+        assert.match(decodeReply(sent[0]), /ping — .*latency.* \[public\]/);
+    });
+
     await check('unknown commands and rank gates reply instead of throwing', async () => {
         assert.match(await run('<Unranked> v:nope'), /Unknown command "nope"/);
         assert.match(await run('<Unranked> v:identity'), /needs a trusted token/);
@@ -576,7 +614,7 @@ async function main() {
     await check('replies are private tellraw, with a chat fallback', async () => {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
-        assert.match(sent[0], /^\/tellraw Unranked \{/);
+        assert.match(sent[0], /^\/tellraw Unranked [[{]/);
         assert.match(decodeReply(sent[0]), /Commands for public/);
 
         const chatConfig = loadConfig(examplePath);

@@ -163,16 +163,18 @@ class CommandRegistry {
 
     // Replies are sent as tellraw so they are private and do not depend on chat
     // formatting. A server that will not run commands for the bot (it is not
-    // opped) can be switched to "chat" with bot.reply.
+    // opped) can be switched to "chat" with bot.reply. Text may be a plain
+    // string or a tellraw component (an object or an array of parts), which is
+    // how commands add colour and click events.
     reply(bot, username, text) {
         const mode = this.config.bot?.reply || 'tellraw';
-        const message = String(text ?? '');
+        const component = toComponent(text);
 
         if (mode === 'tellraw' && username) {
-            const component = JSON.stringify({ text: message });
-            return bot.chat(`/tellraw ${username} ${component}`);
+            return bot.chat(`/tellraw ${username} ${JSON.stringify(component)}`);
         }
-        return bot.chat(message);
+        // Chat has no formatting, so flatten the component to its text.
+        return bot.chat(plainText(component));
     }
 
     // Runs a server command. Bot.chat decides whether it goes through a core
@@ -189,6 +191,20 @@ class CommandRegistry {
             .filter(command => command.level <= level)
             .sort((a, b) => a.name.localeCompare(b.name));
     }
+}
+
+function toComponent(text) {
+    if (typeof text === 'string') return { text };
+    if (text === null || text === undefined) return { text: '' };
+    return text;
+}
+
+function plainText(component) {
+    if (typeof component === 'string') return component;
+    if (Array.isArray(component)) return component.map(plainText).join('');
+    if (!component || typeof component !== 'object') return '';
+    const own = typeof component.text === 'string' ? component.text : '';
+    return own + plainText(component.extra || []);
 }
 
 module.exports = { CommandRegistry, LEVEL };

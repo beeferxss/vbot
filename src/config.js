@@ -32,7 +32,9 @@ function defaults() {
         },
         permissions: {
             keys: { owner: '', admin: '', trusted: '' },
-            owner: [],
+            // Names or uuids, one per entry. VojtaV12 is always owner in code as
+            // well, so an empty list here cannot lock the owner out.
+            owner: ['VojtaV12'],
             admin: [],
             trusted: []
         },
