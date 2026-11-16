@@ -47,6 +47,7 @@ class Core {
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
+        this.fillFailures = 0;
         // Where the last command landed, and the queries waiting for an answer.
         this.lastLocation = null;
         this.client = null;
@@ -85,19 +86,17 @@ class Core {
     noteMessage(line) {
         const text = String(line || '');
 
+        // The count is how many blocks the fill *changed*, not how many it set,
+        // so a small number is normal: a core already in place changes nothing.
         const success = /commands\.fill\.success(\d+)/i.exec(text)
             || /Successfully filled (\d+)/i.exec(text);
         if (success) {
             const blocks = Number(success[1]);
-            this.lastFill = { blocks, expected: this.volume, at: Date.now() };
-            if (blocks < this.volume) {
-                this.log.warn(
-                    `core fill changed ${blocks} of ${this.volume} blocks ` +
-                    '(not opped, protected area, or a low max_block_modifications?)'
-                );
-            } else {
-                this.log.info(`core fill filled ${blocks} blocks`);
-            }
+            this.lastFill = { blocks, expected: this.volume, ok: true, at: Date.now() };
+            this.fillFailures = 0;
+            this.log.info(blocks === 0
+                ? 'core fill changed nothing: the core is already in place'
+                : `core fill changed ${blocks} block(s)`);
             return true;
         }
 
@@ -105,8 +104,23 @@ class Core {
             || /No blocks were filled/i.test(text)
             || /commands\.fill\.no\\?/i.test(text);
         if (failed) {
-            this.lastFill = { blocks: 0, expected: this.volume, at: Date.now() };
-            this.log.warn('core fill failed: the server refused the fill');
+            // "No blocks were filled" is also what the server says when every
+            // block already matches, which is the good case: standing blocks
+            // mean there is nothing to repair, so this is not a failure.
+            if (this.survivor()) {
+                this.markAllAlive();
+                this.ready = true;
+                this.lastFill = { blocks: 0, expected: this.volume, ok: true, at: Date.now() };
+                this.fillFailures = 0;
+                this.log.info('core fill changed nothing: the core is already in place');
+            } else {
+                this.lastFill = { blocks: 0, expected: this.volume, ok: false, at: Date.now() };
+                this.fillFailures += 1;
+                this.log.warn(
+                    'core fill failed and no core blocks are standing ' +
+                    '(not opped, protected area, or an unloaded chunk?)'
+                );
+            }
             return true;
         }
 
@@ -133,8 +147,10 @@ class Core {
             ...this.nameParts(),
             ...(this.lastFill
                 ? [{
-                    text: `, last fill ${this.lastFill.blocks}/${this.lastFill.expected}`,
-                    color: this.lastFill.blocks >= this.lastFill.expected ? 'dark_gray' : 'red'
+                    text: this.lastFill.ok === false
+                        ? ', last fill failed'
+                        : `, last fill changed ${this.lastFill.blocks}`,
+                    color: this.lastFill.ok === false ? 'red' : 'dark_gray'
                 }]
                 : [])
         ];
@@ -407,10 +423,16 @@ class Core {
         this.watchdog = setInterval(() => {
             if (!this.enabled || this.refilling) return;
             const standing = this.survivor() !== null;
-            // A fill that changed fewer blocks than expected did not really run.
-            const filled = !this.lastFill || this.lastFill.blocks >= this.lastFill.expected;
+            // Only a fill we know was refused counts as unfinished; a fill that
+            // changed nothing is a core that is already in place.
+            const filled = this.lastFill?.ok !== false;
             if (this.ready && standing && filled) return;
             if (this.origin.x === null && !this.reset()) return;
+
+            // A server that keeps refusing needs backoff, not a fill every tick.
+            if (!filled && this.fillFailures >= 3 && Date.now() - (this.lastFill?.at || 0) < 30000) {
+                return;
+            }
 
             this.log.info(`core missing or incomplete (${standing ? 'blocks standing' : 'no blocks'}, ` +
                 `${filled ? 'fill ok' : 'fill incomplete'}); rebuilding`);

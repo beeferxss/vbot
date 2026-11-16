@@ -520,14 +520,25 @@ async function main() {
 
         // Servers send this as a translate key, so the raw text carries the count.
         assert.strictEqual(core.noteMessage('commands.fill.success8'), true);
-        assert.deepStrictEqual(core.lastFill.blocks, 8);
-        assert.deepStrictEqual(core.lastFill.expected, 8);
+        assert.strictEqual(core.lastFill.blocks, 8);
+        assert.strictEqual(core.lastFill.ok, true);
 
+        // The count is blocks changed: a core already in place changes few.
         assert.strictEqual(core.noteMessage('commands.fill.success1'), true);
-        assert.strictEqual(core.lastFill.blocks, 1, 'a partial fill is recorded as such');
+        assert.strictEqual(core.lastFill.blocks, 1);
+        assert.strictEqual(core.lastFill.ok, true, 'a small count is not a failure');
 
+        // Nothing standing and nothing filled is a real failure.
         assert.strictEqual(core.noteMessage('commands.fill.failed'), true);
-        assert.strictEqual(core.lastFill.blocks, 0);
+        assert.strictEqual(core.lastFill.ok, false);
+        assert.strictEqual(core.fillFailures, 1);
+
+        // Same message with blocks standing means the core was already full.
+        core.markAllAlive();
+        assert.strictEqual(core.noteMessage('commands.fill.failed'), true);
+        assert.strictEqual(core.lastFill.ok, true, 'an unchanged core is already in place');
+        assert.strictEqual(core.ready, true);
+        assert.strictEqual(core.fillFailures, 0);
 
         assert.strictEqual(core.noteMessage('<Steve> hello'), false);
         core.destroy();
