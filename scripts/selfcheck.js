@@ -730,6 +730,24 @@ async function main() {
         assert.strictEqual(registry.find('whoami').name, 'whoami');
     });
 
+    await check('the degree prefix is a real prefix', () => {
+        const exampleConfig = loadConfig(examplePath);
+        assert.ok(exampleConfig.bot.prefixes.includes('\u00b0'), 'the example config ships it');
+
+        const degreeRegistry = new CommandRegistry({
+            dir: path.join(ROOT, 'src', 'commands'),
+            config: exampleConfig,
+            permissions,
+            store,
+            logger,
+            tokens
+        }).loadAll();
+
+        assert.strictEqual(degreeRegistry.matchPrefix('\u00b0help'), '\u00b0');
+        assert.strictEqual(degreeRegistry.matchPrefix('v\\help'), 'v\\');
+        assert.strictEqual(degreeRegistry.matchPrefix('!help'), null);
+    });
+
     await check('help lists every rank and marks the ones you cannot use', async () => {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
@@ -737,7 +755,8 @@ async function main() {
         assert.match(output, /^Commands \(\d+\)/);
         assert.match(output, /public: .*help/);
         assert.match(output, /trusted: identity/);
-        assert.match(output, /admin: alts core/);
+        assert.match(output, /public: alts /);
+        assert.match(output, /admin: core/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
@@ -1138,12 +1157,57 @@ async function main() {
         assert.deepStrictEqual(parseIps('Steve joined from 1.2.3.4'), ['1.2.3.4']);
         assert.deepStrictEqual(parseIps('server version 1.21.4'), [], 'a version is not an address');
         assert.deepStrictEqual(parseIps('no address here'), []);
+
+        // Servers that mask addresses keep the shape; it is still a bucket.
+        assert.deepStrictEqual(parseIps('IP: 1.2.3.x'), ['1.2.3.x']);
+        assert.deepStrictEqual(parseIps('IP: 1.2.3.**'), ['1.2.3.**']);
+        assert.strictEqual(looksLikeIp('1.2.3.*'), true);
+        assert.strictEqual(looksLikeIp('1.2.3.x'), true);
         assert.strictEqual(looksLikeIp('1.2.3.4'), true);
         assert.strictEqual(looksLikeIp('1.21.4'), false);
         assert.strictEqual(looksLikeIp('Steve'), false);
         assert.strictEqual(lookupCommand('seen {player}', 'Steve'), 'seen Steve');
         assert.strictEqual(lookupCommand('/seen {PLAYER}', 'Steve'), 'seen Steve');
         assert.strictEqual(lookupCommand('', 'Steve'), null);
+    });
+
+    await check('every online player is rescanned on an interval', async () => {
+        const { IpLookup } = require('../src/iplookup');
+        const asked = [];
+        const lookupBot = {
+            state: 'ready',
+            online: new Map([
+                ['steve', { name: 'Steve', uuid: null }],
+                ['alex', { name: 'Alex', uuid: null }]
+            ]),
+            core: {
+                ready: true,
+                runTracked: async command => {
+                    asked.push(command);
+                    return 'IP: 1.2.3.4';
+                }
+            },
+            uuidFor: () => null
+        };
+
+        const scan = new IpLookup({
+            bot: lookupBot,
+            store,
+            config: { lookupCommand: 'seen {player}', gapMs: 5 },
+            logger
+        });
+
+        assert.strictEqual(scan.rescan(), 2, 'both online players are queued');
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.deepStrictEqual(asked.sort(), ['seen Alex', 'seen Steve']);
+
+        // A second rescan happens even though the answers are cached.
+        asked.length = 0;
+        assert.strictEqual(scan.rescan(), 2);
+        await new Promise(resolve => setTimeout(resolve, 120));
+        assert.strictEqual(asked.length, 2, 'a rescan is not skipped by the cache');
+
+        scan.destroy();
     });
 
     await check('alts links accounts through their addresses', async () => {
@@ -1179,8 +1243,8 @@ async function main() {
         assert.match(ipView, /Alex/);
         assert.match(ipView, /online/, 'an online account is marked');
 
-        // Addresses are admin-only, like the reference bot's player data.
-        assert.match(await run('<Unranked> v:alts Steve'), /needs a admin token/);
+        // Public, like the reference bot's: anyone may look at a cluster.
+        assert.match(await run('<Unranked> v:alts Steve'), /alts Steve — 1 address/);
     });
 
     await check('the tab list tracks who is online, not just who was seen', () => {

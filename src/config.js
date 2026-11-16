@@ -24,7 +24,7 @@ function defaults() {
             }
         },
         bot: {
-            prefixes: ['v\\'],
+            prefixes: ['v\\', '\u00b0'],
             nick: null,
             // "tellraw" replies privately and needs the bot to be opped;
             // "chat" replies in normal chat.
@@ -46,7 +46,8 @@ function defaults() {
             lookupCommand: '',
             cacheMs: 600000,
             gapMs: 1200,
-            timeoutMs: 3000
+            timeoutMs: 3000,
+            rescanMs: 60000
         },
         selfCare: {
             enabled: true,

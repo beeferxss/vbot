@@ -74,7 +74,7 @@
     }
   },
   "bot": {
-    "prefixes": ["v\\"],
+    "prefixes": ["v\\", "°"],
     "nick": "vbot",
     "reply": "tellraw"
   },
@@ -83,7 +83,8 @@
     "lookupCommand": "",
     "cacheMs": 600000,
     "gapMs": 1200,
-    "timeoutMs": 3000
+    "timeoutMs": 3000,
+    "rescanMs": 60000
   },
   "selfCare": {
     "enabled": true,

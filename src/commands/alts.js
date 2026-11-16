@@ -127,7 +127,7 @@ module.exports = {
     name: 'alts',
     description: 'Show the addresses behind a player, or the accounts behind an address',
     usage: 'alts <player|ip>',
-    level: 'admin',
+    level: 'public',
 
     async execute(ctx) {
         const target = String(ctx.args[0] || '').trim();

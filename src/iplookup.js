@@ -12,7 +12,8 @@ const { parseIps, lookupCommand } = require('./ip');
 
 const DEFAULT_CACHE_MS = 10 * 60 * 1000;
 const DEFAULT_GAP_MS = 1200;
-const MAX_QUEUE = 24;
+const DEFAULT_RESCAN_MS = 60 * 1000;
+const MAX_QUEUE = 64;
 
 class IpLookup {
     constructor({ bot, store, config = {}, logger }) {
@@ -26,6 +27,9 @@ class IpLookup {
         this.cacheMs = positive(config.cacheMs, DEFAULT_CACHE_MS);
         this.gapMs = positive(config.gapMs, DEFAULT_GAP_MS);
         this.timeoutMs = positive(config.timeoutMs, 3000);
+        // Everything online is re-checked on this interval, so an address that
+        // changes is picked up without anyone asking.
+        this.rescanMs = positive(config.rescanMs, DEFAULT_RESCAN_MS);
 
         this.cache = new Map();
         this.inflight = new Map();
@@ -35,6 +39,8 @@ class IpLookup {
         this.draining = false;
         this.timer = null;
         this.destroyed = false;
+        this.rescanTimer = setInterval(() => this.rescan(), this.rescanMs);
+        this.rescanTimer.unref?.();
     }
 
     get usable() {
@@ -113,19 +119,37 @@ class IpLookup {
     }
 
     // Background lookup, one at a time: a join should not fire eight commands.
-    queue(name) {
+    queue(name, { force = false } = {}) {
         if (!this.usable || this.destroyed) return false;
         const key = this.keyFor(name);
         if (!key || this.queued.has(key) || this.pending.length >= MAX_QUEUE) return false;
 
-        const cached = this.cache.get(key);
-        if (cached && Date.now() - cached.at < this.cacheMs) return false;
-        if (!cached && this.store.ipsFor(name).length) return false;
+        if (!force) {
+            const cached = this.cache.get(key);
+            if (cached && Date.now() - cached.at < this.cacheMs) return false;
+            if (!cached && this.store.ipsFor(name).length) return false;
+        }
 
         this.queued.add(key);
-        this.pending.push(name);
+        this.pending.push({ name, force });
         this.drain();
         return true;
+    }
+
+    // Whoever is on the tab list gets looked up again every rescanMs.
+    rescan() {
+        if (!this.usable || this.destroyed) return 0;
+        if (this.bot?.state && this.bot.state !== 'ready') return 0;
+
+        const online = this.bot?.online;
+        if (!(online instanceof Map) || !online.size) return 0;
+
+        let queued = 0;
+        for (const player of online.values()) {
+            if (player?.name && this.queue(player.name, { force: true })) queued++;
+        }
+        if (queued) this.log.debug(`rescanned ${queued} player(s) for addresses`);
+        return queued;
     }
 
     drain() {
@@ -138,14 +162,15 @@ class IpLookup {
                 return;
             }
 
-            const name = this.pending.shift();
-            if (!name) {
+            const job = this.pending.shift();
+            if (!job) {
                 this.draining = false;
                 return;
             }
+            const { name, force } = job;
             this.queued.delete(this.keyFor(name));
 
-            this.lookup(name)
+            this.lookup(name, { force })
                 .catch(error => this.log.debug(`queued ip lookup of ${name} failed: ${error.message}`))
                 .finally(() => {
                     if (this.destroyed) {
@@ -165,7 +190,9 @@ class IpLookup {
         this.pending.length = 0;
         this.queued.clear();
         if (this.timer) clearTimeout(this.timer);
+        if (this.rescanTimer) clearInterval(this.rescanTimer);
         this.timer = null;
+        this.rescanTimer = null;
         this.cache.clear();
     }
 }
