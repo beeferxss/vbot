@@ -140,6 +140,11 @@ class Filter {
     run(cmd) {
         const text = String(cmd || '').replace(/^\//, '').trim();
         if (!text) return false;
+        if (this.bot.core?.ready) {
+            const cell = this.bot.core.run(text);
+            if (cell) return true;
+        }
+        if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(`/${text}`);
         return this.bot.chat(`/${text}`);
     }
 
