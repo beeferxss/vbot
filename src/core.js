@@ -1,8 +1,8 @@
 'use strict';
 
-// The core is a cube of repeating command blocks. Commands are written into the
-// blocks with the update_command_block packet, which keeps them off the chat log,
-// and the area is refilled with /fill whenever something breaks a block.
+// The core is a cube of command blocks. Commands are written into the blocks with
+// the update_command_block packet, which keeps them off the chat log, and the
+// area is refilled with /fill whenever something breaks a block.
 
 const tellraw = require('./minecraft/tellraw');
 
@@ -27,7 +27,7 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
+        this.block = String(this.config.refill?.block || 'minecraft:command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
@@ -214,7 +214,7 @@ class Core {
             viaCore = Boolean(this.bot.write?.('update_command_block', {
                 location: survivor,
                 command,
-                mode: 1,
+                mode: this.blockMode(),
                 flags: 0b101
             }));
             if (!viaCore) this.blocks.set(keyOf(survivor), false);
@@ -317,7 +317,7 @@ class Core {
                 ? this.bot.write('update_command_block', {
                     location: cell,
                     command: text.slice(0, 32000),
-                    mode: 1,
+                    mode: this.blockMode(),
                     flags: 0b101
                 })
                 : false;
@@ -396,6 +396,14 @@ class Core {
     // The block as written in the fill command, with the configured name.
     // NBT text components changed in 1.21.5: a name used to be a JSON string
     // wrapped in quotes, and is now the component written inline.
+    // update_command_block carries the block's own mode, so it has to match the
+    // block: sending "repeating" for an impulse block fights its type.
+    blockMode() {
+        if (/repeating_command_block$/.test(this.block)) return 1;
+        if (/chain_command_block$/.test(this.block)) return 0;
+        return 2;
+    }
+
     blockSpec() {
         if (!this.name) return this.block;
         if (!tellraw.isModern(this.bot?.client?.version)) {

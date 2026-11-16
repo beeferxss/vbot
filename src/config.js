@@ -93,7 +93,7 @@ function defaults() {
             area: { size: 9, y: 64 },
             refill: {
                 enabled: true,
-                block: 'minecraft:repeating_command_block',
+                block: 'minecraft:command_block',
                 mode: 'replace',
                 // How often a missing core is rebuilt, in milliseconds.
                 intervalMs: 1000,
