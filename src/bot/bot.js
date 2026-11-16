@@ -216,9 +216,32 @@ class Bot extends EventEmitter {
         }, 1000).unref?.();
     }
 
-    chat(message) {
+    // Raw packet write, used by the core to fill command blocks.
+    write(name, payload) {
         if (!this.client || this.state !== 'ready') return false;
-        this.client.chat(String(message));
+        try {
+            this.client.write(name, payload);
+            return true;
+        } catch (error) {
+            this.log.warn(`cannot write ${name}: ${error.message}`);
+            return false;
+        }
+    }
+
+    // Anything the bot says. A server command (leading /) is run through a core
+    // command block once the core is up, so it never appears as bot chat; chat
+    // is the fallback before that and for normal messages.
+    chat(message) {
+        const text = String(message ?? '');
+        if (!text) return false;
+
+        if (text.startsWith('/') && this.core && this.core.ready) {
+            const cell = this.core.run(text.slice(1));
+            if (cell) return true;
+        }
+
+        if (!this.client || this.state !== 'ready') return false;
+        this.client.chat(text);
         return true;
     }
 

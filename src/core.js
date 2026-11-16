@@ -68,11 +68,11 @@ class Core {
         const command =
             `fill ${origin.x} ${origin.y} ${origin.z} ${bounds.x} ${bounds.y} ${bounds.z} ${this.block} ${this.mode}`;
 
-        // The first fill has no command block to run it, so it goes through chat.
-        // Once the core exists, refills are written into a block like any other
-        // command, which keeps them out of the server log.
-        const viaCore = this.ready && !this.refilling && this.run(command);
-        if (!viaCore) this.bot.chat(`/${command}`);
+        // bot.chat routes a /command through a command block when the core is
+        // already up, so later refills never reach chat. The first fill has no
+        // block to run it and is sent as chat, which bootstraps the core.
+        const viaCore = this.ready && !this.refilling;
+        this.bot.chat(`/${command}`);
 
         this.refilling = true;
         this.ready = false;
@@ -99,15 +99,17 @@ class Core {
         if (!cell) return null;
 
         this.markOwn(cell);
-        try {
-            this.bot.write('update_command_block', {
+        const sent = this.bot.write
+            ? this.bot.write('update_command_block', {
                 location: cell,
                 command: text.slice(0, 32000),
                 mode: 1,
                 flags: 0b101
-            });
-        } catch (error) {
-            this.log.error(`core write failed: ${error.message}`);
+            })
+            : false;
+        if (!sent) {
+            this.ownChanges.delete(`${cell.x}:${cell.y}:${cell.z}`);
+            this.log.warn('core write failed, falling back to chat');
             return null;
         }
         return cell;

@@ -175,16 +175,11 @@ class CommandRegistry {
         return bot.chat(message);
     }
 
-    // Runs a server command: through a core command block when the core is
-    // ready, otherwise by sending it as bot chat.
+    // Runs a server command. Bot.chat decides whether it goes through a core
+    // command block or out as chat.
     runCommand(bot, commandText) {
         const text = String(commandText ?? '').trim().replace(/^\//, '');
         if (!text) return false;
-
-        if (bot.core && bot.core.ready) {
-            const cell = bot.core.run(text);
-            if (cell) return true;
-        }
         return bot.chat(`/${text}`);
     }
 
