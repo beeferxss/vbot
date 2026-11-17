@@ -2570,6 +2570,107 @@ async function main() {
         core.destroy();
     });
 
+    await check('a mini core emptied without a block update is placed again', () => {
+        const writes = [];
+        const miniBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            selfCare: { gamemode: 1 },
+            registries: { item: new Map([['repeating_command_block', 1234]]) },
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+        const core = new Core({
+            bot: miniBot,
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true, itemCount: 2, holdMs: 40 } },
+            logger
+        });
+        // The area is beside the bot, not around it, so only the mini core is
+        // under test here.
+        core.origin = { x: 0, y: 64, z: 0 };
+        core.bounds = { x: 8, y: 72, z: 8 };
+        core.ready = true;
+        core.graceUntil = 0;
+        core.markAllAlive();
+
+        const mini = core.fillItem;
+        const stand = () => {
+            for (const placement of [...mini.pending.values()]) {
+                mini.noteBlockChange({ location: { ...placement.cell }, type: CMD_STATE });
+            }
+        };
+        mini.run('say one');
+        stand();
+        assert.strictEqual(mini.cells().length, 2, 'the mini core stands');
+
+        // A bulk update that turns one of the cells to air: no block update of its
+        // own ever arrives, so the packet is all the bot has.
+        const first = mini.cells()[0];
+        const record = ((first.x & 15) << 8) | ((first.z & 15) << 4) | (first.y & 15);
+        assert.strictEqual(core.onMultiBlockChange({
+            chunkCoordinates: { x: first.x >> 4, y: first.y >> 4, z: first.z >> 4 },
+            records: [record]
+        }), true, 'a mini block that went to air is noticed');
+        assert.strictEqual(mini.cells().length, 1, 'that cell is free again');
+
+        // A chunk resend with nothing in it says the same about the rest.
+        const rest = mini.cells()[0];
+        const Chunk = require('prismarine-chunk')('1.21.4');
+        assert.strictEqual(
+            core.onMapChunk({ x: rest.x >> 4, z: rest.z >> 4, chunkData: new Chunk().dump() }),
+            true,
+            'a resent chunk without the block is noticed'
+        );
+        assert.strictEqual(mini.cells().length, 0, 'nothing is left standing');
+
+        // The next command places the set again instead of writing into air.
+        writes.length = 0;
+        assert.ok(mini.run('say two'));
+        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 2, 'placed again');
+        stand();
+        assert.strictEqual(mini.cells().length, 2);
+
+        // A deletion that sends nothing at all is only found by asking: the answer
+        // says the cell is not a command block, so the set is dropped.
+        assert.strictEqual(core.probe('item', mini.cells()[0]), true);
+        const silent = writes.filter(write => write.name === 'query_block_nbt').pop();
+        assert.deepStrictEqual(silent.payload.location, mini.cells()[0], 'it asks about the block it stands on');
+        core.onQueryResponse({ transactionId: silent.payload.transactionId, nbt: null });
+        assert.strictEqual(mini.cells().length, 0, 'a silent deletion drops the whole set');
+
+        // A block that is still there is kept, and marked as confirmed.
+        mini.run('say three');
+        stand();
+        core.probe('item', mini.cells()[0]);
+        const standing = writes.filter(write => write.name === 'query_block_nbt').pop();
+        core.onQueryResponse({
+            transactionId: standing.payload.transactionId,
+            nbt: { type: 'compound', value: { id: { type: 'string', value: 'minecraft:command_block' } } }
+        });
+        assert.strictEqual(mini.cells().length, 2, 'a standing block is kept');
+
+        // The same question covers the main area, and a block that is gone refills it.
+        core.probe('core', { x: 0, y: 64, z: 0 });
+        const forCore = writes.filter(write => write.name === 'query_block_nbt').pop();
+        core.onQueryResponse({ transactionId: forCore.payload.transactionId, nbt: null });
+        assert.strictEqual(core.blocks.get('0:64:0'), false, 'the cell is marked dead');
+        assert.strictEqual(core.refilling, true, 'and the area is filled again');
+
+        // The watchdog is what asks, so it has to pick a block to ask about.
+        core.refilling = false;
+        core.ready = true;
+        core.graceUntil = 0;
+        core.lastProbeAt = 0;
+        writes.length = 0;
+        assert.strictEqual(core.probeBlocks(), true, 'the watchdog has something to ask about');
+        assert.strictEqual(writes.filter(write => write.name === 'query_block_nbt').length, 2,
+            'one for the mini core, one for the area');
+        for (const write of writes.filter(entry => entry.name === 'query_block_nbt')) {
+            core.onQueryResponse({ transactionId: write.payload.transactionId, nbt: null });
+        }
+        core.destroy();
+    });
+
     await check('command loops persist and run through the core', async () => {
         const { Cloops } = require('../src/cloops');
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-cloop-'));

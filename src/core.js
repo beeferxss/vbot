@@ -63,6 +63,13 @@ const JOIN_LANDED_DISTANCE = 8;
 // position before it can place anything or teleport from anywhere.
 const POSITION_RETRY_MS = 250;
 const POSITION_RETRIES = 20;
+// A block can be taken away without any block update at all: a WorldEdit fill, a
+// /setblock from the console, a plugin. Nothing arrives to say so, so one block is
+// asked about directly every few seconds - a query the server answers with the
+// block's own NBT - and a cell that is no longer a command block is rebuilt.
+const VERIFY_MS = 4000;
+const VERIFY_TIMEOUT_MS = 2500;
+const PROBE_QUIET_MS = 60000;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -152,6 +159,14 @@ class Core {
         this.lastLocation = null;
         this.client = null;
         this.queryId = 1;
+        // Standing blocks being asked about directly, by transaction id. The
+        // probes are numbered well clear of the run queries.
+        this.probes = new Map();
+        this.probeId = 1_000_000;
+        this.probeTurn = 0;
+        this.lastProbeAt = 0;
+        this.probeMisses = 0;
+        this.probeQuietUntil = 0;
         this.queries = new Map();
         // Log throttling to avoid console spam under load.
         this._lastLog = new Map();
@@ -646,12 +661,111 @@ class Core {
 
     onQueryResponse(packet) {
         if (!packet) return false;
+
+        const probe = this.probes.get(packet.transactionId);
+        if (probe) {
+            this.probes.delete(packet.transactionId);
+            clearTimeout(probe.timer);
+            return this.onProbeAnswer(probe, packet.nbt);
+        }
+
         const pending = this.queries.get(packet.transactionId);
         if (!pending) return false;
 
         this.queries.delete(packet.transactionId);
         clearTimeout(pending.timer);
         pending.resolve(parseLastOutput(packet.nbt));
+        return true;
+    }
+
+    // One cell of each kind is asked about directly, once every few seconds. The
+    // answer is treated exactly like a block update: a command block says so, and
+    // a cell that has been emptied or replaced says something else, which no block
+    // update ever announced. The mini core and the main area are both checked,
+    // because one silent deletion usually takes both.
+    probeBlocks() {
+        if (!this.enabled || !this.refillEnabled) return false;
+        if (!this.ready || this.refilling || this.spamTimer || this.joining) return false;
+        // A cell that is too far away answers as if it were empty, which is not
+        // damage: nothing is asked about until the bot is back with its core.
+        if (!this.areaLoaded()) return false;
+        if (Date.now() < this.graceUntil || Date.now() < this.probeQuietUntil) return false;
+        if (Date.now() - (this.lastProbeAt || 0) < VERIFY_MS) return false;
+        this.lastProbeAt = Date.now();
+
+        const mini = this.fillItem?.cells?.() || [];
+        if (mini.length) this.probe('item', mini[this.probeTurn % mini.length]);
+
+        const alive = [];
+        for (const [id, live] of this.blocks) {
+            if (!live) continue;
+            const [x, y, z] = id.split(':').map(Number);
+            alive.push({ x, y, z });
+        }
+        if (alive.length) this.probe('core', alive[this.probeTurn % alive.length]);
+
+        this.probeTurn += 1;
+        return mini.length > 0 || alive.length > 0;
+    }
+
+    // Asks the server what is at a cell. Only the answer says, and it arrives as an
+    // nbt_query_response, which onProbeAnswer handles.
+    probe(kind, cell) {
+        if (!this.bot?.write) return false;
+        const transactionId = this.probeId++;
+        const sent = this.bot.write('query_block_nbt', {
+            transactionId,
+            location: { x: cell.x, y: cell.y, z: cell.z }
+        });
+        if (sent === false) return false;
+
+        const timer = setTimeout(() => {
+            this.probes.delete(transactionId);
+            this.probeMisses += 1;
+            // A server that does not answer - a bot that is not op, a plugin that
+            // swallows the query - is left alone for a while rather than asked
+            // over and over; block updates still cover everything else.
+            if (this.probeMisses >= 2) {
+                this.probeQuietUntil = Date.now() + PROBE_QUIET_MS;
+                this.logEvery('probe-silent', PROBE_QUIET_MS, 'debug',
+                    'the server does not answer block queries; deletions that send no block update cannot be seen');
+            }
+        }, VERIFY_TIMEOUT_MS);
+        timer.unref?.();
+
+        this.probes.set(transactionId, {
+            kind,
+            cell: { x: cell.x, y: cell.y, z: cell.z },
+            timer
+        });
+        return true;
+    }
+
+    onProbeAnswer(probe, nbt) {
+        this.probeMisses = 0;
+        const ours = blockEntityId(nbt).includes('command_block');
+
+        if (probe.kind === 'core') {
+            this.blocks.set(keyOf(probe.cell), ours);
+            if (ours) return true;
+            this.log.debug(
+                `core block ${probe.cell.x} ${probe.cell.y} ${probe.cell.z} is not there any more; refilling`
+            );
+            this.refill('probe', { force: true });
+            return true;
+        }
+
+        if (ours) {
+            this.fillItem?.confirm?.(probe.cell);
+            return true;
+        }
+        const dropped = this.fillItem?.goneAll?.() || 0;
+        if (dropped) {
+            this.log.debug(
+                `the mini core at ${probe.cell.x} ${probe.cell.y} ${probe.cell.z} is gone ` +
+                `(${dropped} block(s)); the next command places it again`
+            );
+        }
         return true;
     }
 
@@ -822,12 +936,21 @@ class Core {
         return String(block?.name || block?.type || '').replace(/^minecraft:/, '');
     }
 
-    // Bulk damage: a chunk resend replaces every block in the core at once.
+    // Bulk damage: a chunk resend replaces every block in the core at once, and it
+    // is also the only thing a bulk edit says about the mini core when it sends no
+    // block update for each cell.
     onMapChunk(packet) {
         if (!this.enabled || !this.refillEnabled) return false;
         if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
-        if (!packet || !this.chunkMatches(packet.x, packet.z)) return false;
-        if (!packet.chunkData) return false;
+        if (!packet || !packet.chunkData) return false;
+
+        const chunkX = Number(packet.x);
+        const chunkZ = Number(packet.z);
+        const mini = (this.fillItem?.cells?.() || []).filter(
+            cell => (cell.x >> 4) === chunkX && (cell.z >> 4) === chunkZ
+        );
+        const ours = this.chunkMatches(chunkX, chunkZ);
+        if (!ours && !mini.length) return false;
 
         const Factory = this.chunkFactory();
         if (!Factory) return false;
@@ -839,6 +962,26 @@ class Core {
         } catch {
             return false; // unparsable chunk data is never damage
         }
+
+        // A mini core block that the resent section no longer has is gone: the cell
+        // is used again by the next command, which places a fresh block there.
+        let dropped = 0;
+        for (const cell of mini) {
+            let name;
+            try {
+                name = this.blockName(chunk.getBlock({ x: cell.x & 15, y: cell.y, z: cell.z & 15 }));
+            } catch {
+                continue; // unknown block data: ignore, never drop a block over it
+            }
+            if (!name || name.includes('command_block')) continue;
+            if (this.fillItem.gone(cell)) dropped += 1;
+        }
+        if (dropped > 0) {
+            this.logEvery('mini-chunk-damage', 10000, 'debug',
+                `a chunk resend left out ${dropped} mini core block(s); they are placed again`);
+        }
+
+        if (!ours) return dropped > 0;
 
         let damaged = 0;
         for (let x = this.origin.x; x <= this.bounds.x; x++) {
@@ -866,7 +1009,7 @@ class Core {
             this.refill('map_chunk_damage');
             return true;
         }
-        return false;
+        return dropped > 0;
     }
 
     // Bulk damage: a list of changed blocks in one packet.
@@ -877,21 +1020,43 @@ class Core {
 
         const section = packet.chunkCoordinates;
         if (!section || typeof section.x !== 'number') return false;
-        if (!this.chunkMatches(section.x, section.z)) return false;
+
+        // The mini core can sit in a neighbouring section, and the same packet says
+        // what happened to it: a cell of it that turns to air is a block that is
+        // gone without a block update of its own.
+        const mini = new Map();
+        for (const cell of this.fillItem?.cells?.() || []) mini.set(keyOf(cell), cell);
 
         let damaged = 0;
+        let dropped = 0;
         for (const record of packet.records) {
             if (typeof record !== 'number') continue;
             // 1.16.2+ packs a section local position into the varint.
             const x = section.x * 16 + ((record >>> 8) & 0xF);
             const y = (Number(section.y) || 0) * 16 + (record & 0xF);
             const z = section.z * 16 + ((record >>> 4) & 0xF);
+            const key = keyOf({ x, y, z });
+
+            const mine = mini.get(key);
+            if (mine) {
+                // The block state sits above the position bits; anything that is not
+                // a command block means that block is not there any more.
+                if (!this.fillItem?.isOwnState?.(record >>> 12) && this.fillItem?.gone?.(mine)) {
+                    dropped += 1;
+                }
+                continue;
+            }
+
             if (!this.inside(x, y, z)) continue;
             if (this.isOwn({ x, y, z })) continue;
-            this.blocks.set(keyOf({ x, y, z }), false);
+            this.blocks.set(key, false);
             damaged += 1;
         }
 
+        if (dropped > 0) {
+            this.logEvery('mini-block-damage', 10000, 'debug',
+                `a bulk update removed ${dropped} mini core block(s); they are placed again`);
+        }
         if (damaged > 0) {
             this.lastChangeAt = Date.now();
             this.logEvery('multi-block-damage', 10000, 'debug',
@@ -899,7 +1064,7 @@ class Core {
             this.refill('multi_block_change');
             return true;
         }
-        return false;
+        return dropped > 0;
     }
 
     // Command blocks only tick in loaded chunks. If the bot has been teleported
@@ -1051,6 +1216,10 @@ class Core {
             if (!this.enabled || this.refilling || this.spamTimer) return;
             if (this.origin.x === null && !this.reset()) return;
 
+            // Blocks that were taken away without a block update are only found by
+            // asking, so one of them is asked about on every tick that is due.
+            this.probeBlocks();
+
             const standing = this.aliveCount();
             // Only rebuild when the core is not usable. Readiness alone is not a
             // reason: a fill the server answered with "nothing changed" must not
@@ -1149,6 +1318,8 @@ class Core {
             pending.resolve(null);
         }
         this.queries.clear();
+        for (const probe of this.probes.values()) clearTimeout(probe.timer);
+        this.probes.clear();
         this.client = null;
         if (this.damageTimer) {
             clearTimeout(this.damageTimer);
@@ -1225,6 +1396,17 @@ function flattenComponent(component) {
 }
 
 // Pulls LastOutput out of the block's NBT and turns it into plain text.
+// The block entity id from a query answer: 'minecraft:command_block' for one of
+// ours. A cell that is now air, or a block without a block entity, answers with
+// nothing at all, which is the only sign a silent deletion ever gives.
+function blockEntityId(nbt) {
+    if (!nbt || typeof nbt !== 'object') return '';
+    const value = nbt.type === 'compound' && nbt.value ? nbt.value : nbt;
+    const id = value && typeof value === 'object' ? value.id : undefined;
+    const name = simplifyNbt(id);
+    return typeof name === 'string' ? name : '';
+}
+
 function parseLastOutput(nbt) {
     const found = findKey(nbt, 'LastOutput');
     if (found === undefined) return null;

@@ -183,6 +183,48 @@ class FillItem {
         return [...this.slots.values()].map(slot => ({ ...slot.cell }));
     }
 
+    // A block of the mini core that is no longer a command block is gone, and a
+    // cell that is gone runs nothing: its slot is dropped, so the next command
+    // places a fresh block instead of writing into air. A deletion that sends no
+    // block update at all (a WorldEdit fill, a /setblock from the console) is only
+    // ever noticed this way.
+    gone(cell) {
+        for (const [key, slot] of this.slots) {
+            if (!sameCell(slot.cell, cell)) continue;
+            if (slot.breakTimer) clearTimeout(slot.breakTimer);
+            slot.breakTimer = null;
+            this.slots.delete(key);
+            return true;
+        }
+        return false;
+    }
+
+    // The whole set at once: a deletion that sends nothing is a bulk edit, and a
+    // bulk edit takes every block of the mini core with it. The next command
+    // places the set again.
+    goneAll() {
+        const count = this.slots.size;
+        if (!count) return 0;
+        for (const slot of this.slots.values()) {
+            if (slot.breakTimer) clearTimeout(slot.breakTimer);
+            slot.breakTimer = null;
+        }
+        this.slots.clear();
+        this.blocked.clear();
+        return count;
+    }
+
+    // The server has just said this block is still there, so it is not asked about
+    // again for a while.
+    confirm(cell) {
+        for (const slot of this.slots.values()) {
+            if (!sameCell(slot.cell, cell)) continue;
+            slot.placedAt = Date.now();
+            return true;
+        }
+        return false;
+    }
+
     // A kick right after the slot packet is that packet's fault. One is enough:
     // reconnecting just to be kicked again teaches nothing.
     onDisconnect() {
