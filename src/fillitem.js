@@ -21,6 +21,10 @@
 // still running the command before is not overwritten by the next one, which is
 // what makes back-to-back commands safe.
 //
+// A block is not kept once its command has run: it is dug up a moment later, so
+// the cube never leaves a command block behind in the world and the next command
+// places a fresh one instead of writing over a block that is still working.
+//
 // Nothing but the item id goes into the slot packet. A `block_entity_data`
 // component on it is not portable: Paper 26.1.2 fails to decode
 // `set_creative_mode_slot` when one is present and closes the connection without
@@ -46,6 +50,7 @@ const MOVE_LIMIT = 5;            // place a new cube once the bot has moved this
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
 const SETTLE_MS = 800;           // how long a placement has to be answered
 const STEP_MS = 120;             // gap between the commands of one command
+const AFTER_RUN_MS = 200;        // how long a written command gets before its block goes
 const PENDING_MS = 2000;         // a placement echo older than this is not ours
 const AIR = 0;                   // air's block state number in every version
 
@@ -118,6 +123,10 @@ class FillItem {
         // are written a tick apart, so the second one always sees the first one's
         // result instead of landing in the same moment.
         this.stepMs = Number(config.stepMs) > 0 ? Number(config.stepMs) : STEP_MS;
+        // The blocks are not kept: once the command written into one has had the
+        // time to run, the block is broken and the cell is free again.
+        this.afterRunMs = Number(config.afterRunMs) > 0 ? Number(config.afterRunMs) : AFTER_RUN_MS;
+        this.breakTimers = new Set();
         // The cube's edge in blocks: 3 means 3x3x3, 27 blocks of its own.
         const size = Math.floor(Number(config.itemSize));
         this.size = Number.isFinite(size) ? Math.min(Math.max(size, 1), MAX_SIZE) : SIZE;
@@ -301,7 +310,7 @@ class FillItem {
             this.turn = (index + 1) % cells.length;
             const slot = this.slots.get(key);
             if (slot) {
-                if (!this.writeAll(slot.cell, list)) return null;
+                if (!this.writeAll(slot.cell, list, key)) return null;
                 return slot.cell;
             }
             return this.placeSlot(key, cell, list);
@@ -314,8 +323,10 @@ class FillItem {
         return this.placeSlot(cellKey(cell), cell, list);
     }
 
-    // Writes the commands of one operation into the block, one step at a time.
-    writeAll(cell, commands) {
+    // Writes the commands of one operation into the block, one step at a time, and
+    // digs the block up once the last of them has run: the cube only ever holds a
+    // command for as long as that command needs.
+    writeAll(cell, commands, key = null) {
         const list = [...commands];
         if (!list.length) return true;
         if (!this.write(cell, list.shift())) return false;
@@ -323,7 +334,19 @@ class FillItem {
             const timer = setTimeout(() => this.write(cell, command), this.stepMs * (index + 1));
             timer.unref?.();
         });
+        if (key) this.scheduleBreak(cell, key, this.stepMs * list.length + this.afterRunMs);
         return true;
+    }
+
+    // The command has run: the block goes, and its cell is free for the next one.
+    scheduleBreak(cell, key, after) {
+        const timer = setTimeout(() => {
+            this.breakTimers.delete(timer);
+            this.slots.delete(key);
+            this.breakAt(cell);
+        }, Math.max(Number(after) || 0, 0));
+        timer.unref?.();
+        this.breakTimers.add(timer);
     }
 
     // Writes one command into the block: the same packet the core uses for its
@@ -341,6 +364,8 @@ class FillItem {
     // The bot moved away: the cube is too far to be worth keeping, so it is dug up
     // and placed again where the bot stands now.
     reposition() {
+        for (const timer of this.breakTimers) clearTimeout(timer);
+        this.breakTimers.clear();
         for (const slot of this.slots.values()) this.breakAt(slot.cell);
         this.slots.clear();
         this.blocked.clear();
@@ -416,7 +441,7 @@ class FillItem {
             state: placement.state,
             placedAt: Date.now()
         });
-        this.writeAll(at, placement.queue);
+        this.writeAll(at, placement.queue, placement.key);
     }
 
     // The item goes into the hotbar slot the bot is holding, by packet only.
@@ -527,6 +552,8 @@ class FillItem {
     destroy() {
         if (this.clearTimer) clearTimeout(this.clearTimer);
         this.clearTimer = null;
+        for (const timer of this.breakTimers) clearTimeout(timer);
+        this.breakTimers.clear();
         this.slots.clear();
         this.origin = null;
         this.pending = null;

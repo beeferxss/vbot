@@ -577,7 +577,11 @@ async function main() {
             registries: { item: new Map([['repeating_command_block', 1234]]) },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
-        const fillItem = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 } });
+        // Blocks are broken after their command runs; this check is about the
+        // layout, so its blocks are kept standing for its whole length.
+        const fillItem = new FillItem({
+            bot: itemBot, logger, config: { holdMs: 40, afterRunMs: 60000 }
+        });
         // The hold timer and the step timer fire on their own clock, so the checks
         // look at what was written, never at its position in the log.
         const edits = () => writes.filter(write => write.name === 'update_command_block');
@@ -699,7 +703,7 @@ async function main() {
         assert.notDeepStrictEqual(retried, refused, 'the next side');
 
         // A side the core's fill would overwrite is skipped when another is free.
-        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 }, avoid: cellAt => cellAt.x >= 40 });
+        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40, afterRunMs: 60000 }, avoid: cellAt => cellAt.x >= 40 });
         assert.deepStrictEqual(avoiding.run(command), { x: 37, y: 64, z: -5 }, 'outside the core area');
 
         // A block update at one of its cells (mined, or a fill replaced it) means
@@ -795,6 +799,42 @@ async function main() {
         cube.destroy();
         four.destroy();
         capped.destroy();
+    });
+
+    await check('the mini core breaks its blocks once their command has run', async () => {
+        const { FillItem } = require('../src/fillitem');
+        const writes = [];
+        const breakBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            selfCare: { gamemode: 1 },
+            registries: { item: new Map([['repeating_command_block', 1234]]) },
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+        const digs = () => writes.filter(write => write.name === 'block_dig');
+
+        const fillItem = new FillItem({
+            bot: breakBot, logger, config: { holdMs: 40, afterRunMs: 60 }
+        });
+        const cell = fillItem.run('say once');
+        fillItem.noteBlockChange({ location: cell, type: CMD_STATE });
+        assert.strictEqual(fillItem.standing, true, 'the block stands while the command runs');
+        assert.strictEqual(digs().length, 0, 'nothing is broken before the command has run');
+
+        await new Promise(resolve => setTimeout(resolve, 300));
+        assert.strictEqual(digs().length, 1, 'the block is broken after it');
+        assert.deepStrictEqual(digs()[0].payload.location, cell, 'the block that ran');
+        assert.strictEqual(fillItem.standing, false, 'nothing is left standing');
+        assert.strictEqual(fillItem.cells().length, 0);
+
+        // The next command places a fresh block instead of writing into the one
+        // that has just been broken.
+        const again = fillItem.run('say twice');
+        assert.notDeepStrictEqual(again, cell, 'a fresh cell');
+        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 2);
+
+        fillItem.destroy();
     });
 
     await check('item numbers come from the server registries', async () => {
