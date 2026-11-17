@@ -121,6 +121,17 @@ function defaults() {
             // Example: {"text":"vbot","color":"green"}
             name: null,
             area: { size: 9, y: 64 },
+            // The bot drops itself at a random spot as soon as it joins, before
+            // anything is filled, so the core is never built at the server's
+            // spawn. Same range and height as the "rtp" command.
+            joinRtp: {
+                enabled: true,
+                range: 10000000,
+                height: 100,
+                // How long the teleport gets to land before the core is built
+                // where the bot stands anyway.
+                waitMs: 6000
+            },
             refill: {
                 enabled: true,
                 block: 'minecraft:repeating_command_block',

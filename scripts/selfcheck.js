@@ -65,6 +65,10 @@ async function main() {
         assert.strictEqual(config.storage.path, 'data/vbot.sqlite');
         assert.deepStrictEqual(config.permissions.keys, { owner: '', admin: '', trusted: '' });
         assert.strictEqual(config.core.area.size, 9, 'the core is 9x9x9');
+        // A join drops the bot somewhere random before the core is built.
+        assert.deepStrictEqual(config.core.joinRtp, {
+            enabled: true, range: 10000000, height: 100, waitMs: 6000
+        });
         // Addresses come from /seen only; whois is kept for the identity fields.
         assert.match(config.alts.lookupCommand, /^seen /, 'seen is the lookup command');
         assert.doesNotMatch(config.alts.fallbackCommand, /whois/i);
@@ -1089,6 +1093,108 @@ async function main() {
         const after = fills.length;
         await new Promise(resolve => setTimeout(resolve, 120));
         assert.strictEqual(fills.length, after, 'destroy stops the watchdog');
+    });
+
+    await check('a join teleports before the core is filled', async () => {
+        const handed = [];
+        const writes = [];
+        const joinBot = {
+            position: { x: 0, y: 64, z: 0 },
+            server: { username: 'vbot' },
+            chat: () => true,
+            write: (name, payload) => (writes.push({ name, payload }), true),
+            log: logger
+        };
+        const core = new Core({
+            bot: joinBot,
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true, intervalMs: 60_000 } },
+            logger
+        });
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (handed.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            // The block of the cube that ends up running the teleport.
+            cells: () => [{ x: 1, y: 63, z: 0 }],
+            destroy: () => {}
+        };
+
+        core.onReady();
+
+        // The teleport is the first command out and nothing is filled at spawn:
+        // the bot is about to leave, and a core built here would be left behind.
+        const teleport = handed.find(text => text.includes('Command:"tp '));
+        assert.ok(teleport, 'the join teleports first');
+        const target = /Command:"tp vbot (-?\d+) (-?\d+) (-?\d+)"/.exec(teleport);
+        assert.ok(target, teleport);
+        assert.strictEqual(target[2], '100', 'the rtp height');
+        assert.deepStrictEqual(handed.filter(text => text.startsWith('fill ')), []);
+        assert.strictEqual(core.joining, true);
+
+        // The server answers the teleport: the core is filled where the bot
+        // landed, and the block that ran the teleport is cleared from there.
+        joinBot.position = { x: Number(target[1]), y: 100, z: Number(target[3]) };
+        await new Promise(resolve => setTimeout(resolve, 600));
+
+        assert.strictEqual(core.joining, false);
+        const fills = handed.filter(text => text.startsWith('fill '));
+        assert.strictEqual(fills.length, 1, 'one fill, at the new spot');
+        const x = Math.floor(Number(target[1]) / 2) * 2;
+        const z = Math.floor(Number(target[3]) / 2) * 2;
+        assert.strictEqual(fills[0],
+            `fill ${x} 64 ${z} ${x + 1} 65 ${z + 1} minecraft:repeating_command_block replace`);
+        assert.deepStrictEqual(core.origin, { x, y: 64, z });
+
+        const commands = [...handed, ...writes.map(write => write.payload?.command || '')];
+        assert.ok(
+            commands.some(text => text.includes('Command:"setblock 1 63 0 minecraft:air"')),
+            'the mini core block at the old spot is cleared first'
+        );
+        assert.ok(
+            commands.some(text => text.includes('Command:"setblock 0 64 0 minecraft:air"')),
+            'the core block that ran the teleport is cleared'
+        );
+        assert.ok(
+            commands.findIndex(text => text.includes('setblock 1 63 0 minecraft:air')
+                && text.includes('Command:'))
+                < commands.findIndex(text => text.includes('setblock 0 64 0 minecraft:air')
+                    && text.includes('Command:')),
+            'the mini core is cleared before the cell it creates'
+        );
+
+        core.destroy();
+    });
+
+    await check('a join fills at once when the teleport is turned off', () => {
+        const handed = [];
+        const bot = {
+            position: { x: 0, y: 64, z: 0 },
+            server: { username: 'vbot' },
+            chat: () => true,
+            write: () => true,
+            log: logger
+        };
+        const core = new Core({
+            bot,
+            config: {
+                enabled: true,
+                area: { size: 2, y: 64 },
+                joinRtp: false,
+                refill: { enabled: true, intervalMs: 60_000 }
+            },
+            logger
+        });
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (handed.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
+
+        core.onReady();
+
+        assert.match(handed[0], /^fill 0 64 0 1 65 1 /, 'the core is filled straight away');
+        assert.strictEqual(core.joining, false);
+        assert.ok(!handed.some(text => text.includes('Command:"tp ')), 'nothing teleports');
+        core.destroy();
     });
 
     await check('selfcare unmutes and keeps command spy on', async () => {

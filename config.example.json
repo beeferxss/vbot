@@ -164,6 +164,12 @@
       "size": 9,
       "y": 64
     },
+    "joinRtp": {
+      "enabled": true,
+      "range": 10000000,
+      "height": 100,
+      "waitMs": 6000
+    },
     "refill": {
       "enabled": true,
       "block": "minecraft:repeating_command_block",

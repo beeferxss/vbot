@@ -51,6 +51,18 @@ const REFILL_AFTER_RUN_MS = 500;
 // back by the full interval a damage refill is: two commands a second still get
 // a fresh area without a fill for every keystroke.
 const AFTER_RUN_MIN_MS = 750;
+// A join puts the bot at the server's spawn, which is the one place the core
+// must not be built: it is dropped somewhere random first - the same random
+// spot the `rtp` command picks - and the fill waits until it has landed.
+const JOIN_RTP_RANGE = 10000000;
+const JOIN_RTP_HEIGHT = 100;
+const JOIN_RTP_WAIT_MS = 6000;
+const JOIN_POLL_MS = 100;
+const JOIN_LANDED_DISTANCE = 8;
+// Login and the first position packet are two packets; the core needs the
+// position before it can place anything or teleport from anywhere.
+const POSITION_RETRY_MS = 250;
+const POSITION_RETRIES = 20;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -100,6 +112,23 @@ class Core {
         this.spamTimer = null;
         this.spam = null;
         this.spamMs = positive(this.config.refill?.spamMs, DEFAULT_SPAM_MS);
+        // Where a join teleport takes the bot before anything is built.
+        this.joinRtp = null;
+        const rtp = this.config.joinRtp;
+        if (rtp !== false && rtp?.enabled !== false) {
+            this.joinRtp = {
+                range: positive(rtp?.range, JOIN_RTP_RANGE),
+                height: positive(rtp?.height, JOIN_RTP_HEIGHT),
+                waitMs: positive(rtp?.waitMs, JOIN_RTP_WAIT_MS)
+            };
+        }
+        // Set while a join teleport is on its way: nothing is filled or placed
+        // until the bot is where it is going to stay.
+        this.joining = false;
+        this.joinTarget = null;
+        this.joinTimer = null;
+        this.joinStartedAt = 0;
+        this.positionTries = 0;
         // The bot's own command blocks, a small cube beside it: everything is
         // written into them and they run against the main core.
         this.fillItem = this.config.refill?.item === false
@@ -273,6 +302,9 @@ class Core {
     // run it the watchdog retries instead of talking to the server.
     refill(reason = 'manual', { force = false, minIntervalMs = REFILL_MIN_INTERVAL_MS } = {}) {
         if (!this.enabled || !this.refillEnabled) return false;
+        // A join teleport is on its way: filling here would build the core at the
+        // spawn the bot is leaving, so the area waits until it lands.
+        if (this.joining) return false;
         if (this.origin.x === null && !this.reset()) return false;
 
         // Never refill on top of a refill: the block updates from the last fill
@@ -480,6 +512,9 @@ class Core {
     // written.
     refillAfterRun(delay = REFILL_AFTER_RUN_MS) {
         if (!this.enabled || !this.refillEnabled) return null;
+        // Nothing is filled while a join teleport is on its way: the bot is
+        // about to leave this spot, and the area here is not the one to build.
+        if (this.joining) return null;
         if (this.afterRunTimer) clearTimeout(this.afterRunTimer);
         const timer = setTimeout(() => {
             this.afterRunTimer = null;
@@ -882,6 +917,31 @@ class Core {
 
     onReady() {
         if (!this.enabled) return;
+        if (this.joining) return;
+        if (this.bot?.destroyed) return;
+
+        // Nothing is placed before the bot is somewhere: no position means no
+        // core area and nowhere to teleport from, and the packet is a moment
+        // behind the login one.
+        if (!this.bot?.position) {
+            if (this.positionTries >= POSITION_RETRIES) {
+                this.positionTries = 0;
+                return;
+            }
+            this.positionTries += 1;
+            const timer = setTimeout(() => this.onReady(), POSITION_RETRY_MS);
+            timer.unref?.();
+            return;
+        }
+        this.positionTries = 0;
+
+        if (this.startJoinRtp()) return;
+        this.begin();
+    }
+
+    // What a join does once the bot is where it belongs: the area is filled, the
+    // watchdog keeps it filled and the spam refill starts when it was asked to.
+    begin() {
         if (this.origin.x === null) this.reset();
         if (this.origin.x !== null) this.refill('startup');
         this.startWatchdog();
@@ -890,6 +950,94 @@ class Core {
             setTimeout(() => {
                 if (this.enabled && this.refillEnabled && this.origin.x !== null) this.startSpam();
             }, 1000).unref?.();
+        }
+    }
+
+    // The random teleport a join starts with, through the bot's own blocks like
+    // any other command. Returns false when there is nothing to wait for, so the
+    // join goes straight on to the fill.
+    startJoinRtp() {
+        if (!this.joinRtp) return false;
+        if (!this.bot?.position) return false;
+        const username = this.bot?.server?.username;
+        if (!username) return false;
+        // The core belongs where the bot is now, not where it was on an earlier
+        // join, so the area starts over from the position just seen.
+        if (!this.reset()) return false;
+
+        const { range, height, waitMs } = this.joinRtp;
+        const target = {
+            x: Math.floor(Math.random() * range),
+            y: height,
+            z: Math.floor(Math.random() * range)
+        };
+
+        this.joining = true;
+        this.joinTarget = target;
+        this.joinStartedAt = Date.now();
+        const cell = this.run(`tp ${username} ${target.x} ${target.y} ${target.z}`);
+        if (!cell) {
+            // Nothing could run the teleport: build where the bot stands.
+            this.joining = false;
+            this.joinTarget = null;
+            return false;
+        }
+
+        this.log.debug(`join teleport to ${target.x} ${target.y} ${target.z}`);
+        const check = () => {
+            this.joinTimer = null;
+            const position = this.bot?.position;
+            const landed = Boolean(position)
+                && Math.hypot(position.x - target.x, position.z - target.z) <= JOIN_LANDED_DISTANCE;
+            if (!landed && this.joining && !this.bot?.destroyed && Date.now() - this.joinStartedAt < waitMs) {
+                this.joinTimer = setTimeout(check, JOIN_POLL_MS);
+                this.joinTimer.unref?.();
+                return;
+            }
+            this.settleJoin(landed);
+        };
+        this.joinTimer = setTimeout(check, JOIN_POLL_MS);
+        this.joinTimer.unref?.();
+        return true;
+    }
+
+    // The teleport is over: the core is built here, and the blocks the join wrote
+    // at the old spot are cleared. A repeating block still holding `tp` would drag
+    // the bot back every tick for as long as it stood.
+    settleJoin(landed) {
+        this.joining = false;
+        this.joinTimer = null;
+        this.joinTarget = null;
+        // The cells this join wrote, before the old area is forgotten: the core
+        // cells, and the mini core's own blocks that create them.
+        const written = [...this.blocks.keys()].map(id => id.split(':').map(Number));
+        const mini = this.fillItem?.cells?.() || [];
+
+        if (!landed) {
+            this.logEvery('join-rtp', 60000, 'debug',
+                'the join teleport has not landed; the core is built where the bot stands');
+        }
+
+        // Everything known about the old spot is dropped with it: the area, the
+        // blocks and the command cursor all start again from the new position.
+        this.blocks.clear();
+        this.everReady = false;
+        this.ready = false;
+        this.refilling = false;
+        this.cursor = 0;
+        this.origin = { x: null, y: this.y, z: null };
+        this.bounds = { x: null, y: this.y + this.size - 1, z: null };
+        this.begin();
+
+        // One command clears each of them, from the core that is here now. A
+        // cell inside the new area was already replaced by the fill, and the
+        // mini core's own blocks go first: they are what re-creates the core cell
+        // holding the teleport, every tick, until they are gone.
+        if (!landed) return;
+        const cells = [...mini, ...written.map(([x, y, z]) => ({ x, y, z }))];
+        for (const cell of cells) {
+            if (this.inside(cell.x, cell.y, cell.z)) continue;
+            this.run(`setblock ${Math.floor(cell.x)} ${Math.floor(cell.y)} ${Math.floor(cell.z)} minecraft:air`);
         }
     }
 
@@ -976,6 +1124,13 @@ class Core {
 
     destroy() {
         this.fillItem?.destroy();
+        if (this.joinTimer) {
+            clearTimeout(this.joinTimer);
+            this.joinTimer = null;
+        }
+        this.joining = false;
+        this.joinTarget = null;
+        this.positionTries = 0;
         if (this.afterRunTimer) {
             clearTimeout(this.afterRunTimer);
             this.afterRunTimer = null;
