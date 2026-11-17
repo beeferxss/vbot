@@ -56,6 +56,10 @@ function discordComponent({ author, message }) {
     ];
 }
 
+// Command-block bookkeeping the core produces for its own writes. It is useful
+// in game while debugging, never in a channel.
+const CORE_NOISE = /^(?:Command set\b|advMode\.setCommand|commands\.(?:setblock|fill)\.[a-z]+|Changed the block at |Successfully filled |No blocks were filled)/i;
+
 function stripAnsi(text) {
     return String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 }
@@ -249,6 +253,7 @@ class DiscordBridge {
         if (!plain) return;
         if (parsed?.username && parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
         if (parsed?.message && this.isCommand(parsed.message)) return;
+        if (CORE_NOISE.test(plain)) return;
         if (this.consumeEcho(relay, plain)) return;
 
         relay.buffer.push(toDiscordAnsi(ansi));

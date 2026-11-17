@@ -341,6 +341,26 @@ async function main() {
         }, 1400));
     });
 
+    await check('core write confirmations are swallowed', () => {
+        const coreBot = {
+            position: { x: 0, y: 64, z: 0 },
+            chat: () => true,
+            write: () => {},
+            log: logger
+        };
+        const core = new Core({
+            bot: coreBot,
+            config: { enabled: true, area: { size: 16, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+
+        assert.strictEqual(core.noteMessage('Command set: whois 9Pon4Inkr7Kn'), true);
+        assert.strictEqual(core.noteMessage('advMode.setCommand.successwhois 9Pon4Inkr7Kn'), true);
+        assert.strictEqual(core.noteMessage('Changed the block at 0, 64, 0'), true);
+        assert.strictEqual(core.noteMessage('Successfully filled 8 block(s)'), true);
+        assert.strictEqual(core.noteMessage('Alex: hello'), false);
+    });
+
     await check('core fills its area and rotates through blocks', () => {
         const sent = [];
         const writes = [];
@@ -2162,6 +2182,16 @@ async function main() {
         assert.strictEqual(posted.length, 1);
         assert.strictEqual(posted[0].content, '```ansi\n\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m\n```');
         assert.deepStrictEqual(posted[0].allowedMentions, { parse: [] });
+
+        // The core's own command-block confirmations never reach the channel.
+        bridge.handleMinecraftChat(bot, {
+            line: 'Command set: whois 9Pon4Inkr7Kn',
+            ansi: 'Command set: whois 9Pon4Inkr7Kn',
+            parsed: null,
+            verified: false
+        });
+        await bridge.flush(bridge.relays.get('kbpw'));
+        assert.strictEqual(posted.length, 1, 'command-set confirmations are not relayed');
 
         bridge.destroy();
     });

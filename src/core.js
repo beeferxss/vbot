@@ -117,6 +117,13 @@ class Core {
     noteMessage(line) {
         const text = String(line || '');
 
+        // Every write into a core command block is confirmed with the command
+        // that was written. That is our own bookkeeping, not chat, so it is
+        // swallowed here instead of reaching the console feed or Discord.
+        if (/^(?:Command set\b|advMode\.setCommand|commands\.setblock\.success|Changed the block at)/i.test(text)) {
+            return true;
+        }
+
         // The count is how many blocks the fill *changed*, not how many it set,
         // so a small number is normal: a core already in place changes nothing.
         const success = /commands\.fill\.success(\d+)/i.exec(text)

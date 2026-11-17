@@ -246,8 +246,10 @@ class Bot extends EventEmitter {
         // the action, and never needs to be dispatched as a command.
         if (this.clickTokens?.handle(chat.line)) return;
 
-        // Fill results are the only confirmation that a refill actually ran.
-        this.core?.noteMessage(chat.line);
+        // Fill results are the only confirmation that a refill actually ran,
+        // and command-block writes are confirmed too. Both are consumed here so
+        // the core's own bookkeeping never reaches commands or the chat relay.
+        if (this.core?.noteMessage(chat.line)) return;
 
         // The selector scan reports back through chat.
         if (this.notePlayerList(chat.line)) return;
