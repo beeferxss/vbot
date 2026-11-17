@@ -564,16 +564,9 @@ class DiscordBridge {
     sendToMinecraft(bot, component) {
         if (!bot || bot.state !== 'ready') return false;
 
-        const command = tellraw.command('@a', component, bot.client?.version || null);
-        // A tellraw needs the core (or op in chat); a plain line is the last
-        // resort so the message is not lost.
-        const sent = bot.chat(command);
-        if (sent !== false) return true;
-
-        const text = Array.isArray(component)
-            ? component.map(part => part.text || '').join('')
-            : String(component?.text || '');
-        return bot.sendChat(text.slice(0, 256)) !== false;
+        // Chat is never used to say things, so a tellraw is the only path: it
+        // runs through the core like every other command.
+        return bot.chat(tellraw.command('@a', component, bot.client?.version || null)) !== false;
     }
 
     async registerCommands() {

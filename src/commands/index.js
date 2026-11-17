@@ -157,7 +157,8 @@ class CommandRegistry {
             // A button that runs `action(clicker)` when clicked, even though the
             // bot prefix is not a server command. Null when no tokens exist.
             clickToken: (source, action) => (bot.clickTokens ? bot.clickTokens.register(source, action) : null),
-            replyPrivate: text => reply(`/msg ${parsed.username} ${text}`),
+            // Both are private tellraw to the player who asked.
+            replyPrivate: reply,
             // Commands are run through the core command blocks when it is up,
             // so they do not appear as bot chat. Chat is the bootstrap path.
             run: commandText => this.runCommand(bot, commandText)
@@ -173,12 +174,10 @@ class CommandRegistry {
     }
 
     // Replies are sent as tellraw so they are private and do not depend on chat
-    // formatting. A server that will not run commands for the bot (it is not
-    // opped) can be switched to "chat" with bot.reply. Text may be a plain
-    // string or a tellraw component (an object or an array of parts), which is
-    // how commands add colour and click events.
+    // formatting, and they go through the core like every other command. Text
+    // may be a plain string or a tellraw component (an object or an array of
+    // parts), which is how commands add colour and click events.
     reply(bot, username, text, source = 'reply') {
-        const mode = this.config.bot?.reply || 'tellraw';
         let component = toComponent(text);
 
         // Every suggestion becomes a working button, the way the reference does
@@ -188,12 +187,8 @@ class CommandRegistry {
             component = bot.clickTokens.transform(component, source, { player: username });
         }
 
-        if (mode === 'tellraw' && username) {
-            const version = bot?.client?.version || this.config.minecraft?.version || null;
-            return bot.chat(tellraw.command(username, component, version));
-        }
-        // Chat has no formatting, so flatten the component to its text.
-        return bot.chat(plainText(component));
+        const version = bot?.client?.version || this.config.minecraft?.version || null;
+        return bot.chat(tellraw.command(username || '@a', component, version));
     }
 
     // Runs a server command. Bot.chat decides whether it goes through a core
@@ -222,14 +217,6 @@ function toComponent(text) {
     }
     if (text === null || text === undefined) return { text: '' };
     return text;
-}
-
-function plainText(component) {
-    if (typeof component === 'string') return component;
-    if (Array.isArray(component)) return component.map(plainText).join('');
-    if (!component || typeof component !== 'object') return '';
-    const own = typeof component.text === 'string' ? component.text : '';
-    return own + plainText(component.extra || []);
 }
 
 module.exports = { CommandRegistry, LEVEL };

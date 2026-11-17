@@ -333,7 +333,8 @@ async function main() {
             logger
         });
         tagged.state = 'ready';
-        tagged.chat = message => (sent.push(message), true);
+        // Nick and prefix are selfcare, so they go out as chat directly.
+        tagged.sendChat = message => (sent.push(message), true);
         tagged.applyPrefixTag();
         return new Promise(resolve => setTimeout(() => {
             assert.deepStrictEqual(sent, ['/prefix &a[prefix: v\\]']);
@@ -1233,26 +1234,11 @@ async function main() {
         assert.match(output, /player list/);
     });
 
-    await check('replies are private tellraw, with a chat fallback', async () => {
+    await check('replies are private tellraw, never chat', async () => {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
         assert.match(sent[0], /^\/tellraw Unranked [[{]/);
         assert.match(decodeReply(sent[0]), /Commands \(\d+\)/);
-
-        const chatConfig = loadConfig(examplePath);
-        chatConfig.bot.prefixes = ['v:'];
-        chatConfig.bot.reply = 'chat';
-        const chatRegistry = new CommandRegistry({
-            dir: path.join(ROOT, 'src', 'commands'),
-            config: chatConfig,
-            permissions,
-            store,
-            logger,
-            tokens
-        }).loadAll();
-        sent.length = 0;
-        await chatRegistry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:ping') });
-        assert.match(sent[0], /^pong/);
     });
 
     await check('bot chat routes server commands through the core', () => {
@@ -1272,9 +1258,10 @@ async function main() {
         };
         routingBot.state = 'ready';
 
-        // With no core yet a command can only be chat.
-        routingBot.chat('/say hi');
-        assert.deepStrictEqual(spoken, ['/say hi']);
+        // Without a core, nothing is sent at all: chat is not a fallback.
+        assert.strictEqual(routingBot.chat('/say hi'), false);
+        assert.strictEqual(routingBot.chat('hello world'), false);
+        assert.deepStrictEqual(spoken, [], 'the bot never talks in chat');
 
         const core = new Core({
             bot: routingBot,
@@ -1292,15 +1279,12 @@ async function main() {
         assert.strictEqual(packets[0].name, 'update_command_block');
         assert.strictEqual(packets[0].payload.command, 'gamemode creative vbot');
 
-        // Normal messages still go to chat.
-        routingBot.chat('hello world');
-        assert.deepStrictEqual(spoken, ['hello world']);
-
-        // No fill has landed yet, so there is no block to reuse: chat it is, and
-        // the fill must not be routed back into the core.
+        // No fill has landed yet, so there is no block to reuse: the fill is the
+        // one command allowed to use chat, and it must not go back through the
+        // core.
         packets.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken.slice(1), ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
+        assert.deepStrictEqual(spoken, ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
         assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
         core.destroy();
     });

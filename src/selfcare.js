@@ -95,7 +95,8 @@ class SelfCare {
             if (cell) return true;
         }
 
-        return this.bot.chat(`/${text}`);
+        // Selfcare is allowed to use chat when the core cannot take it.
+        return typeof this.bot.sendChat === 'function' ? this.bot.sendChat(`/${text}`) : false;
     }
 
     // Plain chat command (never routed through core). Used for urgent selfcare
@@ -103,8 +104,7 @@ class SelfCare {
     runChat(command) {
         const text = String(command ?? '').replace(/^\//, '').trim();
         if (!text) return false;
-        if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(`/${text}`);
-        return this.bot.chat(`/${text}`);
+        return typeof this.bot.sendChat === 'function' ? this.bot.sendChat(`/${text}`) : false;
     }
 
     // Command spy and vanish need the core: a chat line would make the bot
@@ -259,7 +259,7 @@ class SelfCare {
 
         this.nickSent = true;
         this.log.info(`setting nickname to ${nick}`);
-        this.bot.chat(`/nick ${nick}`);
+        this.bot.sendChat(`/nick ${nick}`);
     }
 
     applyUsername() {
@@ -268,7 +268,7 @@ class SelfCare {
 
         this.usernameSent = true;
         this.log.info(`setting username to ${name}`);
-        this.bot.chat(`/username ${name}`);
+        this.bot.sendChat(`/username ${name}`);
     }
 
     // --- lifecycle ---------------------------------------------------------

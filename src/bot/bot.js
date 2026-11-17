@@ -501,7 +501,7 @@ class Bot extends EventEmitter {
         setTimeout(() => {
             if (this.state !== 'ready') return;
             this.log.info(`setting nickname to ${nick}`);
-            this.chat(`/nick ${nick}`);
+            this.sendChat(`/nick ${nick}`);
         }, 1000).unref?.();
     }
 
@@ -522,7 +522,7 @@ class Bot extends EventEmitter {
         setTimeout(() => {
             if (this.state !== 'ready') return;
             this.log.info(`setting chat prefix to ${tag}`);
-            this.chat(`/prefix ${tag}`);
+            this.sendChat(`/prefix ${tag}`);
         }, 1200).unref?.();
     }
 
@@ -538,23 +538,27 @@ class Bot extends EventEmitter {
         }
     }
 
-    // Anything the bot says. A server command (leading /) is run through a core
-    // command block once the core is up, so it never appears as bot chat; chat
-    // is the fallback before that and for normal messages.
+    // Commands only ever run through a core command block. Chat is never used
+    // for them and never for talking: the two exceptions are the core's own
+    // fill and selfcare's nick/prefix upkeep, and both call sendChat() directly.
     chat(message) {
         const text = String(message ?? '');
-        if (!text) return false;
+        if (!text.startsWith('/')) return false;
 
-        if (text.startsWith('/') && this.core && this.core.ready) {
-            const cell = this.core.run(text.slice(1));
-            if (cell) return true;
+        if (!this.core || !this.core.ready) {
+            if (!this.warnedNoCore) {
+                this.warnedNoCore = true;
+                this.log.warn('core is not ready; commands are held back instead of using chat');
+            }
+            return false;
         }
 
-        return this.sendChat(text);
+        return Boolean(this.core.run(text.slice(1)));
     }
 
-    // Plain chat, never routed through the core. Core refills use this: the fill
-    // has to reach the server even when the core itself is the thing broken.
+    // Plain chat, never routed through the core. Reserved for the paths that
+    // cannot use a block: core refills (the fill has to reach the server even
+    // when the core is the broken thing) and selfcare's nick/prefix.
     sendChat(message) {
         const text = String(message ?? '');
         if (!text) return false;
