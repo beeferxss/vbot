@@ -32,6 +32,7 @@ const FACE_UP = 1;
 const BLOCK = 'repeating_command_block';
 const MOVE_LIMIT = 5;            // place a new block once the bot has moved this far
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
+const SETTLE_MS = 800;           // how long a placement has to be answered
 const PENDING_MS = 2000;         // a placement echo older than this is not ours
 const AIR = 0;                   // air's block state number in every version
 const SIDES = 4;
@@ -146,6 +147,17 @@ class FillItem {
         return this.bot?.client?.version || this.bot?.version || null;
     }
 
+    // A block update only says the state number. The bot's own block is a command
+    // block on every version, so a state that names anything else (the ground it
+    // was placed against, most often) is not an echo of the placement.
+    isOwnState(state) {
+        if (state === null || state === undefined) return false;
+        if (state === AIR) return false;
+        const byState = this.mcd()?.blocksByStateId?.[state];
+        if (!byState) return true; // no palette for this version: trust the number
+        return String(byState.name || '').includes('command_block');
+    }
+
     // The server's own registry beats any bundled data: its position is the id.
     itemId() {
         const name = this.block.replace(/^minecraft:/, '');
@@ -206,6 +218,12 @@ class FillItem {
         if (!at) return null;
 
         if (!this.carrier || this.moved(at)) return this.placeCarrier(command);
+        // While a placement is still being confirmed the block is not known yet;
+        // the command waits with it instead of being written into air.
+        if (this.pending) {
+            this.pending.queue.push(String(command || ''));
+            return this.pending.cell;
+        }
         return this.write(this.carrier, command);
     }
 
@@ -243,22 +261,62 @@ class FillItem {
 
         // One block at a time: the old one is only removed when it is replaced.
         if (old && !sameCell(old, cell)) this.breakAt(old);
-        this.carrier = cell;
+        this.carrier = { ...cell };
         this.origin = { ...cell };
         this.placedAt = Date.now();
         this.state = null;
-        this.awaitPlacement(cell);
         this.scheduleClear();
 
-        // The block exists by the time this packet is handled, so the command
-        // lands in it and runs on the next tick.
-        const written = this.write(cell, command);
-        if (!written) {
+        // Where the block lands is the server's answer, not the client's: a
+        // server that reads the packet as "the cell that was clicked" puts it in
+        // the ground under the target instead of above it, and a command written
+        // to the guessed cell lands in air and is lost. The update that arrives
+        // next says which cell it is; the command follows there.
+        this.pending = {
+            cell: { ...cell },
+            support: { x: cell.x, y: cell.y - 1, z: cell.z },
+            at: Date.now(),
+            command: String(command || ''),
+            queue: [],
+            landed: null,
+            state: null,
+            refused: false,
+            timer: null
+        };
+        const placement = this.pending;
+        placement.timer = setTimeout(() => this.settle(placement), SETTLE_MS);
+        placement.timer.unref?.();
+        return cell;
+    }
+
+    // The placement is over: write the command into the block that is really
+    // there, or give up on this side when nothing was placed.
+    settle(placement) {
+        if (this.pending !== placement) return;
+        this.pending = null;
+        if (placement.timer) clearTimeout(placement.timer);
+        placement.timer = null;
+
+        if (!placement.landed) {
+            // Nothing was placed, or the server never said where it went: the
+            // command is lost either way, so the cell is not used again and the
+            // next one tries another side.
+            this.blocked.add(cellKey(placement.cell));
+            this.side = (this.side + 1) % SIDES;
             this.carrier = null;
             this.origin = null;
-            return null;
+            this.state = null;
+            this.log.debug(`nothing could be placed at ${placement.cell.x} ${placement.cell.y} ${placement.cell.z}; trying another side`);
+            return;
         }
-        return written;
+
+        const at = placement.landed;
+        this.carrier = { ...at };
+        this.origin = { ...at };
+        this.state = placement.state;
+        this.placedAt = Date.now();
+        this.write(at, placement.command);
+        for (const queued of placement.queue) this.write(at, queued);
     }
 
     // The item goes into the hotbar slot the bot is holding, by packet only.
@@ -320,12 +378,6 @@ class FillItem {
         return sent !== false;
     }
 
-    // The server answers a placement with the block's new state, or with air
-    // when it refused. Nothing is assumed before that answer arrives.
-    awaitPlacement(cell) {
-        this.pending = { cell: { ...cell }, at: Date.now() };
-    }
-
     // Only ever this block: the core is not touched.
     breakAt(location) {
         this.bot.write('block_dig', {
@@ -356,32 +408,29 @@ class FillItem {
     }
 
     // A block update at the block's own cell is the server's answer about it.
-    // While a placement is waiting, air means the side refused and another one is
-    // tried next time; anything else means the block is really there. Later, a
-    // block that turns to air - mined, or replaced by a fill - is gone, and the
-    // next command places a fresh one.
+    //
+    // While a placement is waiting, a non-air update at the cell that was clicked
+    // or at the cell above it says where the block really is, and the command is
+    // written there. Air at the target alone means the side refused, and another
+    // one is tried next time.
+    //
+    // Later, a block that turns to air - mined, or replaced by a fill - is gone,
+    // and the next command places a fresh one.
     noteBlockChange(packet) {
         const location = packet?.location;
         if (!location) return false;
 
         const state = blockState(packet);
 
-        if (this.pending && Date.now() - this.pending.at < PENDING_MS && sameCell(location, this.pending.cell)) {
-            this.pending = null;
-            if (state === AIR) {
-                this.blocked.add(cellKey(location));
-                this.side = (this.side + 1) % SIDES;
-                if (sameCell(this.carrier, location)) {
-                    this.carrier = null;
-                    this.origin = null;
-                    this.state = null;
-                }
-                this.log.debug(`nothing could be placed at ${location.x} ${location.y} ${location.z}; trying another side`);
+        if (this.pending && Date.now() - this.pending.at < SETTLE_MS + PENDING_MS) {
+            const placement = this.pending;
+            if (this.isOwnState(state) && (sameCell(location, placement.cell) || sameCell(location, placement.support))) {
+                placement.landed = { x: location.x, y: location.y, z: location.z };
+                placement.state = state;
+                this.settle(placement);
                 return false;
             }
-            // Our own placement: it is standing, and its update is not damage.
-            this.state = state;
-            return false;
+            if (state === AIR && sameCell(location, placement.cell)) placement.refused = true;
         }
 
         if (!this.carrier || !sameCell(location, this.carrier)) return false;

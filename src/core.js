@@ -78,6 +78,10 @@ class Core {
         // Last block update seen inside the area. A fill that never reached the
         // world sends none, which is how an item refill is checked.
         this.lastChangeAt = 0;
+        // Last block update inside the area that put a block *back*, rather than
+        // taking one away. Breaking a core block sends air, so only this one
+        // proves that a fill arrived.
+        this.lastFillStateAt = 0;
         this.verifyTimer = null;
         this.watchdog = null;
         this.watchdogMs = positive(this.config.refill?.intervalMs, WATCHDOG_MS);
@@ -358,12 +362,17 @@ class Core {
     verifyItemFill(command) {
         if (this.verifyTimer) clearTimeout(this.verifyTimer);
         const startedAt = Date.now();
-        const wait = Math.max(700, (this.fillItem?.holdMs || 250) + 450);
+        // A refill that had to place the block first is later than one written
+        // into a block that was already standing, so give it the extra time.
+        const placing = this.fillItem?.pending ? 1500 : 0;
+        const wait = Math.max(700, (this.fillItem?.holdMs || 250) + 450, placing);
         this.verifyTimer = setTimeout(() => {
             this.verifyTimer = null;
             if (!this.enabled || this.bot.destroyed) return;
-            // Any block update inside the area means the fill reached the world.
-            if (this.lastChangeAt >= startedAt) return;
+            // A block that came back inside the area means the fill reached the
+            // world. The damage that started the refill is air, so it does not
+            // count, and a lost fill still falls back to chat.
+            if (this.lastFillStateAt >= startedAt) return;
             this.fillFailures += 1;
             this.logEvery('item-fill-unconfirmed', 10000, 'warn',
                 "the bot's command block did not fill the core (placement refused?); sending the fill as chat");
@@ -855,6 +864,7 @@ class Core {
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;
         this.lastChangeAt = Date.now();
+        if (!isAir(packet)) this.lastFillStateAt = Date.now();
         if (this.isOwn(location)) return false;
         // Only a core that is actually standing can be damaged. Reacting before
         // the first fill lands (or while a fill is in flight) turned the fill's
