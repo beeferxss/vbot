@@ -281,7 +281,7 @@ class Bot extends EventEmitter {
 
         if (parsed) {
             this.registry
-                .dispatch({ bot: this, parsed, line: chat.line, verified: chat.verified })
+                .dispatch({ bot: this, parsed, line: chat.line, verified: chat.verified, real: chat.real })
                 .catch(error => this.log.error(`command dispatch failed: ${error.stack || error.message}`));
         }
     }
@@ -391,7 +391,15 @@ class Bot extends EventEmitter {
             const isNew = !this.online.has(key);
             this.online.set(key, { name, uuid });
             this.listed.add(key);
-            if (isNew) this.ipLookup?.queue(name);
+            if (isNew) {
+                this.ipLookup?.queue(name);
+                // A rank redeemed with a token belongs to the session it was
+                // redeemed in, so joining again starts at public instead of
+                // carrying an old rank back in.
+                if (this.permissions?.clearSessionRank?.(name)) {
+                    this.log.debug(`cleared the session rank of ${name} after a rejoin`);
+                }
+            }
 
             if (this.known.get(key) !== uuid) {
                 this.known.set(key, uuid);

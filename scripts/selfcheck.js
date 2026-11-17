@@ -171,12 +171,20 @@ async function main() {
         assert.strictEqual(event.username, 'Alex');
         assert.strictEqual(event.message, '|>help');
         assert.strictEqual(event.uuid, uuid);
+        assert.strictEqual(event.real, true, 'a player chat packet is real chat');
 
         // Anything printed by the server is free-form and cannot be trusted to
         // come from the player it claims to be.
         const forged = chatEventFromPacket('system_chat', { content: { text: '<Steve> |>help' } });
         assert.strictEqual(forged.verified, false);
+        assert.strictEqual(forged.real, false, 'tellraw output is not a chat packet');
         assert.deepStrictEqual(parseChatLine(forged.line), { username: 'Steve', message: '|>help' });
+
+        // The old chat packet predates signing but is still the server's chat
+        // packet, so a rank works there; only printed text is excluded.
+        const legacy = chatEventFromPacket('chat', { message: JSON.stringify({ text: '<Steve> |>help' }) });
+        assert.strictEqual(legacy.real, true);
+        assert.strictEqual(chatEventFromPacket('profileless_chat', { content: { text: '<Steve> |>help' } }).real, false);
     });
 
     // --- store, permissions, bot -------------------------------------------
@@ -1605,6 +1613,52 @@ async function main() {
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine(line) });
         return decodeReply(sent[0]);
     };
+
+    const runWith = async (line, flags = {}, botExtra = {}) => {
+        sent.length = 0;
+        await registry.dispatch({ bot: { ...fakeBot, ...botExtra }, parsed: parseChatLine(line), ...flags });
+        return decodeReply(sent[0]);
+    };
+
+    // `tab` is trusted, so a token prompt means the rank was not used.
+    await check('a rank is only used for a real chat packet', async () => {
+        const real = await runWith('<Steve> v:tab', { verified: true, real: true });
+        assert.ok(!/token/i.test(real), `real chat should keep the rank, got: ${real}`);
+
+        // Custom chat is tellraw output: anyone can print a line that looks like
+        // Steve, so it runs, but as public.
+        const custom = await runWith('<Steve> v:tab', { verified: false, real: false });
+        assert.match(custom, /needs a trusted token/);
+        assert.match(custom, /not a chat message/);
+
+        // A vanished player is online by selector only, so nothing they send can
+        // be taken as a listed account's chat either.
+        const vanishedBot = { online: new Map([['steve', { name: 'Steve', uuid, vanished: true }]]) };
+        const vanished = await runWith('<Steve> v:tab', { verified: true, real: true }, vanishedBot);
+        assert.match(vanished, /needs a trusted token/);
+        assert.match(vanished, /vanished/);
+    });
+
+    await check('custom chat and vanished players still run public commands', async () => {
+        const vanishedBot = { online: new Map([['steve', { name: 'Steve', uuid, vanished: true }]]) };
+        const custom = await runWith('<Steve> v:ping', { verified: false, real: false }, vanishedBot);
+        assert.ok(custom && !/token/i.test(custom), `public command should run, got: ${custom}`);
+    });
+
+    await check('a session rank is cleared when the player joins again', () => {
+        permissions.grant('Bob', LEVEL.TRUSTED, 'token');
+        assert.strictEqual(permissions.levelFor({ name: 'Bob' }), LEVEL.TRUSTED);
+        assert.strictEqual(permissions.clearSessionRank('Bob'), true);
+        assert.strictEqual(permissions.levelFor({ name: 'Bob' }), LEVEL.PUBLIC);
+
+        // A rank from Discord or from the config is not a session unlock, so a
+        // rejoin leaves it alone.
+        permissions.grant('Carol', LEVEL.TRUSTED, 'discord:1234');
+        assert.strictEqual(permissions.clearSessionRank('Carol'), false);
+        assert.strictEqual(permissions.levelFor({ name: 'Carol' }), LEVEL.TRUSTED);
+        assert.strictEqual(permissions.clearSessionRank('Steve'), false, 'selfcheck grants are not tokens');
+        assert.strictEqual(permissions.levelFor({ name: 'Steve' }), LEVEL.ADMIN);
+    });
 
     await check('commands load with unique names and aliases', () => {
         assert.ok(registry.commands.size >= 5, `expected commands, got ${registry.commands.size}`);

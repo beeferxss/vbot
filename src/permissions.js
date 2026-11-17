@@ -68,6 +68,19 @@ class Permissions {
         this.store.setUserLevel(name, parsed, grantedBy);
         return parsed;
     }
+
+    // A rank redeemed with `auth` is for the session it was redeemed in: the
+    // token expires, so someone who joins again starts at public instead of
+    // carrying the same rank back in. Ranks from the config lists and from
+    // Discord are not touched, because those are not one-off unlocks.
+    clearSessionRank(name) {
+        const user = this.store?.getUser(name);
+        if (!user) return false;
+        if (String(user.granted_by || '') !== 'token') return false;
+        if ((parseLevel(user.level) ?? LEVEL.PUBLIC) <= LEVEL.PUBLIC) return false;
+        this.store.setUserLevel(name, LEVEL.PUBLIC, 'rejoin');
+        return true;
+    }
 }
 
 module.exports = { LEVEL, NAMES, Permissions, levelName, parseLevel };

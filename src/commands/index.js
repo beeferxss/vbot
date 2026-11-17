@@ -80,7 +80,7 @@ class CommandRegistry {
         return found;
     }
 
-    async dispatch({ bot, parsed, verified = true, trustedClicker = false }) {
+    async dispatch({ bot, parsed, verified = true, real = true, trustedClicker = false }) {
         const prefix = this.matchPrefix(parsed.message);
         if (!prefix) return false;
 
@@ -112,10 +112,20 @@ class CommandRegistry {
         // their own rank and cannot borrow anyone else's.
         const trustedName = verified || trustUnsigned || trustedClicker;
 
-        let level = this.permissions.levelFor({
-            name: trustedName ? parsed.username : null,
-            uuid: parsed.uuid
-        });
+        // A rank is only used for a real chat packet: player_chat, or the old
+        // chat packet on servers that predate it. A custom chat plugin prints its
+        // lines through tellraw, which is free-form text anyone can shape, so a
+        // command that arrives that way runs as public - it still runs, it just
+        // does not carry a rank it could have borrowed from someone else's name.
+        // The same goes for a vanished player: they are online by selector only,
+        // so nothing they send can be taken as coming from a listed account.
+        const presence = bot.online?.get(String(parsed.username || '').toLowerCase());
+        const vanished = presence?.vanished === true;
+        const rankUsable = !vanished && (trustedClicker || (real !== false && (verified || trustUnsigned)));
+
+        let level = rankUsable
+            ? this.permissions.levelFor({ name: parsed.username, uuid: parsed.uuid })
+            : LEVEL.PUBLIC;
 
         let args = argv;
 
@@ -124,7 +134,12 @@ class CommandRegistry {
         if (command.level > level) {
             const granted = this.tokens ? this.tokens.verify(args[0]) : null;
             if (granted === null) {
-                reply(`${command.name} needs a ${levelName(command.level)} token: ${prefix}${command.name} <token> ...`);
+                const why = vanished
+                    ? ' (you are vanished, so your rank is not used)'
+                    : real === false
+                        ? ' (this is not a chat message, so your rank is not used)'
+                        : '';
+                reply(`${command.name} needs a ${levelName(command.level)} token: ${prefix}${command.name} <token> ...${why}`);
                 return true;
             }
             if (granted < command.level) {

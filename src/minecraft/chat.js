@@ -155,9 +155,14 @@ function parseChatLine(line) {
 //
 //  - player_chat is the server telling us "account X sent this", with the sender
 //    uuid attached, so the name is not taken from text we could be tricked by.
-//  - system_chat (and legacy chat) is free-form text. Anyone able to print a
-//    line - /sudo, a plugin, a rank prefix - can make it look like player chat,
-//    so it is reported as unverified and never grants a stored rank.
+//  - system_chat is free-form text. Anyone able to print a line - /sudo, a
+//    plugin, a rank prefix, a tellraw - can make it look like player chat, so it
+//    is reported as unverified and never grants a stored rank.
+//
+// `real` says the packet is the chat packet of a player: player_chat on 1.19+,
+// and the old chat packet on the versions before them, where a formatted line is
+// all the server sends. Everything else is printed text, which is what a custom
+// chat plugin sends through tellraw, so a rank is only used for a real packet.
 function chatEventFromPacket(event, packet, lang = null) {
     if (!packet) return null;
 
@@ -174,7 +179,8 @@ function chatEventFromPacket(event, packet, lang = null) {
             message,
             username,
             uuid: normalizeUuid(packet.senderUuid ?? packet.sender),
-            verified: true
+            verified: true,
+            real: true
         };
     }
 
@@ -193,7 +199,8 @@ function chatEventFromPacket(event, packet, lang = null) {
         message: text,
         username: '',
         uuid: null,
-        verified: false
+        verified: false,
+        real: event === 'chat'
     };
 }
 
