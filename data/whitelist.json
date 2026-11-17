@@ -4,5 +4,17 @@
         "players": [],
         "uuids": [],
         "ips": []
+    },
+    "blackbox": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
+    },
+    "chipmunk": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
     }
 }

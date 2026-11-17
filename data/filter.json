@@ -6,5 +6,21 @@
         "ips": [],
         "regex": null,
         "mutes": []
+    },
+    "blackbox": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
+    },
+    "chipmunk": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
     }
 }
