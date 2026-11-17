@@ -53,9 +53,9 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        // Normal (impulse) command blocks: a command runs once when the block is
-        // created with it, instead of every tick forever.
-        this.block = String(this.config.refill?.block || 'minecraft:command_block');
+        // Repeating command blocks: a command keeps running in them, and a core
+        // block can be created already holding one.
+        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
@@ -391,9 +391,9 @@ class Core {
     }
 
     // What the mini core is told to do with one core cell: clear it, then create
-    // it holding the command and `auto`. A block created fresh like that runs its
-    // command once; writing into a block that is already standing does not run it
-    // on a stock server, which is why the cell is cleared first.
+    // it holding the command and `auto`, so a repeating core block starts running
+    // the command without redstone. The cell is cleared first so the block is
+    // always created fresh instead of written into whatever stands there.
     cellCommands(cell, command) {
         const at = `${cell.x} ${cell.y} ${cell.z}`;
         return [

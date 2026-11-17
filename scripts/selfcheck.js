@@ -390,7 +390,7 @@ async function main() {
         assert.deepStrictEqual(core.bounds, { x: 47, y: 79, z: -1 });
 
         core.refill('test');
-        assert.strictEqual(handed[0], 'fill 32 64 -16 47 79 -1 minecraft:command_block replace');
+        assert.strictEqual(handed[0], 'fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace');
         assert.deepStrictEqual(sent, [], 'a fill never goes out as chat');
 
         const first = core.run('say hello');
@@ -402,13 +402,13 @@ async function main() {
         assert.strictEqual(handed[1], 'setblock 32 64 -16 minecraft:air');
         assert.strictEqual(
             handed[2],
-            'setblock 32 64 -16 minecraft:command_block{Command:"say hello",auto:1b,TrackOutput:1b} replace'
+            'setblock 32 64 -16 minecraft:repeating_command_block{Command:"say hello",auto:1b,TrackOutput:1b} replace'
         );
         assert.strictEqual(handed[3], `setblock ${second.x} ${second.y} ${second.z} minecraft:air`);
         assert.strictEqual(
             handed[4],
             `setblock ${second.x} ${second.y} ${second.z} ` +
-            'minecraft:command_block{Command:"gamemode creative",auto:1b,TrackOutput:1b} replace'
+            'minecraft:repeating_command_block{Command:"gamemode creative",auto:1b,TrackOutput:1b} replace'
         );
         assert.deepStrictEqual(writes, [], 'no packet reaches the core directly');
 
@@ -524,7 +524,7 @@ async function main() {
         modern.reset();
         assert.strictEqual(
             modern.fillCommand(),
-            "fill 0 64 0 8 72 8 minecraft:command_block{CustomName:{text:'vbot',color:'green'}} replace"
+            "fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:{text:'vbot',color:'green'}} replace"
         );
         assert.match(modern.status(), /name \{"text"/);
 
@@ -532,7 +532,7 @@ async function main() {
         legacy.reset();
         assert.strictEqual(
             legacy.fillCommand(),
-            'fill 0 64 0 8 72 8 minecraft:command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
+            'fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
         );
 
         // Without a name the fill stays plain.
@@ -542,7 +542,7 @@ async function main() {
             logger
         });
         plainCore.reset();
-        assert.strictEqual(plainCore.fillCommand(), 'fill 0 64 0 8 72 8 minecraft:command_block replace');
+        assert.strictEqual(plainCore.fillCommand(), 'fill 0 64 0 8 72 8 minecraft:repeating_command_block replace');
         assert.deepStrictEqual(named, [], 'fills never go out as chat');
 
         modern.destroy();
@@ -574,26 +574,33 @@ async function main() {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
             selfCare: { gamemode: 1 },
-            registries: { item: new Map([['command_block', 1234]]) },
+            registries: { item: new Map([['repeating_command_block', 1234]]) },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
         const fillItem = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 } });
+        // The hold timer and the step timer fire on their own clock, so the checks
+        // look at what was written, never at its position in the log.
+        const edits = () => writes.filter(write => write.name === 'update_command_block');
+        const placements = () => writes.filter(write => write.name === 'block_place');
+        const slotClears = () => writes.filter(write => write.name === 'set_creative_slot'
+            && write.payload.item?.itemCount === 0);
 
         assert.strictEqual(fillItem.usable, true);
         assert.strictEqual(fillItem.standing, false);
-        // Normal blocks, not repeating ones: a command runs once.
-        assert.strictEqual(fillItem.block, 'command_block');
-        assert.strictEqual(fillItem.mode, 2, 'a normal block is written as normal');
+        // Repeating blocks: the wrapper it holds keeps running on its own, which
+        // is what makes the core block it creates run without redstone.
+        assert.strictEqual(fillItem.block, 'repeating_command_block');
+        assert.strictEqual(fillItem.mode, 1, 'a repeating block is written as repeating');
 
         // First command: the item, then a block on the ground beside the bot. The
         // command waits: where the block lands is the server's answer.
         const cell = fillItem.run(command);
         assert.deepStrictEqual(cell, { x: 11, y: 64, z: -4 });
-        assert.deepStrictEqual(writes.map(write => write.name), [
+        assert.deepStrictEqual(writes.slice(0, 3).map(write => write.name), [
             'set_creative_slot', 'held_item_slot', 'block_place'
         ]);
         assert.strictEqual(writes[0].payload.slot, HOTBAR_SLOT);
-        assert.deepStrictEqual(writes[0].payload.item, item, 'the plain command block item');
+        assert.deepStrictEqual(writes[0].payload.item, item, 'the plain repeating command block item');
         assert.deepStrictEqual(writes[1].payload, { slotId: 0 }, 'the slot is held');
         assert.deepStrictEqual(writes[2].payload.location, { x: 11, y: 63, z: -4 }, 'the ground beside the bot');
         assert.strictEqual(writes[2].payload.direction, 1, 'placed on top of it, beside the bot');
@@ -602,36 +609,34 @@ async function main() {
         // A command asked for while the placement is unanswered waits with it
         // instead of being written into air.
         assert.deepStrictEqual(fillItem.run('say queued'), cell);
-        assert.strictEqual(writes.length, 3, 'nothing goes out before the block is known');
+        assert.strictEqual(edits().length, 0, 'nothing goes out before the block is known');
 
         // The server answers: the block is there, so the commands go in.
         assert.strictEqual(fillItem.noteBlockChange({ location: { ...cell }, type: CMD_STATE }), false);
         assert.strictEqual(fillItem.pending, null, 'the placement was answered');
         assert.strictEqual(fillItem.standing, true);
-        assert.deepStrictEqual(writes[3], {
+        assert.deepStrictEqual(edits()[0], {
             name: 'update_command_block',
-            payload: { location: cell, command, mode: 2, flags: 0b101 }
+            payload: { location: cell, command, mode: 1, flags: 0b101 }
         });
 
         // The commands of one operation go a tick apart, so a block created after
         // a clear really sees the cleared cell.
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 500));
         assert.deepStrictEqual(
-            writes
-                .filter(write => write.name === 'update_command_block')
-                .map(write => write.payload.command),
+            edits().map(write => write.payload.command),
             [command, 'say queued']
         );
         // The slot is emptied again, and the block stays where it is.
-        assert.ok(writes.some(write => write.name === 'set_creative_slot'
-            && write.payload.item?.itemCount === 0), 'the slot is emptied again');
+        assert.ok(slotClears().length > 0, 'the slot is emptied again');
         assert.ok(!writes.some(write => write.name === 'block_dig'), 'the block is not broken');
 
         // The next command goes to another side, so the two blocks can run at
         // once instead of overwriting each other.
+        const placed = placements().length;
         const second = fillItem.run('say two');
         assert.deepStrictEqual(second, { x: 10, y: 64, z: -3 }, 'the next side');
-        assert.strictEqual(writes[6].name, 'set_creative_slot', 'a second block of its own');
+        assert.strictEqual(placements().length, placed + 1, 'a second block of its own');
         fillItem.noteBlockChange({ location: second, type: CMD_STATE });
         assert.strictEqual(fillItem.cells().length, 2);
 
@@ -645,22 +650,28 @@ async function main() {
 
         // With all four standing the set is used in turn, not placed again.
         const before = writes.length;
+        const placedBefore = placements().length;
         assert.deepStrictEqual(fillItem.run('say five'), cell, 'back to the first block');
-        assert.strictEqual(writes.length, before + 1, 'no item, no placement');
-        assert.strictEqual(writes[before].name, 'update_command_block');
-        assert.deepStrictEqual(writes[before].payload.location, cell);
+        assert.strictEqual(placements().length, placedBefore, 'no item, no placement');
+        const five = writes.slice(before).filter(write => write.name === 'update_command_block');
+        assert.deepStrictEqual(five.map(write => write.payload.location), [cell]);
+        assert.deepStrictEqual(five[0].payload, { location: cell, command: 'say five', mode: 1, flags: 0b101 });
 
         // Moving further than five blocks: the set it leaves behind is dug up and
         // a new one is placed next to the bot.
         itemBot.position = { x: 10.7 + MOVE_LIMIT + 2, y: 64, z: -3.2 };
+        const from = writes.length;
         const moved = fillItem.run(command);
-        const tail = writes.slice(-7);
-        assert.deepStrictEqual(
-            tail.map(write => write.name),
-            ['block_dig', 'block_dig', 'block_dig', 'block_dig', 'set_creative_slot', 'held_item_slot', 'block_place']
+        const tail = writes.slice(from);
+        const digs = tail.filter(write => write.name === 'block_dig');
+        assert.strictEqual(digs.length, 4, 'all four blocks it left behind are dug');
+        assert.strictEqual(
+            tail.filter(write => write.name === 'block_place').length,
+            1,
+            'then a new one is placed'
         );
         const old = [cell, second, third, fourth];
-        assert.ok(tail.slice(0, 4).every(write => old.some(
+        assert.ok(digs.every(write => old.some(
             where => where.x === write.payload.location.x
                 && where.y === write.payload.location.y
                 && where.z === write.payload.location.z
@@ -668,9 +679,9 @@ async function main() {
         assert.strictEqual(fillItem.cells().length, 0, 'nothing standing until the new block answers');
         assert.strictEqual(fillItem.noteBlockChange({ location: moved, type: CMD_STATE }), false);
         assert.strictEqual(fillItem.cells().length, 1);
-        assert.deepStrictEqual(writes[writes.length - 1], {
+        assert.deepStrictEqual(edits().pop(), {
             name: 'update_command_block',
-            payload: { location: moved, command, mode: 2, flags: 0b101 }
+            payload: { location: moved, command, mode: 1, flags: 0b101 }
         });
 
         // A side that answers with air refused the block: the command is not
@@ -695,10 +706,12 @@ async function main() {
         fillItem.slots = fillItem.slots.map(slot => (slot ? { ...slot, placedAt: 0 } : slot));
         assert.strictEqual(fillItem.noteBlockChange({ location: retried, type: 0 }), true);
         assert.strictEqual(fillItem.standing, false);
+        const digsBefore = writes.filter(write => write.name === 'block_dig').length;
+        const placedAgain = placements().length;
         fillItem.run(command);
-        assert.deepStrictEqual(writes.map(write => write.name).slice(-3), [
-            'set_creative_slot', 'held_item_slot', 'block_place'
-        ], 'the block that was there is gone, so nothing is dug');
+        assert.strictEqual(writes.filter(write => write.name === 'block_dig').length, digsBefore,
+            'the block that was there is gone, so nothing is dug');
+        assert.strictEqual(placements().length, placedAgain + 1, 'a fresh block is placed');
 
         // Both item shapes encode on every server this supports.
         const mc = require('minecraft-protocol');
@@ -706,7 +719,7 @@ async function main() {
         for (const version of ['1.20.5', '1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
             const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
             const registry = data(version);
-            const itemId = registry.itemsByName.command_block.id;
+            const itemId = registry.itemsByName.repeating_command_block.id;
             const positiveItem = commandBlockItem(itemId);
             const packet = serializer.createPacketBuffer({
                 name: 'set_creative_slot',
@@ -717,7 +730,7 @@ async function main() {
             assert.strictEqual(packet[2], HOTBAR_SLOT, 'the hotbar slot number');
             assert.ok(serializer.createPacketBuffer({
                 name: 'update_command_block',
-                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 2, flags: 0b101 }
+                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
             }).length > 0, `${version} should encode the command edit`);
             assert.ok(serializer.createPacketBuffer({
                 name: 'held_item_slot',
@@ -799,7 +812,7 @@ async function main() {
         assert.strictEqual(used[2], 'setblock 0 64 0 minecraft:air');
         assert.strictEqual(
             used[3],
-            'setblock 0 64 0 minecraft:command_block{Command:"say hi",auto:1b,TrackOutput:1b} replace'
+            'setblock 0 64 0 minecraft:repeating_command_block{Command:"say hi",auto:1b,TrackOutput:1b} replace'
         );
         assert.strictEqual(core.lastLocation, cell);
         core.destroy();
@@ -1028,7 +1041,7 @@ async function main() {
         assert.strictEqual(writes.length, 1);
         assert.deepStrictEqual(writes[0].payload.location, { x: 1, y: 65, z: 1 });
         assert.match(writes[0].payload.command, /^fill 0 64 0 1 65 1 /);
-        assert.strictEqual(writes[0].payload.mode, 2, 'the core blocks are normal ones');
+        assert.strictEqual(writes[0].payload.mode, 1, 'the core blocks are repeating ones');
 
         // An explicit refill takes the same route: there is no chat path at all.
         await new Promise(resolve => setTimeout(resolve, 450));

@@ -5,13 +5,13 @@
 // They are placed from a creative slot packet that holds nothing but a command
 // block, and then every command is written into one of them with
 // `update_command_block`, exactly how the main core's blocks are written. The
-// blocks are normal (impulse) command blocks: a command runs once, there is no
-// repeating block left running in the world.
+// blocks are repeating command blocks with `auto`, so what they hold keeps
+// running on its own, and a command written into one runs every tick.
 //
 // The mini core never holds a command meant for the main core. What is written
-// into it is always a block write - `setblock <cell> command_block{Command:...,
-// auto:1b}` - so the command ends up in a real core block, with `auto` set, and
-// that block is the one that runs it.
+// into it is always a block write - `setblock <cell> repeating_command_block{
+// Command:...,auto:1b}` - so the command ends up in a real core block, with
+// `auto` set, and that block is the one that runs it.
 //
 // Four blocks are placed, one on each side of the bot, and commands are spread
 // over them in turn: a command that is still being worked on in one block is not
@@ -279,8 +279,7 @@ class FillItem {
     }
 
     // Writes one command into the block: the same packet the core uses for its
-    // own blocks. The block is normal (impulse), so a command runs once instead
-    // of every tick.
+    // own blocks, with `auto` so the block runs it without redstone.
     write(cell, command) {
         const sent = this.bot.write('update_command_block', {
             location: cell,

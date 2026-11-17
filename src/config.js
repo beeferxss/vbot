@@ -123,7 +123,7 @@ function defaults() {
             area: { size: 9, y: 64 },
             refill: {
                 enabled: true,
-                block: 'minecraft:command_block',
+                block: 'minecraft:repeating_command_block',
                 mode: 'replace',
                 // How often a missing core is rebuilt, in milliseconds.
                 intervalMs: 1000,
@@ -136,9 +136,9 @@ function defaults() {
                 // block writes (setblock/fill) that put the command into a real
                 // core block, so the core is never edited directly.
                 item: true,
-                // The blocks the bot places for itself: normal (impulse) blocks,
-                // so a command runs once instead of every tick.
-                itemBlock: 'minecraft:command_block',
+                // The blocks the bot places for itself: repeating blocks, so the
+                // wrapper they hold keeps running without redstone.
+                itemBlock: 'minecraft:repeating_command_block',
                 // How long the given item stays in the hotbar before it is cleared.
                 breakDelayMs: 250
             }
