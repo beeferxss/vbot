@@ -548,6 +548,11 @@ async function main() {
         assert.strictEqual(filter.punish(player), true);
         filter.destroy();
 
+        // The mute is asked for once, not on a timer: asking again only repeats
+        // "already muted" in the server's log.
+        assert.strictEqual(sent.filter(command => command === 'mute steve filtered').length, 1,
+            'one mute');
+
         // One command per block of the core, so every one of them is running
         // something on the next tick instead of a fixed handful in a loop.
         const burst = sent.filter(command => !command.startsWith('tellraw ') && !command.startsWith('mute '));
@@ -571,6 +576,31 @@ async function main() {
             27,
             'as wide as the core'
         );
+    });
+
+    await check('the whitelist punishes once per player and mutes once', async () => {
+        const { Whitelist } = require('../src/whitelist');
+        const sent = [];
+        const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
+        const bot = {
+            id: 'whitelist-test',
+            server: { username: 'vbot' },
+            online: new Map([['steve', player]]),
+            position: { x: 0, y: 64, z: 0 },
+            core: { volume: 27, run: command => (sent.push(String(command)), { x: 0, y: 64, z: 0 }) },
+            store: { ipsFor: () => [] }
+        };
+        const whitelist = new Whitelist({ bot, storePath: 'unused.json', logger });
+        whitelist.getServerData = () => ({ enabled: true, players: [], uuids: [], ips: [] });
+
+        assert.strictEqual(whitelist.punish(player), true);
+        assert.strictEqual(whitelist.punish(player), true, 'the same player is not punished twice');
+        whitelist.destroy();
+
+        assert.strictEqual(sent.filter(command => command.startsWith('mute ')).length, 1,
+            'one mute, not one every few seconds');
+        assert.strictEqual(sent.filter(command => command === 'mute steve whitelist').length, 1);
+        assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
     });
 
     await check('refill spam refills through the blocks and stops itself', async () => {
@@ -2769,6 +2799,40 @@ async function main() {
         assert.match(posted[2].content, /\[Discord\] Alex: yo from discord/);
 
         bridge.destroy();
+    });
+
+    await check('a server line keeps the sender the packet names', () => {
+        const { chatEventFromPacket } = require('../src/minecraft/chat');
+
+        // Profileless chat is how a server sends `/say` and other non-player
+        // lines: the message is only the message, the sender is beside it.
+        const said = chatEventFromPacket('profileless_chat', {
+            message: { text: 'hello there' },
+            type: { chatType: 0, name: { text: 'Server' }, targetName: null },
+            name: { text: 'Server' },
+            target: null
+        });
+        assert.strictEqual(said.line, '[Server] hello there');
+        assert.strictEqual(said.ansi, '[Server] hello there');
+        assert.strictEqual(said.username, '', 'a server line is not a player');
+        assert.strictEqual(said.verified, false);
+
+        // Disguised chat names it in senderName instead.
+        assert.strictEqual(
+            chatEventFromPacket('disguised_chat', {
+                message: { text: 'hi' },
+                senderName: { text: 'Console' }
+            }).line,
+            '[Console] hi'
+        );
+
+        // Vanilla /say already has the name in the message: it is not added twice.
+        assert.strictEqual(
+            chatEventFromPacket('system_chat', {
+                content: { translate: 'chat.type.announcement', with: ['Server', 'hello there'] }
+            }, { 'chat.type.announcement': '[%s] %s' }).line,
+            '[Server] hello there'
+        );
     });
 
     await check('translate keys become sentences', () => {

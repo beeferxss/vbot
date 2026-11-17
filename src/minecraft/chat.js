@@ -118,6 +118,18 @@ function senderName(component) {
     return match ? match[0] : '';
 }
 
+// A line that did not come from a player can keep its sender beside the message
+// instead of inside it: profileless chat names it in `name`, disguised chat in
+// `senderName`, and the chat type repeats it for both. Without reading it a
+// `/say hello` from the console printed `hello` and dropped the `[Server]`.
+function systemSender(packet, lang = null) {
+    for (const candidate of [packet.name, packet.senderName, packet.type?.name]) {
+        const text = stripColors(flatten(candidate, lang)).trim();
+        if (text) return text;
+    }
+    return '';
+}
+
 const PATTERNS = [
     /^<([A-Za-z0-9_.*-]{1,32})>\s?(.*)$/,
     /^(?:\[[^\]]{1,32}\]\s*)*([A-Za-z0-9_.*-]{1,32})\s*[:»›>]\s+(.*)$/,
@@ -168,7 +180,21 @@ function chatEventFromPacket(event, packet, lang = null) {
 
     const text = stripColors(chatTextFromPacket(packet, lang)).trim();
     if (!text) return null;
-    return { line: text, ansi: ansiFromPacket(packet, lang) || text, message: text, username: '', uuid: null, verified: false };
+
+    // The sender is put back on the line when the packet carries one and the
+    // message does not already name it, so server output reads like it does in
+    // game: `[Server] hello` rather than `hello`.
+    const sender = systemSender(packet, lang);
+    const prefix = sender && !text.includes(sender) ? `[${sender}] ` : '';
+    const styled = ansiFromPacket(packet, lang) || text;
+    return {
+        line: `${prefix}${text}`,
+        ansi: `${prefix}${styled}`,
+        message: text,
+        username: '',
+        uuid: null,
+        verified: false
+    };
 }
 
-module.exports = { chatTextFromPacket, chatEventFromPacket, languageFor, parseChatLine, senderName };
+module.exports = { chatTextFromPacket, chatEventFromPacket, languageFor, parseChatLine, senderName, systemSender };

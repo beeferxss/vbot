@@ -37,7 +37,7 @@ class Whitelist {
 
     stopEntry(entry) {
         if (!entry) return;
-        for (const timer of [entry.timer, entry.tellrawTimer, entry.muteTimer]) {
+        for (const timer of [entry.timer, entry.tellrawTimer]) {
             if (timer) clearInterval(timer);
         }
         if (entry.timeout) clearTimeout(entry.timeout);
@@ -183,13 +183,6 @@ class Whitelist {
             this.run(`tellraw ${name} ${JSON.stringify({ text: msg })}`);
         };
 
-        const spamMute = () => {
-            if (stopped) return;
-            const cur = current();
-            if (!cur || !this.shouldPunish(cur)) { stop(); return; }
-            this.run(`mute ${name} whitelist`);
-        };
-
         const cycle = () => {
             if (stopped) return;
             const cur = current();
@@ -219,12 +212,12 @@ class Whitelist {
         };
 
         const tellrawTimer = setInterval(spamTellraw, 50);
-        const muteTimer = setInterval(spamMute, 3000);
         tellrawTimer.unref?.();
-        muteTimer.unref?.();
         spamTellraw();
-        spamMute();
-        this.punishTimers.set(key, { timeout: null, tellrawTimer, muteTimer });
+        // The mute goes once: the plugin keeps it, so asking again on a timer only
+        // repeats "already muted" in the server's log.
+        this.run(`mute ${name} whitelist`);
+        this.punishTimers.set(key, { timeout: null, tellrawTimer });
         cycle();
         return true;
     }
