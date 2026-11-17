@@ -2231,11 +2231,15 @@ async function main() {
         assert.match(sent[0], /yo from discord/);
         assert.ok(!sent[0].includes('**'), 'markdown is stripped before it reaches chat');
 
+        // The tellraw the bridge sent is part of the in-game feed, so it shows
+        // up in the channel too.
         bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
             content: { text: '[Discord] Alex: yo from discord', color: '#55aaff' }
         }));
         await bridge.flush(bridge.relays.get('kbpw'));
-        assert.strictEqual(posted.length, 2, 'the relay echo is not posted back');
+
+        assert.strictEqual(posted.length, 3, 'the tellraw is relayed back');
+        assert.match(posted[2].content, /\[Discord\] Alex: yo from discord/);
 
         bridge.destroy();
     });
@@ -2278,6 +2282,30 @@ async function main() {
             }),
             'Alex joined the game'
         );
+    });
+
+    await check('player chat relays the message, not the rank prefix', () => {
+        const { chatEventFromPacket } = require('../src/minecraft/chat');
+
+        // Some servers put the decorated display name in `message`; only the
+        // message component belongs in the body.
+        const event = chatEventFromPacket('player_chat', {
+            senderName: { text: 'VojtaV12' },
+            plainMessage: 'hello there',
+            message: { text: '[OP] VojtaV12', color: 'gray' },
+            unsignedChatContent: { text: 'hello there', color: 'yellow' }
+        });
+
+        assert.strictEqual(event.line, '<VojtaV12> hello there');
+        assert.strictEqual(event.ansi, '\x1b[96m<VojtaV12>\x1b[0m \x1b[93mhello there\x1b[0m');
+
+        const plain = chatEventFromPacket('player_chat', {
+            senderName: { text: 'VojtaV12' },
+            plainMessage: 'hi',
+            message: { text: '[OP] VojtaV12', color: 'gray' }
+        });
+
+        assert.strictEqual(plain.ansi, '\x1b[96m<VojtaV12>\x1b[0m hi');
     });
 
     store.close();

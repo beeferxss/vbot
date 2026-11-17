@@ -4,8 +4,9 @@
 //
 //   Minecraft -> Discord: the whole chat feed - player chat, tellraw, command
 //   output, joins and leaves - is posted to that server's channel as an ANSI
-//   code block. Lines are batched, the same line is only posted once, and the
-//   bot never echoes its own relay back.
+//   code block. Lines are batched and the same line is only posted once.
+//   Tellraw and command output are part of that feed, including the tellraw the
+//   bridge itself sends for a Discord message.
 //
 //   Discord -> Minecraft: messages in that channel are shown in game with a
 //   coloured tellraw (name, reply target, click to copy), through the core when
@@ -27,7 +28,6 @@ const RELAY = Object.freeze({
     limit: 1900,
     maxRetries: 3
 });
-const ECHO_TTL_MS = 15000;
 const SEEN_TTL_MS = 3000;
 const MC_LIMIT = 500;
 
@@ -339,7 +339,6 @@ class DiscordBridge {
                 timer: null,
                 flushing: false,
                 retries: 0,
-                echoes: new Map(),
                 recent: new Map(),
                 stopped: false
             });
@@ -351,39 +350,6 @@ class DiscordBridge {
         const prefixes = this.root?.bot?.prefixes || [];
         const value = String(text || '').toLowerCase();
         return prefixes.some(prefix => value.startsWith(String(prefix).toLowerCase()));
-    }
-
-    noteEcho(relay, text) {
-        if (!relay || !text) return;
-        relay.echoes.set(String(text), Date.now() + ECHO_TTL_MS);
-
-        if (relay.echoes.size > 50) {
-            const now = Date.now();
-            for (const [key, expiry] of relay.echoes) {
-                if (expiry < now) relay.echoes.delete(key);
-            }
-            while (relay.echoes.size > 50) {
-                relay.echoes.delete(relay.echoes.keys().next().value);
-            }
-        }
-    }
-
-    consumeEcho(relay, text) {
-        if (!relay) return false;
-        const now = Date.now();
-
-        for (const [key, expiry] of relay.echoes) {
-            if (expiry < now) {
-                relay.echoes.delete(key);
-                continue;
-            }
-            if (text === key || String(text).endsWith(key)) {
-                relay.echoes.delete(key);
-                return true;
-            }
-        }
-
-        return false;
     }
 
     // The server can repeat a line (system and player packets, a reload), so the
@@ -417,10 +383,10 @@ class DiscordBridge {
         if (!ansi.trim()) return;
 
         const plain = stripAnsiCodes(ansi).trim();
-        // Our own chat, command spam and relay echoes stay out.
+        // Our own chat and command spam stay out; tellraw, command output and the
+        // relay's own in-game lines are part of the feed.
         if (parsed?.username && parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
         if (parsed?.message && this.isCommand(parsed.message)) return;
-        if (this.consumeEcho(relay, plain)) return;
         if (this.alreadySeen(relay, plain)) return;
 
         relay.buffer.push(toDiscordAnsi(ansi));
@@ -511,15 +477,11 @@ class DiscordBridge {
         const bot = this.channelBots.get(message.channelId);
         if (!bot) return;
 
-        const relay = this.relays.get(bot.id);
         const author = displayName(message.member, message.author);
         const replyTo = await repliedTo(message);
         const body = describeMessage(message).slice(0, MC_LIMIT);
 
         if (!body && !replyTo) return;
-
-        const suffix = replyTo ? ` (reply to @${replyTo}): ${body}` : `: ${body}`;
-        this.noteEcho(relay, `[Discord] ${author}${suffix}`);
 
         this.sendToMinecraft(bot, discordComponent({
             author,

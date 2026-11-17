@@ -50,6 +50,15 @@ function chatTextFromPacket(packet, lang = null) {
     return '';
 }
 
+// A player_chat packet also carries the decorated display name (rank prefix,
+// colours). Only the message component may be used for the body, or the rank
+// prefix would be printed instead of what the player actually said.
+function messageAnsi(packet, message, lang) {
+    const styled = toAnsi(packet.unsignedChatContent ?? packet.body?.content ?? null, lang);
+    if (styled && stripColors(styled).trim() === message) return styled;
+    return message;
+}
+
 // Colours live in the component, and the plain line has already thrown them
 // away, so the same candidates are rendered again with their ANSI styling.
 function ansiFromPacket(packet, lang = null) {
@@ -121,11 +130,10 @@ function chatEventFromPacket(event, packet, lang = null) {
             : stripColors(flatten(packet.unsignedChatContent, lang)).trim();
         if (!message) return null;
 
+        const bodyAnsi = messageAnsi(packet, message, lang);
         return {
             line: username ? `<${username}> ${message}` : message,
-            ansi: username
-                ? `\x1b[96m<${username}>\x1b[0m ${ansiFromPacket(packet, lang) || message}`
-                : ansiFromPacket(packet, lang) || message,
+            ansi: username ? `\x1b[96m<${username}>\x1b[0m ${bodyAnsi}` : bodyAnsi,
             message,
             username,
             uuid: normalizeUuid(packet.senderUuid ?? packet.sender),
