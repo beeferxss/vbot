@@ -87,10 +87,14 @@ class ClickTokens {
 
         const out = { ...component };
         if (out.click?.action === 'suggest_command' && typeof out.click.value === 'string') {
-            const suggestion = out.click.value.trim();
-            if (suggestion && this.onCommand) {
-                const token = this.register(source, clicker => this.onCommand(suggestion, clicker), { player });
-                out.click = { action: 'run_command', value: token };
+            if (out.click.noToken) {
+                out.click = { action: 'suggest_command', value: out.click.value };
+            } else {
+                const suggestion = out.click.value.trim();
+                if (suggestion && this.onCommand) {
+                    const token = this.register(source, clicker => this.onCommand(suggestion, clicker), { player });
+                    out.click = { action: 'run_command', value: token };
+                }
             }
         }
         if (Array.isArray(out.extra)) {

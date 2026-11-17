@@ -52,13 +52,15 @@ module.exports = {
                 return;
             }
             const usage = usageOf(ctx.prefix, command);
+            // Suggest the command itself, ready to type, instead of copying the
+            // usage line with its placeholders in it.
+            const suggest = `${ctx.prefix}${command.name}`;
             const parts = [
                 {
                     text: usage,
                     color: COMMAND_COLOR,
-                    // Copy, not run: a usage line is not something to fire off.
-                    click: { action: 'copy_to_clipboard', value: usage },
-                    hover: { text: 'Click to copy this usage' }
+                    click: { action: 'suggest_command', value: suggest, noToken: true },
+                    hover: { text: 'Click to suggest this command' }
                 },
                 { text: ' — ', color: 'dark_gray' },
                 { text: command.description || 'no description', color: 'gray' },

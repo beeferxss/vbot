@@ -1676,11 +1676,11 @@ async function main() {
             assert.ok(registry.find(part.text), `${part.text} should be a real command`);
         }
 
-        // A single command explains itself, with its usage copied on click.
+        // A single command explains itself, with its name suggested on click.
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help ping') });
         const detail = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
-        assert.strictEqual(detail[0].clickEvent.action, 'copy_to_clipboard');
+        assert.strictEqual(detail[0].clickEvent.action, 'suggest_command');
         assert.strictEqual(detail[0].clickEvent.value, 'v:ping');
         assert.match(decodeReply(sent[0]), /ping — .*latency.* \[public\]/);
     });
