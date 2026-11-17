@@ -2,35 +2,42 @@
 
 // The bot's own command block: a one-block mini core.
 //
-// It is placed once, from a creative slot packet that already holds the fill and
-// `auto: 1b` in its block entity data, and then it is never broken: every later
-// change is written into it with `update_command_block`, exactly how the main
-// core's blocks are written, and the block runs the command against the main
-// core itself. The core's blocks are therefore never edited directly while this
-// block stands.
+// It is placed from a creative slot packet that holds nothing but a command
+// block, and then every command is written into it with `update_command_block`,
+// exactly how the main core's blocks are written; the block runs the command
+// against the main core itself. The core's blocks are therefore never edited
+// directly while this block stands.
+//
+// Nothing but the item id goes into the slot packet. A `block_entity_data`
+// component on it is not portable: Paper 26.1.2 fails to decode
+// `set_creative_mode_slot` when one is present and closes the connection without
+// a kick message, and the block entity type ids differ between versions and
+// servers. The command and "always active" are set afterwards over the command
+// block packet instead, which every version and every server understands.
+//
+// The block is placed on the ground next to the bot, never at its feet: a solid
+// block cannot be placed inside the player, and the server silently ignores the
+// attempt. Which side accepted it is learned from the server's own block update;
+// a side that answered with air is not tried again.
 //
 // The block is placed again when the bot has moved more than five blocks away
 // from it, and a block update at its cell (mined, or replaced by a fill) means
 // the next command places a fresh one.
 //
 // Everything goes through packets: no chat, no /give, no /item.
-//
-// Only 1.20.5 and later are handled here, because that is where an item's data
-// moved into components. 1.21+ is the target: 1.21.5 changed how the creative
-// slot sends those components (raw NBT bytes instead of described fields).
-
-const nbt = require('prismarine-nbt');
 
 const HOTBAR_SLOT = 36;          // first hotbar slot, window slot numbering
 const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
 const BLOCK = 'repeating_command_block';
-// All three command block types share one block entity id.
-const BLOCK_ENTITY_ID = 'minecraft:command_block';
 const MOVE_LIMIT = 5;            // place a new block once the bot has moved this far
-const PLACE_ECHO_MS = 750;       // its own placement's block update is not damage
+const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
+const PENDING_MS = 2000;         // a placement echo older than this is not ours
+const AIR = 0;                   // air's block state number in every version
+const SIDES = 4;
 
-// 1.20.5 moved item data out of the item's own tag and into components.
+// 1.20.5 is where an item in the slot packet gained the added/removed component
+// counts; before that the packet carries a plain item tag instead.
 function usesComponents(version) {
     const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
     if (!match) return true;
@@ -40,58 +47,15 @@ function usesComponents(version) {
     return patch >= 5;
 }
 
-// 1.21.5 stopped describing item components to the protocol: the creative slot
-// takes each component's data as the NBT bytes themselves.
-function usesRawComponents(version) {
-    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
-    if (!match) return true;
-    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
-    if (major !== 1) return major > 1;
-    if (minor !== 21) return minor > 21;
-    return patch >= 5;
-}
-
-// The command block's own data: the stored command, and "always active" so it
-// runs the moment the block is placed instead of waiting for redstone.
-function blockEntityTag(command) {
-    return nbt.comp({
-        id: nbt.string(BLOCK_ENTITY_ID),
-        Command: nbt.string(String(command || '').replace(/^\//, '')),
-        auto: nbt.byte(1),
-        TrackOutput: nbt.byte(1)
-    });
-}
-
-// A command block item with the command already inside it, so the placed block
-// runs it straight away. Both recognised item shapes are supported:
-//  - up to 1.21.4 the slot describes the component, and takes the tag itself,
-//  - 1.21.5 and later take the component's own bytes, so the tag is written as
-//    network NBT (no root name) and the id is whatever the server registered.
-function commandBlockItem(version, itemId, command, componentId) {
-    if (!usesComponents(version)) return null;
-    const tag = blockEntityTag(command);
-
-    if (!usesRawComponents(version)) {
-        return {
-            itemCount: 1,
-            itemId,
-            addedComponentCount: 1,
-            removedComponentCount: 0,
-            components: [{ type: 'block_entity_data', data: tag }],
-            removeComponents: []
-        };
-    }
-
-    if (componentId === undefined || componentId === null) return null;
+// A command block with no components at all. The command, `auto` and the mode
+// are written into the placed block over the command block packet.
+function commandBlockItem(itemId) {
     return {
         itemCount: 1,
         itemId,
-        addedComponentCount: 1,
+        addedComponentCount: 0,
         removedComponentCount: 0,
-        components: [{
-            type: componentId,
-            data: nbt.proto.createPacketBuffer('anonymousNbt', tag)
-        }],
+        components: [],
         removeComponents: []
     };
 }
@@ -102,6 +66,26 @@ function blockMode(block) {
     if (/chain_command_block$/.test(block)) return 0;
     if (/repeating_command_block$/.test(block)) return 1;
     return 2;
+}
+
+function cellKey(cell) {
+    return `${Math.floor(cell.x)}:${Math.floor(cell.y)}:${Math.floor(cell.z)}`;
+}
+
+function sameCell(a, b) {
+    if (!a || !b) return false;
+    return Math.floor(a.x) === Math.floor(b.x)
+        && Math.floor(a.y) === Math.floor(b.y)
+        && Math.floor(a.z) === Math.floor(b.z);
+}
+
+// A block change packet carries the new block state as a number on every
+// version this handles; air is 0.
+function blockState(packet) {
+    const state = packet?.type ?? packet?.state ?? packet?.blockId;
+    if (state === 'minecraft:air' || state === 'air') return AIR;
+    const number = Number(state);
+    return Number.isFinite(number) ? number : null;
 }
 
 class FillItem {
@@ -117,13 +101,17 @@ class FillItem {
         this.carrier = null;      // where the bot's own command block stands
         this.origin = null;       // where the bot stood when it was placed
         this.placedAt = 0;
+        this.state = null;        // the block state the placement settled on
+        this.pending = null;      // a placement waiting for the server's answer
+        this.blocked = new Set(); // sides that refused a block
+        this.side = 0;
         this.sequence = 0;
         this.clearTimer = null;
         this.broken = false;
         this.lastSendAt = 0;
     }
 
-    // A kick right after a placement is the placement's fault. One is enough:
+    // A kick right after the slot packet is that packet's fault. One is enough:
     // reconnecting just to be kicked again teaches nothing.
     onDisconnect() {
         if (!this.lastSendAt) return false;
@@ -131,6 +119,7 @@ class FillItem {
 
         this.broken = true;
         this.lastSendAt = 0;
+        this.pending = null;
         this.log.warn(
             'the refill command block item got the bot disconnected; ' +
             'using the core blocks instead (set core.refill.item false to skip it)'
@@ -162,27 +151,11 @@ class FillItem {
         return this.mcd()?.itemsByName?.[name]?.id;
     }
 
-    // The server's data-component registry is the authority on the component id:
-    // the ids move between versions, and the bundled data can be older than the
-    // server (a 26.1 client against a 26.2 server, for instance).
-    componentId() {
-        const fromServer = this.bot?.registries?.components?.get?.('block_entity_data');
-        if (fromServer !== undefined) return fromServer;
-
-        const mappings = this.mcd()?.protocol?.types?.SlotComponentType?.[1]?.mappings;
-        if (!mappings) return undefined;
-        const key = Object.keys(mappings).find(id => mappings[id] === 'block_entity_data');
-        return key === undefined ? undefined : Number(key);
-    }
-
     get usable() {
         if (this.broken) return false;
         if (!this.bot || typeof this.bot.write !== 'function') return false;
-        const version = this.version();
-        if (!usesComponents(version)) return false;
-        if (this.itemId() === undefined) return false;
-        if (usesRawComponents(version) && this.componentId() === undefined) return false;
-        return true;
+        if (!usesComponents(this.version())) return false;
+        return this.itemId() !== undefined;
     }
 
     get standing() {
@@ -234,7 +207,7 @@ class FillItem {
     }
 
     // Writes the command into the block: the same packet the core uses for its
-    // own blocks, so the block repeats it with `auto` on.
+    // own blocks, with `auto` so the block keeps running it without redstone.
     write(cell, command) {
         const sent = this.bot.write('update_command_block', {
             location: cell,
@@ -257,54 +230,87 @@ class FillItem {
 
         const old = this.carrier;
         this.lastSendAt = Date.now();
-        if (!this.give(command)) return null;
+        if (!this.give()) return null;
 
-        const placed = this.place();
-        if (!placed) {
+        const cell = this.nextSpot();
+        if (!cell || !this.place(cell)) {
             this.clear();
             return null;
         }
 
         // One block at a time: the old one is only removed when it is replaced.
-        if (old) this.breakAt(old);
-        this.carrier = placed;
-        this.origin = { ...placed };
+        if (old && !sameCell(old, cell)) this.breakAt(old);
+        this.carrier = cell;
+        this.origin = { ...cell };
         this.placedAt = Date.now();
+        this.state = null;
+        this.awaitPlacement(cell);
         this.scheduleClear();
-        return placed;
+
+        // The block exists by the time this packet is handled, so the command
+        // lands in it and runs on the next tick.
+        const written = this.write(cell, command);
+        if (!written) {
+            this.carrier = null;
+            this.origin = null;
+            return null;
+        }
+        return written;
     }
 
-    // The item goes into the hotbar slot the bot is holding: the creative slot
-    // packet carries the command block and its data, so no chat is involved.
-    give(command) {
+    // The item goes into the hotbar slot the bot is holding, by packet only.
+    give() {
         const itemId = this.itemId();
         if (itemId === undefined) return false;
-        const item = commandBlockItem(this.version(), itemId, command, this.componentId());
-        if (!item) return false;
 
-        if (!this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item })) return false;
-        return this.bot.write('held_item_slot', { slotId: 0 });
+        const item = commandBlockItem(itemId);
+        if (this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item }) === false) return false;
+        return this.bot.write('held_item_slot', { slotId: 0 }) !== false;
     }
 
-    // Places the item against the block the bot stands on, so the block lands at
-    // the bot's feet - in the air, never inside the core.
-    place() {
-        const target = this.feet();
-        if (!target) return null;
+    // The next free cell for the block: the ground beside the bot, never the
+    // block it is standing in. Sides that answered with air are skipped.
+    nextSpot() {
+        const at = this.feet();
+        if (!at) return null;
 
-        const support = { x: target.x, y: target.y - 1, z: target.z };
+        const spots = [
+            { x: at.x + 1, y: at.y, z: at.z },
+            { x: at.x, y: at.y, z: at.z + 1 },
+            { x: at.x - 1, y: at.y, z: at.z },
+            { x: at.x, y: at.y, z: at.z - 1 }
+        ];
+        for (let step = 0; step < SIDES; step++) {
+            const index = (this.side + step) % SIDES;
+            if (this.blocked.has(cellKey(spots[index]))) continue;
+            this.side = index;
+            return spots[index];
+        }
+        this.blocked.clear();
+        return spots[this.side % SIDES];
+    }
+
+    // Places the item against the top of the block under that cell, so the block
+    // lands in the air beside the bot.
+    place(target) {
         const sent = this.bot.write('block_place', {
             hand: 0,
-            location: support,
+            location: { x: target.x, y: target.y - 1, z: target.z },
             direction: FACE_UP,
             cursorX: 0.5,
-            cursorY: 1,
+            cursorY: 0.5,
             cursorZ: 0.5,
             insideBlock: false,
             worldBorderHit: false,
             sequence: this.nextSequence()
         });
-        return sent ? target : null;
+        return sent !== false;
+    }
+
+    // The server answers a placement with the block's new state, or with air
+    // when it refused. Nothing is assumed before that answer arrives.
+    awaitPlacement(cell) {
+        this.pending = { cell: { ...cell }, at: Date.now() };
     }
 
     // Only ever this block: the core is not touched.
@@ -336,20 +342,52 @@ class FillItem {
         this.clearTimer.unref?.();
     }
 
-    // A block update at the block's own cell means it is gone: somebody mined it,
-    // or a fill replaced it. Its placement's own update is not that.
+    // A block update at the block's own cell is the server's answer about it.
+    // While a placement is waiting, air means the side refused and another one is
+    // tried next time; anything else means the block is really there. Later, a
+    // block that turns to air - mined, or replaced by a fill - is gone, and the
+    // next command places a fresh one.
     noteBlockChange(packet) {
-        if (!this.carrier) return false;
-        if (Date.now() - this.placedAt < PLACE_ECHO_MS) return false;
-
         const location = packet?.location;
         if (!location) return false;
-        if (location.x !== this.carrier.x || location.y !== this.carrier.y || location.z !== this.carrier.z) {
+
+        const state = blockState(packet);
+
+        if (this.pending && Date.now() - this.pending.at < PENDING_MS && sameCell(location, this.pending.cell)) {
+            this.pending = null;
+            if (state === AIR) {
+                this.blocked.add(cellKey(location));
+                this.side = (this.side + 1) % SIDES;
+                if (sameCell(this.carrier, location)) {
+                    this.carrier = null;
+                    this.origin = null;
+                    this.state = null;
+                }
+                this.log.debug(`nothing could be placed at ${location.x} ${location.y} ${location.z}; trying another side`);
+                return false;
+            }
+            // Our own placement: it is standing, and its update is not damage.
+            this.state = state;
+            return false;
+        }
+
+        if (!this.carrier || !sameCell(location, this.carrier)) return false;
+
+        // The command edit changes the block's state too, and it can arrive a
+        // little after the placement.
+        if (Date.now() - this.placedAt < PLACE_ECHO_MS) {
+            if (state !== AIR) this.state = state;
+            return false;
+        }
+
+        if (state !== AIR && (this.state === null || state === this.state)) {
+            this.state = state;
             return false;
         }
 
         this.carrier = null;
         this.origin = null;
+        this.state = null;
         return true;
     }
 
@@ -358,6 +396,8 @@ class FillItem {
         this.clearTimer = null;
         this.carrier = null;
         this.origin = null;
+        this.pending = null;
+        this.state = null;
     }
 }
 

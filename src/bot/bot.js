@@ -91,6 +91,10 @@ class Bot extends EventEmitter {
         this.signedChatSeen = false;
         this.nickSent = false;
         this.prefixSent = false;
+        // The server keeps the player "loading terrain" until the client says the
+        // world is done; block placement is ignored until then.
+        this.loadedSent = false;
+        this.supportsPlayerLoaded = false;
     }
 
     get connection() {
@@ -149,6 +153,8 @@ class Bot extends EventEmitter {
                 `(protocol ${client.version ?? 'unknown'}, gamemode ${packet.gameMode ?? '?'})`
             );
             this.selfCare?.onLoginPacket(packet);
+            this.loadedSent = false;
+            this.supportsPlayerLoaded = this.supportsPacket('player_loaded');
             this.emit('ready');
             this.applyNick();
             this.applyPrefixTag();
@@ -170,6 +176,13 @@ class Bot extends EventEmitter {
                 if (Number.isFinite(packet?.x) && Number.isFinite(packet?.y) && Number.isFinite(packet?.z)) {
                     this.position = { x: packet.x, y: packet.y, z: packet.z };
                 }
+                // A teleport is only accepted once it is confirmed, and the world
+                // only counts as loaded once the client says so. Until both have
+                // happened the server ignores block placement.
+                if (packet?.teleportId !== undefined && packet?.teleportId !== null) {
+                    this.write('teleport_confirm', { teleportId: packet.teleportId });
+                }
+                this.sendPlayerLoaded();
             });
         }
 
@@ -204,6 +217,7 @@ class Bot extends EventEmitter {
             this.emit('disconnect', this.disconnectReason);
             this.nickSent = false;
             this.prefixSent = false;
+            this.loadedSent = false;
             this.registries = { item: null, components: null };
             // A disconnect right after a placed refill block is that block's
             // doing: stop using it rather than kicking in a loop.
@@ -523,6 +537,27 @@ class Bot extends EventEmitter {
             this.log.info(`setting chat prefix to ${tag}`);
             this.sendChat(`/prefix ${tag}`);
         }, 1200).unref?.();
+    }
+
+    // Whether the connected version has a packet at all. Writing one it does not
+    // have only warns, so it is checked first.
+    supportsPacket(name) {
+        try {
+            // eslint-disable-next-line global-require
+            const data = require('minecraft-data')(this.client?.version || this.config.minecraft?.version);
+            return Boolean(data?.protocol?.play?.toServer?.types?.[`packet_${name}`]);
+        } catch {
+            return false;
+        }
+    }
+
+    // A server ignores block placement and interaction until the client reports
+    // that the world has loaded; vanilla clients send this once, after chunks.
+    sendPlayerLoaded() {
+        if (this.loadedSent) return false;
+        this.loadedSent = true;
+        if (!this.supportsPlayerLoaded) return false;
+        return this.write('player_loaded', {});
     }
 
     // Raw packet write, used by the core to fill command blocks.

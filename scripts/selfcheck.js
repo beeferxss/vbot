@@ -542,29 +542,16 @@ async function main() {
         const { FillItem, commandBlockItem, HOTBAR_SLOT, MOVE_LIMIT } = require('../src/fillitem');
         const command = 'fill 1 2 3 4 5 6 minecraft:command_block replace';
 
-        // The item goes by its registry id and the block data travels as the
-        // block_entity_data component: no chat, no item ids looked up by hand.
-        const structured = commandBlockItem('1.21.4', 1234, `/${command}`);
-        assert.strictEqual(structured.itemCount, 1);
-        assert.strictEqual(structured.itemId, 1234);
-        assert.strictEqual(structured.addedComponentCount, 1);
-        assert.strictEqual(structured.components[0].type, 'block_entity_data');
-        assert.deepStrictEqual(structured.components[0].data.value, {
-            id: { type: 'string', value: 'minecraft:command_block' },
-            Command: { type: 'string', value: command },
-            auto: { type: 'byte', value: 1 },
-            TrackOutput: { type: 'byte', value: 1 }
-        });
-
-        // 1.21.5 sends the component's own bytes, and the id the server uses.
-        const raw = commandBlockItem('1.21.5', 1234, command, 51);
-        assert.strictEqual(raw.components[0].type, 51, 'the numeric component id');
-        assert.ok(Buffer.isBuffer(raw.components[0].data), 'raw NBT bytes');
-        const back = require('prismarine-nbt').proto.parsePacketBuffer('anonymousNbt', raw.components[0].data);
-        assert.strictEqual(back.data.value.Command.value, command);
-        assert.strictEqual(back.data.value.auto.value, 1);
-        assert.strictEqual(commandBlockItem('1.21.5', 1234, command), null, 'no component id, no item');
-        assert.deepStrictEqual(back.data.value.id, { type: 'string', value: 'minecraft:command_block' });
+        // The item is nothing but the block: a block_entity_data component makes
+        // Paper 26.1.2 fail to decode set_creative_mode_slot and drop the
+        // connection, so the command is written into the placed block instead.
+        const item = commandBlockItem(1234);
+        assert.strictEqual(item.itemCount, 1);
+        assert.strictEqual(item.itemId, 1234);
+        assert.strictEqual(item.addedComponentCount, 0, 'no components travel with the item');
+        assert.strictEqual(item.removedComponentCount, 0);
+        assert.deepStrictEqual(item.components, []);
+        assert.deepStrictEqual(item.removeComponents, []);
 
         const writes = [];
         const itemBot = {
@@ -579,85 +566,95 @@ async function main() {
         assert.strictEqual(fillItem.usable, true);
         assert.strictEqual(fillItem.standing, false);
 
-        // First run: one slot packet, one placement - the block holds the fill.
+        // First run: the item, a block on the ground beside the bot, then the
+        // command into that block - all in that order, all by packet.
         const cell = fillItem.run(command);
-        assert.deepStrictEqual(cell, { x: 10, y: 64, z: -4 });
+        assert.deepStrictEqual(cell, { x: 11, y: 64, z: -4 });
         assert.deepStrictEqual(writes.map(write => write.name), [
-            'set_creative_slot', 'held_item_slot', 'block_place'
+            'set_creative_slot', 'held_item_slot', 'block_place', 'update_command_block'
         ]);
         assert.strictEqual(writes[0].payload.slot, HOTBAR_SLOT);
-        assert.strictEqual(writes[0].payload.item.itemId, 1234);
-        assert.strictEqual(writes[0].payload.item.components[0].type, 'block_entity_data');
+        assert.deepStrictEqual(writes[0].payload.item, item, 'the plain command block item');
         assert.deepStrictEqual(writes[1].payload, { slotId: 0 }, 'the slot is held');
-        assert.deepStrictEqual(writes[2].payload.location, { x: 10, y: 63, z: -4 }, 'the block the bot stands on');
-        assert.strictEqual(writes[2].payload.direction, 1, 'placed in the air above it, at the bot');
+        assert.deepStrictEqual(writes[2].payload.location, { x: 11, y: 63, z: -4 }, 'the ground beside the bot');
+        assert.strictEqual(writes[2].payload.direction, 1, 'placed on top of it, beside the bot');
+        assert.strictEqual(writes[2].payload.cursorY, 0.5);
+        assert.deepStrictEqual(writes[3].payload, { location: cell, command, mode: 1, flags: 0b101 });
         assert.strictEqual(fillItem.standing, true);
 
         await new Promise(resolve => setTimeout(resolve, 90));
         // The slot is emptied again, and the block stays where it is.
-        assert.deepStrictEqual(writes[3], {
+        assert.deepStrictEqual(writes[4], {
             name: 'set_creative_slot',
             payload: { slot: HOTBAR_SLOT, item: { itemCount: 0, components: [], removeComponents: [] } }
         });
         assert.strictEqual(fillItem.carrier.y, 64);
         assert.ok(!writes.some(write => write.name === 'block_dig'), 'the block is not broken');
 
+        // The server's own block update is what says the block is standing.
+        assert.strictEqual(fillItem.noteBlockChange({ location: { ...cell }, type: 14823 }), false);
+        assert.strictEqual(fillItem.pending, null, 'the placement was answered');
+        assert.strictEqual(fillItem.state, 14823);
+
         // Every later change is written into that block, like a core block.
         assert.deepStrictEqual(fillItem.run('say hi'), cell);
-        assert.deepStrictEqual(writes[4], {
+        assert.deepStrictEqual(writes[5], {
             name: 'update_command_block',
             payload: { location: cell, command: 'say hi', mode: 1, flags: 0b101 }
         });
-        assert.strictEqual(writes.length, 5, 'no second item, no second placement');
+        assert.strictEqual(writes.length, 6, 'no second item, no second placement');
 
         // Standing still keeps editing the same block.
         fillItem.run(command);
-        assert.strictEqual(writes[5].name, 'update_command_block');
-        assert.deepStrictEqual(writes[5].payload.location, cell);
+        assert.strictEqual(writes[6].name, 'update_command_block');
+        assert.deepStrictEqual(writes[6].payload.location, cell);
 
         // Moving further than five blocks: a new block next to the bot, the old
         // one removed.
-        itemBot.position = { x: 10.7 + MOVE_LIMIT + 1, y: 64, z: -3.2 };
+        itemBot.position = { x: 10.7 + MOVE_LIMIT + 2, y: 64, z: -3.2 };
         const moved = fillItem.run(command);
-        assert.strictEqual(moved.x, 16);
-        assert.deepStrictEqual(writes.map(write => write.name).slice(-4), [
-            'set_creative_slot', 'held_item_slot', 'block_place', 'block_dig'
+        assert.deepStrictEqual(moved, { x: 18, y: 64, z: -4 });
+        assert.deepStrictEqual(writes.map(write => write.name).slice(-5), [
+            'set_creative_slot', 'held_item_slot', 'block_place', 'block_dig', 'update_command_block'
         ]);
-        assert.deepStrictEqual(writes[writes.length - 1].payload.location, cell, 'only the block it left behind');
+        assert.deepStrictEqual(writes[writes.length - 2].payload.location, cell, 'only the block it left behind');
         assert.deepStrictEqual(fillItem.carrier, moved);
 
-        // The server's registry decides the component id, not the bundled data:
-        // 1.21.5 registers block_entity_data at 51, 26.1 and later at 60.
-        assert.strictEqual(fillItem.componentId(), 49, 'bundled data for this version');
-        itemBot.registries.components = new Map([['block_entity_data', 60]]);
-        assert.strictEqual(fillItem.componentId(), 60, 'the server registry wins');
+        // A side that answers with air refused the block: the next placement
+        // uses another side, and no command is written into thin air again.
+        itemBot.position = { x: 40.7, y: 64, z: -3.2 };
+        const refused = fillItem.run(command);
+        assert.deepStrictEqual(refused, { x: 41, y: 64, z: -4 });
+        assert.strictEqual(fillItem.noteBlockChange({ location: refused, type: 0 }), false);
+        assert.strictEqual(fillItem.standing, false, 'air means nothing was placed');
+        const retried = fillItem.run(command);
+        assert.deepStrictEqual(retried, { x: 40, y: 64, z: -3 }, 'the next side');
 
         // A block update at its cell (mined, or a fill replaced it) means the
         // next command places a new one; updates elsewhere are not its business.
+        fillItem.noteBlockChange({ location: { ...retried }, type: 14823 });
         assert.strictEqual(fillItem.noteBlockChange({ location: { x: 0, y: 0, z: 0 } }), false);
         fillItem.placedAt = 0;
-        assert.strictEqual(fillItem.noteBlockChange({ location: moved }), true);
+        assert.strictEqual(fillItem.noteBlockChange({ location: retried, type: 0 }), true);
         assert.strictEqual(fillItem.standing, false);
         fillItem.run(command);
-        assert.deepStrictEqual(writes.map(write => write.name).slice(-3), [
-            'set_creative_slot', 'held_item_slot', 'block_place'
+        assert.deepStrictEqual(writes.map(write => write.name).slice(-4), [
+            'set_creative_slot', 'held_item_slot', 'block_place', 'update_command_block'
         ], 'the block that was there is gone, so nothing is dug');
 
         // Both item shapes encode on every server this supports.
         const mc = require('minecraft-protocol');
         const data = require('minecraft-data');
-        for (const version of ['1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
+        for (const version of ['1.20.5', '1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
             const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
             const registry = data(version);
             const itemId = registry.itemsByName.repeating_command_block.id;
-            const mappings = registry.protocol.types.SlotComponentType[1].mappings;
-            const componentId = Number(Object.keys(mappings).find(id => mappings[id] === 'block_entity_data'));
-            const item = commandBlockItem(version, itemId, command, componentId);
+            const positiveItem = commandBlockItem(itemId);
             const packet = serializer.createPacketBuffer({
                 name: 'set_creative_slot',
-                params: { slot: HOTBAR_SLOT, item }
+                params: { slot: HOTBAR_SLOT, item: positiveItem }
             });
-            assert.ok(packet.length > 20, `${version} should encode the command block item`);
+            assert.ok(packet.length > 6, `${version} should encode the command block item`);
             assert.strictEqual(packet[1], 0, 'the slot is a short, high byte first');
             assert.strictEqual(packet[2], HOTBAR_SLOT, 'the hotbar slot number');
             assert.ok(serializer.createPacketBuffer({

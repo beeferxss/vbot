@@ -127,10 +127,11 @@ function defaults() {
                 spamMs: 150,
                 // Start the spam refill by itself once the core is placed.
                 auto: false,
-                // Refill by placing a command block item and breaking it again:
-                // the fill runs on placement and the core is never written to.
+                // Refill through a command block of the bot's own, placed from a
+                // creative slot packet and edited in place: the fill runs in it
+                // and the core is never written to.
                 item: true,
-                // How long that placed block stays before it is broken.
+                // How long the given item stays in the hotbar before it is cleared.
                 breakDelayMs: 250
             }
         }
