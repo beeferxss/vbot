@@ -5,7 +5,33 @@
 // area is refilled with /fill whenever something breaks a block.
 
 const tellraw = require('./minecraft/tellraw');
+const { flatten } = require('./minecraft/text');
 const { FillItem } = require('./fillitem');
+
+// The core's name runs through these colours, one step per character, so it
+// reads as a single word instead of a flat block of colour.
+const NAME_GRADIENT = [[0x55, 0xff, 0xff], [0x55, 0x55, 0xff], [0xff, 0x55, 0xff]];
+
+function gradientParts(text) {
+    const chars = [...String(text)];
+    if (!chars.length) return [];
+
+    const last = NAME_GRADIENT.length - 1;
+    return chars.map((char, index) => {
+        const at = chars.length === 1 ? 0 : (index / (chars.length - 1)) * last;
+        const from = Math.min(Math.floor(at), last);
+        const to = Math.min(from + 1, last);
+        const t = at - from;
+        const [r1, g1, b1] = NAME_GRADIENT[from];
+        const [r2, g2, b2] = NAME_GRADIENT[to];
+
+        const color = '#' + [r1 + (r2 - r1) * t, g1 + (g2 - g1) * t, b1 + (b2 - b1) * t]
+            .map(value => Math.round(value).toString(16).padStart(2, '0'))
+            .join('');
+
+        return { text: char, color, bold: true };
+    });
+}
 
 const OWN_CHANGE_MS = 5000;
 const DAMAGE_DELAY_MS = 250;
@@ -99,16 +125,20 @@ class Core {
             `name ${this.name ? this.name : 'none'}`;
     }
 
-    // The configured name as a component, so it keeps its colours in chat.
+    // The configured name as components, one per character, so it shows up with
+    // a gradient in chat.
     nameParts() {
         if (!this.name) return [{ text: 'none', color: 'dark_gray' }];
+
         let component = this.name;
         try {
             component = JSON.parse(this.name);
         } catch {
-            return [{ text: this.name, color: 'white' }];
+            // A plain string name is perfectly valid.
         }
-        return Array.isArray(component) ? component : [component];
+
+        const text = flatten(component);
+        return text ? gradientParts(text) : [{ text: this.name, color: 'white' }];
     }
 
     // The server reports how many blocks a fill changed, and that is the only

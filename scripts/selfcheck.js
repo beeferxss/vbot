@@ -1465,9 +1465,12 @@ async function main() {
         await registry.dispatch({ bot: statusBot, parsed: parseChatLine('<VojtaV12> v:core status') });
 
         const parts = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
-        const name = parts.find(part => part.text === 'vbot');
-        assert.ok(name, 'the configured name is shown');
-        assert.strictEqual(name.color, 'green', 'the name keeps its colour');
+        const name = parts.filter(part => part.color?.startsWith('#') && 'vbot'.includes(part.text));
+        assert.strictEqual(name.map(part => part.text).join(''), 'vbot', 'the configured name is shown');
+        assert.strictEqual(name.length, 4, 'the name is split so it can carry a gradient');
+        assert.strictEqual(name[0].color, '#55ffff', 'the name starts at aqua');
+        assert.strictEqual(name[3].color, '#ff55ff', 'and ends at light purple');
+        assert.notStrictEqual(name[1].color, name[2].color, 'every step of the gradient differs');
 
         const button = parts.find(part => part.clickEvent?.action === 'run_command');
         assert.ok(button, 'the refill button runs a command');
