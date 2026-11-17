@@ -2308,6 +2308,53 @@ async function main() {
         assert.strictEqual(plain.ansi, '\x1b[96m<VojtaV12>\x1b[0m hi');
     });
 
+    await check('discord /auth never escalates', () => {
+        const { DiscordBridge } = require('../src/discord');
+
+        const grants = [];
+        const registry = {
+            permissions: {
+                grant: (name, level, by) => {
+                    grants.push({ name, level, by });
+                    return level;
+                },
+                levelFor: ({ name }) => (String(name).toLowerCase() === 'adminperson' ? LEVEL.ADMIN : LEVEL.PUBLIC)
+            }
+        };
+        const bridge = new DiscordBridge({
+            config: { discord: { trustedId: 'T', adminId: 'A', ownerId: 'O' } },
+            manager: null,
+            logger,
+            registry
+        });
+        const member = roles => ({
+            roles: { cache: new Map(roles.map(role => [role, {}])) },
+            user: { id: 'U' }
+        });
+
+        // Nobody without a staff role can hand out ranks.
+        assert.strictEqual(bridge.grantRank(member([]), 'Alex', 'trusted').ok, false);
+
+        // A Trusted member cannot grant admin, but can grant trusted.
+        assert.strictEqual(bridge.grantRank(member(['T']), 'Alex', 'admin').ok, false);
+        assert.strictEqual(bridge.grantRank(member(['T']), 'Alex', 'trusted').ok, true);
+
+        // Nor can they strip someone who outranks them.
+        assert.strictEqual(bridge.grantRank(member(['T']), 'AdminPerson', 'public').ok, false);
+
+        // Admin cannot create an owner; owner can.
+        assert.strictEqual(bridge.grantRank(member(['A']), 'Alex', 'owner').ok, false);
+        assert.strictEqual(bridge.grantRank(member(['O']), 'Alex', 'owner').ok, true);
+
+        // Names are validated before anything is stored.
+        assert.strictEqual(bridge.grantRank(member(['O']), 'not a name!', 'trusted').ok, false);
+
+        assert.deepStrictEqual(grants.map(grant => [grant.name, grant.level, grant.by]), [
+            ['Alex', LEVEL.TRUSTED, 'discord:U'],
+            ['Alex', LEVEL.OWNER, 'discord:U']
+        ]);
+    });
+
     store.close();
 
     console.log(results.join('\n'));

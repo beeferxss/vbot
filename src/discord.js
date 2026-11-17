@@ -19,7 +19,7 @@
 // the dependency or the token is missing.
 
 const tellraw = require('./minecraft/tellraw');
-const { LEVEL, levelName } = require('./permissions');
+const { LEVEL, levelName, parseLevel } = require('./permissions');
 const { nearestAnsi } = require('./minecraft/text');
 
 const RELAY = Object.freeze({
@@ -524,6 +524,47 @@ class DiscordBridge {
                     .setDescription('Server id (default: the one linked to this channel)')
                     .setRequired(false)),
             new SlashCommandBuilder()
+                .setName('auth')
+                .setDescription('Give a player a rank in game (never above your own)')
+                .addStringOption(option => option.setName('player').setDescription('Minecraft name').setRequired(true))
+                .addStringOption(option => option
+                    .setName('rank')
+                    .setDescription('Rank to give; public removes it')
+                    .setRequired(true)
+                    .addChoices(
+                        { name: 'trusted', value: 'trusted' },
+                        { name: 'admin', value: 'admin' },
+                        { name: 'owner', value: 'owner' },
+                        { name: 'public (remove)', value: 'public' }
+                    )),
+            new SlashCommandBuilder()
+                .setName('filter')
+                .setDescription('Manage the player filter')
+                .addStringOption(option => option
+                    .setName('action')
+                    .setDescription('status, list, add, remove, clear, on, off, player, uuid, ip, regex, mute, rescan')
+                    .setRequired(true))
+                .addStringOption(option => option.setName('value').setDescription('Name, uuid, ip, regex or on/off').setRequired(false))
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('whitelist')
+                .setDescription('Manage the whitelist')
+                .addStringOption(option => option
+                    .setName('action')
+                    .setDescription('status, list, add, remove, clear, on, off, player, uuid, ip, rescan')
+                    .setRequired(true))
+                .addStringOption(option => option.setName('value').setDescription('Name, uuid, ip or on/off').setRequired(false))
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('alts')
+                .setDescription('Addresses behind a player, or accounts on an address')
+                .addStringOption(option => option.setName('player').setDescription('Name or IP').setRequired(true))
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('help')
+                .setDescription('List the commands you can use, or explain one')
+                .addStringOption(option => option.setName('command').setDescription('Command name').setRequired(false)),
+            new SlashCommandBuilder()
                 .setName('mc')
                 .setDescription('Run a vbot command with your Discord rank')
                 .addStringOption(option => option
@@ -551,6 +592,94 @@ class DiscordBridge {
 
     bots() {
         return typeof this.manager.list === 'function' ? this.manager.list() : [];
+    }
+
+    botFor(interaction, wanted) {
+        if (!wanted) return this.channelBots.get(interaction.channelId) || null;
+        return this.bots().find(bot => bot.id.toLowerCase() === String(wanted).toLowerCase()) || null;
+    }
+
+    missingBot(interaction, wanted) {
+        if (!wanted) return 'This channel is not linked to a server; pass the server option.';
+        return `No server "${wanted}". Available: ${this.bots().map(bot => bot.id).join(', ')}`;
+    }
+
+    // /auth: a Discord member can hand out ranks, but never one above their own,
+    // so the roles stay the ceiling. Public takes the rank away again.
+    grantRank(member, player, rankName) {
+        const rank = this.rankFor(member);
+        if (rank < LEVEL.TRUSTED) {
+            return { ok: false, text: 'The Trusted role is required for /auth.' };
+        }
+
+        const wanted = parseLevel(rankName);
+        if (wanted === null) return { ok: false, text: `Unknown rank "${rankName}".` };
+        if (wanted > rank) {
+            return {
+                ok: false,
+                text: `You cannot grant ${levelName(wanted)}; your Discord rank is ${levelName(rank)}.`
+            };
+        }
+
+        const name = String(player || '').trim();
+        if (!/^[A-Za-z0-9_.-]{1,16}$/.test(name)) {
+            return { ok: false, text: 'That is not a Minecraft name.' };
+        }
+
+        const permissions = this.registry?.permissions;
+        if (!permissions || typeof permissions.grant !== 'function') {
+            return { ok: false, text: 'Permissions are not loaded.' };
+        }
+
+        // A rank below your own cannot be used to touch someone above you: a
+        // Trusted member must not be able to strip an admin's rank.
+        const current = typeof permissions.levelFor === 'function'
+            ? permissions.levelFor({ name }) ?? LEVEL.PUBLIC
+            : LEVEL.PUBLIC;
+        if (current > rank) {
+            return {
+                ok: false,
+                text: `${name} is ${levelName(current)}; you cannot change a rank above your own.`
+            };
+        }
+
+        permissions.grant(name, wanted, `discord:${member?.user?.id ?? member?.id ?? 'unknown'}`);
+
+        return {
+            ok: true,
+            text: wanted === LEVEL.PUBLIC
+                ? `Removed ${name}'s rank.`
+                : `Gave ${name} ${levelName(wanted)}.`
+        };
+    }
+
+    replyHelp(interaction, reply) {
+        const registry = this.registry;
+        if (!registry) return reply('Commands are not loaded.');
+
+        const rank = this.rankFor(interaction.member);
+        const name = String(interaction.options.getString('command') || '').trim().toLowerCase();
+
+        if (name) {
+            const command = registry.find(name);
+            if (!command) return reply(`No command "${name}".`);
+            if (command.level > rank) {
+                return reply(`${command.name} needs ${levelName(command.level)}; your Discord rank is ${levelName(rank)}.`);
+            }
+            return reply([
+                `**${command.usage || command.name}**`,
+                command.description || 'no description',
+                `rank: ${levelName(command.level)}`
+            ].join('\n'));
+        }
+
+        const available = registry.listFor(rank);
+        if (!available.length) return reply('No commands for your rank.');
+
+        const lines = available.map(command =>
+            `**${command.name}**${command.description ? ` — ${command.description}` : ''}`);
+
+        return reply(`${available.length} command(s) for ${levelName(rank)}:\n${lines.join('\n')}`.slice(0, 1900));
     }
 
     // Discord ranks map straight onto vbot's: the Trusted role is trusted, the
@@ -678,6 +807,36 @@ class DiscordBridge {
             return reply(names.length
                 ? `${bot.id} (${names.length}): ${names.slice(0, 50).join(', ')}`
                 : `${bot.id}: no players online.`);
+        }
+
+        if (interaction.commandName === 'auth') {
+            const result = this.grantRank(
+                interaction.member,
+                interaction.options.getString('player'),
+                interaction.options.getString('rank')
+            );
+            if (result.ok) this.log?.info?.(`discord: ${interaction.user?.tag || interaction.user?.id} ${result.text}`);
+            return reply(result.text);
+        }
+
+        if (interaction.commandName === 'filter' || interaction.commandName === 'whitelist' || interaction.commandName === 'alts') {
+            const wanted = interaction.options.getString('server');
+            const bot = this.botFor(interaction, wanted);
+            if (!bot) return reply(this.missingBot(interaction, wanted));
+
+            const action = interaction.options.getString('action');
+            const value = interaction.options.getString('value');
+            const player = interaction.options.getString('player');
+            const text = [interaction.commandName, action, value, player]
+                .filter(part => part !== null && part !== undefined && String(part).trim() !== '')
+                .join(' ');
+
+            const result = await this.executeCommand(bot, interaction.member, text);
+            return reply(result.text.slice(0, 1900));
+        }
+
+        if (interaction.commandName === 'help') {
+            return this.replyHelp(interaction, reply);
         }
 
         if (interaction.commandName === 'mc') {
