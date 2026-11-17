@@ -6,7 +6,7 @@
 
 const tellraw = require('./minecraft/tellraw');
 const { flatten } = require('./minecraft/text');
-const { FillItem } = require('./fillitem');
+const { MiniCore } = require('./minicore');
 
 // The core's name runs through these colours, one step per character, so it
 // reads as a single word instead of a flat block of colour.
@@ -69,7 +69,13 @@ const POSITION_RETRIES = 20;
 // block's own NBT - and a cell that is no longer a command block is rebuilt.
 const VERIFY_MS = 4000;
 const VERIFY_TIMEOUT_MS = 2500;
+const MINI_SETTLE_MS = 700;     // a fill needs a moment before it can be asked about
 const PROBE_QUIET_MS = 60000;
+// The last path when no block can run the fill or a command: plain chat. A fill
+// is expensive enough to be worth one every few seconds, a command goes as soon
+// as the one before it has had a tick to run.
+const CHAT_FILL_MS = 5000;
+const CHAT_RUN_MS = 250;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -136,22 +142,20 @@ class Core {
         this.joinTimer = null;
         this.joinStartedAt = 0;
         this.positionTries = 0;
-        // The bot's own command blocks, spread around it: everything is written
-        // into them and they run against the main core.
+        // The bot's own command blocks: a cube above its head, laid down with one
+        // /fill and then written into like any other core block.
         this.fillItem = this.config.refill?.item === false
             ? null
-            : new FillItem({
-                bot,
-                logger,
-                config: this.config.refill,
-                // Its own fill would replace the blocks, so keep them out of the area
-                // whenever a side of the bot allows it.
-                avoid: (cell) => Boolean(this.origin) && this.origin.x !== null && this.inside(cell.x, cell.y, cell.z)
-            });
-        this.itemFills = 0;
+            : new MiniCore({ bot, logger, config: { ...this.config.refill, block: this.block } });
         // Whether the last command went in through the mini core, which adds a
         // round trip before the core block exists.
         this.lastViaItem = false;
+        // A server that drops the fill - or one the bot cannot get a block into -
+        // leaves nothing to write into. The last path is plain chat, rate-limited
+        // so an ignored command cannot become a flood.
+        this.chatFallback = this.config.refill?.chatFallback !== false;
+        this.lastChatFillAt = 0;
+        this.lastChatRunAt = 0;
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
         this.fillFailures = 0;
@@ -312,9 +316,9 @@ class Core {
         return true;
     }
 
-    // The fill always goes through the bot's own command blocks: nothing is sent
-    // as chat. A surviving core block is the second choice, and when neither can
-    // run it the watchdog retries instead of talking to the server.
+    // The fill goes through a block of the bot's own (the mini core) first, then
+    // through whatever is left of the main core, and only then as chat: the bot
+    // never places a block by hand, so this is how a core is built.
     refill(reason = 'manual', { force = false, minIntervalMs = REFILL_MIN_INTERVAL_MS } = {}) {
         if (!this.enabled || !this.refillEnabled) return false;
         // A join teleport is on its way: filling here would build the core at the
@@ -332,49 +336,58 @@ class Core {
 
         const command = this.fillCommand();
 
-        // The bot's own command blocks come first: they are the mini core, so a
-        // refill only replaces the command inside one of them and that block
-        // fills the main core itself. Its own blocks are never written to
-        // directly.
+        // The bot's own command blocks come first: they are the mini core, and a
+        // refill written into one of them only replaces the command it holds.
         let viaCore = false;
-        let viaItem = false;
+        let viaMini = false;
         let usedSurvivor = null;
-        // Forced refills are allowed on top of a fill still in flight: the bot's
-        // block only has its command replaced, so nothing is placed twice.
-        if (this.origin.x !== null) {
-            viaItem = Boolean(this.placeFill(command));
-            viaCore = viaItem;
+        let viaChat = false;
+        // Set when the mini core itself was put down on this pass, which is a fill
+        // of its own; the main core follows on the next one.
+        let built = false;
+        const mini = this.fillItem;
+
+        if (this.origin.x !== null && mini?.usable) {
+            viaMini = Boolean(mini.run(command));
+            viaCore = viaMini;
+            if (viaMini) this.verifyMiniFill();
         }
 
-        // Whatever is left of the main core refills it when there is no block of
-        // the bot's own: writing the fill into a surviving block needs no item.
-        if (!viaCore && !this.refilling && this.everReady && this.origin.x !== null) {
-            for (const [id, alive] of this.blocks) {
-                if (!alive) continue;
-                const [sx, sy, sz] = id.split(':').map(Number);
-                const cell = { x: sx, y: sy, z: sz };
-                this.markOwn(cell);
-                const ok = Boolean(this.bot.write?.('update_command_block', {
-                    location: cell,
-                    command,
-                    mode: this.blockMode(),
-                    flags: 0b101
-                }));
-                if (ok) {
-                    viaCore = true;
-                    usedSurvivor = cell;
-                    break;
+        // None of the bot's own blocks is standing: the cube goes down in its own
+        // fill, through a core block that is still standing. Nothing is placed by
+        // hand, so a fill is the only way it is ever built.
+        let miniCell = null;
+        if (!viaCore && this.origin.x !== null && !mini?.standing) {
+            const make = mini?.fillCommand?.();
+            if (make) {
+                miniCell = this.writeIntoSurvivor(make);
+                if (miniCell) built = true;
+                else if (this.chatFill(make, reason)) {
+                    built = true;
+                    viaChat = true;
                 }
-                this.ownChanges.delete(keyOf(cell));
-                this.blocks.set(keyOf(cell), false);
+                if (built) this.verifyMiniFill();
             }
         }
 
-        if (!viaCore) {
-            // Nothing can run the fill right now (no mini core, no survivor). The
-            // watchdog retries; chat is never used.
-            this.logEvery('refill-unavailable', 10000, 'warn',
-                `core refill (${reason}) has no block to run in; retrying shortly`);
+        // The main core, through a block that is still standing - one other than
+        // the cell the mini core's fill just went into, which holds that command
+        // now - or as chat when nothing is left. A mini core that is still being
+        // built is filled into on the next pass, once the server shows it.
+        const used = miniCell ? new Set([keyOf(miniCell)]) : null;
+        if (!viaCore && !viaChat) {
+            const cell = this.writeIntoSurvivor(command, used);
+            if (cell) {
+                viaCore = true;
+                usedSurvivor = cell;
+            } else if (built) {
+                this.log.debug(`core refill (${reason}) put the mini core down; the area follows`);
+            } else if (this.chatFill(command, reason)) {
+                viaChat = true;
+            } else {
+                this.logEvery('refill-unavailable', 10000, 'warn',
+                    `core refill (${reason}) has no block to run in; retrying shortly`);
+            }
         }
 
         this.refilling = true;
@@ -383,18 +396,21 @@ class Core {
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
         let place = 'nothing';
-        if (viaItem) place = 'its own command block';
-        else if (viaCore && usedSurvivor) place = `block ${usedSurvivor.x} ${usedSurvivor.y} ${usedSurvivor.z}`;
+        if (viaMini) place = 'its own command block';
+        else if (built && viaChat) place = 'chat, to put the mini core down';
+        else if (built) place = 'a core block, to put the mini core down';
+        else if (usedSurvivor) place = `block ${usedSurvivor.x} ${usedSurvivor.y} ${usedSurvivor.z}`;
+        else if (viaChat) place = 'chat';
         if (reason === 'startup' || reason === 'manual' || reason === 'command') {
             this.log.info(`core refill (${reason}) via ${place}`);
         } else {
             this.log.debug(`core refill (${reason}) via ${place}`);
         }
 
-        // A refill through the bot's own block cannot report failure: the slot
-        // packet and the placement are accepted even when the server drops them.
-        // Check for a real block update and send the fill as chat if nothing changed.
-        if (viaItem) this.verifyItemFill(command);
+        // A refill through the bot's own block cannot report failure: the write is
+        // accepted even when the server drops it. Only a block update (or a block
+        // query) at the cube says the fill landed.
+        if (viaMini) this.verifyMiniFill();
 
         setTimeout(() => {
             this.refilling = false;
@@ -407,36 +423,64 @@ class Core {
         return true;
     }
 
-    verifyItemFill(command) {
+    // A fill that went into a block of its own, or a fill that was meant to put
+    // the mini core down, is only real once the server says so at one of its cells.
+    // Not every fill is announced cell by cell, so the bot asks instead: a command
+    // block in the cube confirms all of it, because a fill is all or nothing.
+    verifyMiniFill() {
         if (this.verifyTimer) clearTimeout(this.verifyTimer);
-        const startedAt = Date.now();
-        // A refill that had to place the block first is later than one written
-        // into a block that was already standing, so give it the extra time.
-        const placing = this.fillItem?.pending ? 1500 : 0;
-        const wait = Math.max(700, (this.fillItem?.holdMs || 250) + 450, placing);
         this.verifyTimer = setTimeout(() => {
             this.verifyTimer = null;
-            if (!this.enabled || this.bot.destroyed) return;
-            // A block that came back inside the area means the fill reached the
-            // world. The damage that started the refill is air, so it does not
-            // count, and a lost fill still falls back to chat.
-            if (this.lastFillStateAt >= startedAt) return;
-            this.fillFailures += 1;
-            this.logEvery('item-fill-unconfirmed', 10000, 'warn',
-                "the bot's command block did not fill the core (placement refused?); retrying through the core");
-        }, wait);
+            if (!this.enabled || this.bot?.destroyed) return;
+            if (this.fillItem?.standing) return;
+
+            const cell = this.fillItem?.watchCells?.()[0];
+            if (!cell) return this.miniFillLost();
+            if (!this.probe('item', cell)) return this.miniFillLost();
+
+            // The answer itself is the check; this only catches a server that never
+            // answers. Blocks the core only believed were standing go with the
+            // cube: writing a fill into one of those is how a fill is lost silently.
+            this.verifyTimer = setTimeout(() => {
+                this.verifyTimer = null;
+                if (this.fillItem?.standing) return;
+                this.miniFillLost();
+            }, VERIFY_TIMEOUT_MS + 500);
+            this.verifyTimer.unref?.();
+        }, MINI_SETTLE_MS);
         this.verifyTimer.unref?.();
     }
 
-    // Runs the fill through the bot's own command block, placing it when there is
-    // none. Returns the block that holds the fill, or null when that is not an
-    // option on this server.
-    placeFill(command) {
-        if (!this.fillItem?.usable) return null;
-        const cell = this.fillItem.run(command);
-        if (!cell) return null;
-        this.itemFills += 1;
-        return cell;
+    miniFillLost() {
+        this.fillFailures += 1;
+        this.fillItem?.refused?.();
+        this.logEvery('mini-fill-unconfirmed', 10000, 'warn',
+            'the mini core fill did not land; the core is filled through a ' +
+            'core block or chat instead');
+    }
+
+    // Writes the fill into a core block that is still standing. That block only
+    // holds one command at a time, so a cell is only used once per refill.
+    writeIntoSurvivor(command, used = null) {
+        if (this.refilling) return null;
+        if (!this.everReady || this.origin.x === null) return null;
+        for (const [id, alive] of this.blocks) {
+            if (!alive) continue;
+            if (used && used.has(id)) continue;
+            const [sx, sy, sz] = id.split(':').map(Number);
+            const cell = { x: sx, y: sy, z: sz };
+            this.markOwn(cell);
+            const ok = Boolean(this.bot.write?.('update_command_block', {
+                location: cell,
+                command,
+                mode: this.blockMode(),
+                flags: 0b101
+            }));
+            if (ok) return cell;
+            this.ownChanges.delete(keyOf(cell));
+            this.blocks.set(keyOf(cell), false);
+        }
+        return null;
     }
 
     // The fill that rebuilds the whole area, as a bare command.
@@ -564,6 +608,19 @@ class Core {
         // let real failures/air breaks correct it.
         if (this.blocks.size > 0 && !this.survivor() && this.everReady) this.markAllAlive();
 
+        // The mini core comes first: it is a cube of the bot's own blocks, so a
+        // burst is spread over 27 of them instead of overwriting one. The main
+        // area takes what is left over.
+        if (this.fillItem?.standing) {
+            const own = this.fillItem.run(text);
+            if (own) {
+                this.lastLocation = own;
+                this.lastViaItem = true;
+                this.refillAfterRun();
+                return own;
+            }
+        }
+
         for (let attempt = 0; attempt < this.volume; attempt++) {
             const cell = this.nextCell();
             if (!cell) return null;
@@ -630,6 +687,17 @@ class Core {
             this.logEvery('block-reject', 5000, 'debug', `core block ${cell.x} ${cell.y} ${cell.z} did not accept a command`);
         }
 
+        // Nothing in the core took it. The command still has to run, so it goes
+        // out as chat: this is what a server that drops the fill leaves the bot
+        // with.
+        const chatCell = this.chatRun(text);
+        if (chatCell) {
+            this.lastLocation = null;
+            this.lastViaItem = false;
+            this.refillAfterRun();
+            return chatCell;
+        }
+
         // Last resort: request refill so the area can recover, then fail this
         // command (callers can retry on next tick). Avoid spamming forced refills.
         if (this.refillEnabled && Date.now() - (this.lastRefillAt || 0) > REFILL_MIN_INTERVAL_MS) {
@@ -637,6 +705,35 @@ class Core {
         }
         this.logEvery('run-failed', 5000, 'warn', 'no core block accepted the command');
         return null;
+    }
+
+    // The fill as a plain chat command. Only reached when no block of the bot's
+    // own and no surviving core block could take it, and only once every
+    // CHAT_FILL_MS, so a server that ignores chat does not get one per retry.
+    chatFill(command, reason = 'refill') {
+        if (!this.chatFallback || this.joining) return false;
+        if (typeof this.bot?.sendChat !== 'function') return false;
+        const now = Date.now();
+        if (now - this.lastChatFillAt < CHAT_FILL_MS) return false;
+        if (!this.bot.sendChat(`/${command}`)) return false;
+        this.lastChatFillAt = now;
+        this.logEvery('chat-fill', CHAT_FILL_MS * 6, 'warn',
+            `core refill (${reason}) had no block to run in; the fill went out as chat`);
+        return true;
+    }
+
+    // The command as plain chat, for the same reason: the core could not take it.
+    // Returns a cell-shaped marker so callers treat it as sent.
+    chatRun(text) {
+        if (!this.chatFallback) return null;
+        if (typeof this.bot?.sendChat !== 'function') return null;
+        const now = Date.now();
+        if (now - this.lastChatRunAt < CHAT_RUN_MS) return null;
+        if (!this.bot.sendChat(`/${text}`)) return null;
+        this.lastChatRunAt = now;
+        this.logEvery('chat-run', CHAT_RUN_MS * 20, 'warn',
+            'no core block accepted the command; it went out as chat until one does');
+        return { x: null, y: null, z: null, chat: true };
     }
 
     // Listens for the reply to a block NBT query. The packet is called
@@ -693,7 +790,9 @@ class Core {
         if (Date.now() - (this.lastProbeAt || 0) < VERIFY_MS) return false;
         this.lastProbeAt = Date.now();
 
-        const mini = this.fillItem?.cells?.() || [];
+        // A cube that was just filled but never answered is asked about too: the
+        // answer is the only way its cells become usable.
+        const mini = this.fillItem?.watchCells?.() || this.fillItem?.cells?.() || [];
         if (mini.length) this.probe('item', mini[this.probeTurn % mini.length]);
 
         const alive = [];
@@ -756,7 +855,9 @@ class Core {
         }
 
         if (ours) {
-            this.fillItem?.confirm?.(probe.cell);
+            // A fill is all or nothing: one cell standing means the cube is there.
+            if (this.fillItem?.confirmAll) this.fillItem.confirmAll();
+            else this.fillItem?.confirm?.(probe.cell);
             return true;
         }
         const dropped = this.fillItem?.goneAll?.() || 0;
@@ -785,10 +886,8 @@ class Core {
         }
 
         // Through the mini core the core block is created by the wrapper it runs,
-        // and a fresh mini block has to be placed before any of that can happen.
-        const wait = delay ?? (this.lastViaItem
-            ? (this.fillItem?.pendingCount ? 1500 : 600)
-            : 150);
+        // which is one step behind the write.
+        const wait = delay ?? (this.lastViaItem ? 600 : 150);
 
         const transactionId = this.queryId++;
         return new Promise(resolve => {
@@ -1012,50 +1111,57 @@ class Core {
         return dropped > 0;
     }
 
-    // Bulk damage: a list of changed blocks in one packet.
+    // Bulk damage: a list of changed blocks in one packet. It is also how the
+    // answer to a /fill arrives: a fill of 27 blocks comes back as one of these,
+    // not as a block update per cell.
     onMultiBlockChange(packet) {
-        if (!this.enabled || !this.refillEnabled) return false;
-        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return false;
         if (!packet || !Array.isArray(packet.records)) return false;
-
         const section = packet.chunkCoordinates;
         if (!section || typeof section.x !== 'number') return false;
 
-        // The mini core can sit in a neighbouring section, and the same packet says
-        // what happened to it: a cell of it that turns to air is a block that is
-        // gone without a block update of its own.
-        const mini = new Map();
-        for (const cell of this.fillItem?.cells?.() || []) mini.set(keyOf(cell), cell);
-
-        let damaged = 0;
-        let dropped = 0;
+        const changes = [];
         for (const record of packet.records) {
             if (typeof record !== 'number') continue;
-            // 1.16.2+ packs a section local position into the varint.
-            const x = section.x * 16 + ((record >>> 8) & 0xF);
-            const y = (Number(section.y) || 0) * 16 + (record & 0xF);
-            const z = section.z * 16 + ((record >>> 4) & 0xF);
-            const key = keyOf({ x, y, z });
+            // 1.16.2+ packs a section local position into the varint, and the
+            // block state above the position bits.
+            changes.push({
+                x: section.x * 16 + ((record >>> 8) & 0xF),
+                y: (Number(section.y) || 0) * 16 + (record & 0xF),
+                z: section.z * 16 + ((record >>> 4) & 0xF),
+                state: record >>> 12
+            });
+        }
 
-            const mine = mini.get(key);
-            if (mine) {
-                // The block state sits above the position bits; anything that is not
-                // a command block means that block is not there any more.
-                if (!this.fillItem?.isOwnState?.(record >>> 12) && this.fillItem?.gone?.(mine)) {
-                    dropped += 1;
-                }
-                continue;
+        // The mini core sits above the bot, often in another section: its cells are
+        // read first and whatever else the packet says is ignored for them. This
+        // runs even mid-refill, because the refill is what put them there.
+        let dropped = 0;
+        const noted = new Set();
+        for (const change of changes) {
+            if (this.fillItem?.noteBlockChange?.({ location: { x: change.x, y: change.y, z: change.z }, type: change.state })) {
+                dropped += 1;
+                noted.add(`${change.x}:${change.y}:${change.z}`);
             }
+        }
 
-            if (!this.inside(x, y, z)) continue;
-            if (this.isOwn({ x, y, z })) continue;
-            this.blocks.set(key, false);
+        if (!this.enabled || !this.refillEnabled) return dropped > 0;
+        if (!this.ready || this.refilling || Date.now() < this.graceUntil) return dropped > 0;
+
+        let damaged = 0;
+        for (const change of changes) {
+            if (noted.has(`${change.x}:${change.y}:${change.z}`)) continue;
+            // A cell of the cube the server has not shown yet: it is not the main
+            // area's business either way.
+            if (this.fillItem?.inBox?.(change)) continue;
+            if (!this.inside(change.x, change.y, change.z)) continue;
+            if (this.isOwn(change)) continue;
+            this.blocks.set(keyOf(change), false);
             damaged += 1;
         }
 
         if (dropped > 0) {
             this.logEvery('mini-block-damage', 10000, 'debug',
-                `a bulk update removed ${dropped} mini core block(s); they are placed again`);
+                `a bulk update removed ${dropped} mini core block(s); they are filled again`);
         }
         if (damaged > 0) {
             this.lastChangeAt = Date.now();
@@ -1404,7 +1510,18 @@ function blockEntityId(nbt) {
     const value = nbt.type === 'compound' && nbt.value ? nbt.value : nbt;
     const id = value && typeof value === 'object' ? value.id : undefined;
     const name = simplifyNbt(id);
-    return typeof name === 'string' ? name : '';
+    if (typeof name === 'string' && name) return name;
+
+    // Newer servers (26.x) answer with the block entity's own fields and no id at
+    // all. Of the block entities the core ever asks about, only a command block
+    // carries a command: that is what makes the answer recognisable.
+    if (value && typeof value === 'object'
+        && value.Command !== undefined
+        && (value.auto !== undefined || value.TrackOutput !== undefined
+            || value.SuccessCount !== undefined || value.UpdateLastExecution !== undefined)) {
+        return 'minecraft:command_block';
+    }
+    return '';
 }
 
 function parseLastOutput(nbt) {

@@ -178,9 +178,8 @@
       "spamMs": 150,
       "auto": false,
       "item": true,
-      "itemBlock": "minecraft:repeating_command_block",
-      "itemCount": 96,
-      "breakDelayMs": 150
+      "miniSize": 3,
+      "chatFallback": true
     }
   }
 }

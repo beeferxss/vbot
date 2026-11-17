@@ -20,6 +20,25 @@ const UNMUTED_LINES = [
     'you can now talk again.'
 ];
 
+// The gamemode is a number up to 1.21, a name in the world state from 26.1 on.
+const GAMEMODES = { survival: 0, creative: 1, adventure: 2, spectator: 3 };
+
+// The gamemode a login or game-state packet carries, as the number the rest of
+// the bot compares against, or null when the packet says nothing about it.
+function gamemodeOf(packet) {
+    if (!packet) return null;
+    const named = packet.worldState?.gamemode
+        ?? packet.worldState?.gameMode
+        ?? packet.gameMode
+        ?? packet.gamemode;
+    if (typeof named === 'string') {
+        const mode = GAMEMODES[named.toLowerCase()];
+        return Number.isFinite(mode) ? mode : null;
+    }
+    const mode = Number(named);
+    return Number.isFinite(mode) ? mode : null;
+}
+
 class SelfCare {
     constructor({ bot, config = {}, logger }) {
         this.bot = bot;
@@ -307,10 +326,14 @@ class SelfCare {
     }
 
     // The login packet is the first place the gamemode is known; without it the
-    // bot would wait for a gamemode change that never comes.
+    // bot would wait for a gamemode change that never comes. From protocol 26.1
+    // (26.x servers) it is no longer a number beside the world: the player is
+    // put in a world state that names the mode, `creative` rather than 1, and a
+    // login packet that only looks for the old field leaves the gamemode unknown.
     onLoginPacket(packet) {
-        if (!packet || packet.gameMode === undefined) return;
-        this.gamemode = Number(packet.gameMode);
+        const mode = gamemodeOf(packet);
+        if (mode === null) return;
+        this.gamemode = mode;
         this.creativeRequested = false;
     }
 
@@ -326,14 +349,17 @@ class SelfCare {
 
     onGameStateChange(packet) {
         if (!packet || packet.reason !== 'change_game_mode') return;
-        this.gamemode = Number(packet.gameMode);
+        const mode = gamemodeOf(packet);
+        if (mode === null) return;
+        this.gamemode = mode;
         this.creativeRequested = false;
         if (this.gamemode !== 1) this.ensureCreative({ immediate: true });
     }
 
     onRespawn(packet) {
-        if (!packet || packet.gamemode === undefined) return;
-        this.gamemode = Number(packet.gamemode);
+        const mode = gamemodeOf(packet);
+        if (mode === null) return;
+        this.gamemode = mode;
         this.creativeRequested = false;
         this.vanished = false;
         this.vanishRequested = false;

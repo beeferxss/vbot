@@ -219,9 +219,6 @@ class Bot extends EventEmitter {
             this.prefixSent = false;
             this.loadedSent = false;
             this.registries = { item: null, components: null };
-            // A disconnect right after a placed refill block is that block's
-            // doing: stop using it rather than kicking in a loop.
-            this.core?.fillItem?.onDisconnect();
             this.online.clear();
             this.listed.clear();
             if (this.scanTimer) clearInterval(this.scanTimer);

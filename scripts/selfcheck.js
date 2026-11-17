@@ -533,6 +533,42 @@ async function main() {
         core.destroy();
     });
 
+    await check('commands go into the mini core before the main area', () => {
+        const writes = [];
+        const miniBot = {
+            position: { x: 35, y: 70, z: -3 },
+            chat: () => true,
+            write: (name, payload) => (writes.push({ name, payload }), true),
+            log: logger
+        };
+        const core = new Core({
+            bot: miniBot,
+            config: { enabled: true, area: { size: 4, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        const handed = [];
+        core.fillItem = {
+            usable: true,
+            standing: true,
+            run: (...commands) => {
+                handed.push(...commands.flat());
+                return { x: 36, y: 73, z: -2 };
+            },
+            destroy: () => {}
+        };
+        core.reset();
+        core.everReady = true;
+        core.markAllAlive();
+
+        assert.deepStrictEqual(core.run('say hi'), { x: 36, y: 73, z: -2 },
+            'the cube of the bot\'s own blocks takes the command');
+        assert.deepStrictEqual(handed, ['say hi'], 'the command is written into it as it is');
+        assert.strictEqual(writes.filter(write => write.name === 'update_command_block').length, 0,
+            'no block of the main area is touched while the cube stands');
+
+        core.destroy();
+    });
+
     await check('filter fills the whole core with its punishment burst', async () => {
         const { Filter } = require('../src/filter');
         const sent = [];
@@ -734,372 +770,152 @@ async function main() {
         plainCore.destroy();
     });
 
-    await check('the bot places its own command blocks from a slot packet and edits those instead of the core', async () => {
-        const { FillItem, commandBlockItem, HOTBAR_SLOT, MOVE_LIMIT } = require('../src/fillitem');
-        const command = 'setblock 1 2 3 minecraft:air';
-
-        // The item is nothing but the block: a block_entity_data component makes
-        // Paper 26.1.2 fail to decode set_creative_mode_slot and drop the
-        // connection, so the command is written into the placed block instead.
-        const item = commandBlockItem(1234);
-        assert.strictEqual(item.itemCount, 1);
-        assert.strictEqual(item.itemId, 1234);
-        assert.strictEqual(item.addedComponentCount, 0, 'no components travel with the item');
-        assert.strictEqual(item.removedComponentCount, 0);
-        assert.deepStrictEqual(item.components, []);
-        assert.deepStrictEqual(item.removeComponents, []);
-
+    await check('the mini core is one fill, size x size x size, above the bot', () => {
+        const { MiniCore } = require('../src/minicore');
         const writes = [];
-        // The real state number of a command block on that version: the bot only
-        // accepts a placement echo that names a command block.
-        const CMD_STATE = require('minecraft-data')('1.21.4')
-            .blocksByName.command_block.defaultState;
-        const itemBot = {
+        const miniBot = {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
-            selfCare: { gamemode: 1 },
-            registries: { item: new Map([['repeating_command_block', 1234]]) },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
-        // Blocks are broken after their command runs; this check is about the
-        // layout, so its blocks are kept standing for its whole length.
-        const fillItem = new FillItem({
-            bot: itemBot, logger, config: { holdMs: 40, afterRunMs: 60000 }
-        });
-        // The hold timer and the step timer fire on their own clock, so the checks
-        // look at what was written, never at its position in the log.
-        const edits = () => writes.filter(write => write.name === 'update_command_block');
-        const placements = () => writes.filter(write => write.name === 'block_place');
-        const slotClears = () => writes.filter(write => write.name === 'set_creative_slot'
-            && write.payload.item?.itemCount === 0);
 
-        assert.strictEqual(fillItem.usable, true);
-        assert.strictEqual(fillItem.standing, false);
-        // Repeating blocks: the wrapper it holds keeps running on its own, which
-        // is what makes the core block it creates run without redstone.
-        assert.strictEqual(fillItem.block, 'repeating_command_block');
-        assert.strictEqual(fillItem.mode, 1, 'a repeating block is written as repeating');
+        const mini = new MiniCore({ bot: miniBot, logger, config: {} });
+        assert.strictEqual(mini.side, 3, 'three on a side');
+        assert.strictEqual(mini.count, 27, 'three by three by three');
+        // One fill, over the bot's head: no item, no slot packet, no placement.
+        assert.strictEqual(mini.fillCommand(), 'fill 9 66 -5 11 68 -3 repeating_command_block');
+        assert.deepStrictEqual(writes, [], 'the cube is never a packet of its own');
+        assert.strictEqual(mini.standing, false, 'nothing counts until the server shows a block');
+        assert.strictEqual(mini.run('say hi'), null, 'nothing is written into a cube that is not there');
 
-        // First command: the item, then the whole mini core in one go, a block on
-        // the ground around the bot. The command waits: where the blocks land is
-        // the server's answer.
-        const cell = fillItem.run(command);
-        // The blocks ring the bot's feet (10, 64, -4), closest ring first, so the
-        // first one goes one back and one left of it.
-        assert.deepStrictEqual(cell, { x: 9, y: 64, z: -5 });
-        assert.deepStrictEqual(writes.slice(0, 3).map(write => write.name), [
-            'set_creative_slot', 'held_item_slot', 'block_place'
-        ]);
-        assert.strictEqual(writes[0].payload.slot, HOTBAR_SLOT);
-        assert.deepStrictEqual(writes[0].payload.item, item, 'the plain repeating command block item');
-        assert.deepStrictEqual(writes[1].payload, { slotId: 0 }, 'the slot is held');
-        assert.deepStrictEqual(writes[2].payload.location, { x: 9, y: 63, z: -5 }, 'the ground under it');
-        assert.strictEqual(writes[2].payload.direction, 1, 'placed on top of it');
-        assert.strictEqual(writes[2].payload.cursorY, 0.5);
-        // One give for the whole set, and a placement for every cell of it: the
-        // blocks are standing before the commands that need them arrive, instead
-        // of one block per command.
-        assert.strictEqual(placements().length, 27, 'the whole mini core at once');
-        assert.strictEqual(
-            writes.filter(write => write.name === 'set_creative_slot').length,
-            1,
-            'one give for the whole set'
-        );
-        assert.strictEqual(fillItem.pendingCount, 27, 'all of them in the air at once');
-        assert.strictEqual(edits().length, 0, 'nothing is written into air');
+        // The side is the size, and a config that still asks for a number of
+        // blocks gets the cube root of it.
+        assert.strictEqual(new MiniCore({ bot: miniBot, logger, config: { miniSize: 5 } }).count, 125);
+        const legacy = new MiniCore({ bot: miniBot, logger, config: { itemCount: 64 } });
+        assert.strictEqual(legacy.side, 4, '64 blocks is a cube on a side of four');
+        assert.strictEqual(new MiniCore({ bot: miniBot, logger, config: { miniSize: 99 } }).side, 8,
+            'a silly size is capped');
 
-        // Each block gets the command that was sent for it, not the other one.
-        assert.strictEqual(fillItem.noteBlockChange({ location: { ...cell }, type: CMD_STATE }), false);
-        assert.strictEqual(fillItem.pendingCount, 26, 'the rest of the set is still open');
-        assert.strictEqual(fillItem.standing, true);
-        assert.deepStrictEqual(edits()[0], {
-            name: 'update_command_block',
-            payload: { location: cell, command, mode: 1, flags: 0b101 }
-        });
-
-        // The rest answer: the whole set is standing, and the blocks nothing was
-        // waiting for are not written into.
-        for (const placement of [...fillItem.pending.values()]) {
-            fillItem.noteBlockChange({ location: { ...placement.cell }, type: CMD_STATE });
-        }
-        assert.strictEqual(fillItem.pendingCount, 0);
-        assert.strictEqual(fillItem.cells().length, 27, 'the whole mini core is standing');
-        assert.strictEqual(edits().length, 1, 'one command, one block');
-
-        // The next commands go into standing blocks, taken in turn, so a burst is
-        // as wide as the mini core and none of them is overwritten.
-        const burst = [];
-        for (let i = 0; i < 27; i++) burst.push(fillItem.run(`say ${i}`));
-        assert.strictEqual(new Set(burst.map(at => `${at.x}:${at.y}:${at.z}`)).size, 27,
-            'a block each');
-        assert.strictEqual(placements().length, 27, 'nothing is placed for them');
-        assert.strictEqual(edits().length, 28, 'one write each, into a block already there');
-        await new Promise(resolve => setTimeout(resolve, 300));
-        // The slot is emptied again, and the blocks stay where they are.
-        assert.ok(slotClears().length > 0, 'the slot is emptied again');
-
-        // The mini core is 27 blocks of its own, spread all around the bot on the
-        // ground it stands on, never in the cells it stands in.
-        assert.strictEqual(fillItem.count, 27, '27 by default');
-        const spots = fillItem.spots({ x: 10, y: 64, z: -4 });
-        assert.strictEqual(spots.length, 27);
-        assert.strictEqual(new Set(spots.map(at => `${at.x}:${at.y}:${at.z}`)).size, 27, 'a cell each');
-        assert.deepStrictEqual(spots[0], { x: 9, y: 64, z: -5 }, 'the closest ring, at the feet');
-        assert.ok(spots.every(at => at.y === 64), 'the first layer is the ground it stands on');
-        assert.ok(spots.some(at => at.x < 10) && spots.some(at => at.x > 10), 'on both sides along x');
-        assert.ok(spots.some(at => at.z < -4) && spots.some(at => at.z > -4), 'on both sides along z');
-        assert.ok(spots.every(at => Math.max(Math.abs(at.x - 10), Math.abs(at.z + 4)) <= 5),
-            'never further than five blocks from the bot');
-        assert.ok(!spots.some(at => at.x === 10 && at.z === -4), 'never the cell the bot stands in');
-
-        // Moving further than five blocks: the set it leaves behind is dug up and
-        // a new one is placed around the bot.
-        itemBot.position = { x: 10.7 + MOVE_LIMIT + 2, y: 64, z: -3.2 };
-        const from = writes.length;
-        const moved = fillItem.run(command);
-        const tail = writes.slice(from);
-        const digs = tail.filter(write => write.name === 'block_dig');
-        assert.strictEqual(digs.length, 27, 'all 27 blocks it left behind are dug');
-        assert.strictEqual(
-            tail.filter(write => write.name === 'block_place').length,
-            27,
-            'then a new set is placed'
-        );
-        const old = fillItem.spots({ x: 10, y: 64, z: -4 });
-        assert.ok(digs.every(write => old.some(
-            where => where.x === write.payload.location.x
-                && where.y === write.payload.location.y
-                && where.z === write.payload.location.z
-        )), 'only the blocks it left behind');
-        assert.strictEqual(fillItem.cells().length, 0, 'nothing standing until the new blocks answer');
-        assert.strictEqual(fillItem.noteBlockChange({ location: moved, type: CMD_STATE }), false);
-        assert.strictEqual(fillItem.cells().length, 1);
-        assert.deepStrictEqual(edits().pop(), {
-            name: 'update_command_block',
-            payload: { location: moved, command, mode: 1, flags: 0b101 }
-        });
-
-        // A side that answers with air refused the block: the command is not
-        // written into thin air, and another side is tried next time.
-        itemBot.position = { x: 40.7, y: 64, z: -3.2 };
-        const refused = fillItem.run(command);
-        fillItem.noteBlockChange({ location: refused, type: 0 });
-        await new Promise(resolve => setTimeout(resolve, 900));
-        assert.strictEqual(fillItem.standing, false, 'air means nothing was placed');
-        const retried = fillItem.run(command);
-        assert.notDeepStrictEqual(retried, refused, 'the next cell around the bot');
-
-        // Cells the core's fill would overwrite are taken last, so the blocks
-        // stand outside it while there is room beside the bot.
-        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40, afterRunMs: 60000 }, avoid: cellAt => cellAt.x >= 40 });
-        assert.deepStrictEqual(avoiding.run(command), { x: 39, y: 64, z: -5 }, 'outside the core area');
-
-        // A block update at one of its cells (mined, or a fill replaced it) means
-        // the next command places a new one; updates elsewhere are not its
-        // business.
-        fillItem.noteBlockChange({ location: { ...retried }, type: CMD_STATE });
-        assert.strictEqual(fillItem.noteBlockChange({ location: { x: 0, y: 0, z: 0 } }), false);
-        fillItem.slots.forEach(slot => { slot.placedAt = 0; });
-        assert.strictEqual(fillItem.noteBlockChange({ location: retried, type: 0 }), true);
-        assert.strictEqual(fillItem.standing, false);
-        const digsBefore = writes.filter(write => write.name === 'block_dig').length;
-        const placedAgain = placements().length;
-        fillItem.run(command);
-        assert.strictEqual(writes.filter(write => write.name === 'block_dig').length, digsBefore,
-            'the block that was there is gone, so nothing is dug');
-        assert.strictEqual(placements().length, placedAgain + 27, 'a fresh set is placed');
-
-        // Both item shapes encode on every server this supports.
-        const mc = require('minecraft-protocol');
-        const data = require('minecraft-data');
-        for (const version of ['1.20.5', '1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
-            const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
-            const registry = data(version);
-            const itemId = registry.itemsByName.repeating_command_block.id;
-            const positiveItem = commandBlockItem(itemId);
-            const packet = serializer.createPacketBuffer({
-                name: 'set_creative_slot',
-                params: { slot: HOTBAR_SLOT, item: positiveItem }
-            });
-            assert.ok(packet.length > 6, `${version} should encode the command block item`);
-            assert.strictEqual(packet[1], 0, 'the slot is a short, high byte first');
-            assert.strictEqual(packet[2], HOTBAR_SLOT, 'the hotbar slot number');
-            assert.ok(serializer.createPacketBuffer({
-                name: 'update_command_block',
-                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
-            }).length > 0, `${version} should encode the command edit`);
-            assert.ok(serializer.createPacketBuffer({
-                name: 'held_item_slot',
-                params: { slotId: 0 }
-            }).length > 0, `${version} should encode the held slot`);
-            assert.ok(serializer.createPacketBuffer({
-                name: 'block_place',
-                params: {
-                    hand: 0,
-                    location: { x: 1, y: 2, z: 3 },
-                    direction: 1,
-                    cursorX: 0.5,
-                    cursorY: 1,
-                    cursorZ: 0.5,
-                    insideBlock: false,
-                    worldBorderHit: false,
-                    sequence: 1
-                }
-            }).length > 0, `${version} should encode the placement`);
-        }
-
-        fillItem.destroy();
-    });
-
-    await check('the mini core spreads a burst over its blocks instead of queueing it', async () => {
-        const { FillItem } = require('../src/fillitem');
-        const writes = [];
-        const burstBot = {
-            client: { version: '1.21.4' },
-            position: { x: 10.7, y: 64, z: -3.2 },
-            selfCare: { gamemode: 1 },
-            registries: { item: new Map([['repeating_command_block', 1234]]) },
-            write: (name, payload) => (writes.push({ name, payload }), true)
-        };
-        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
-        const count = name => writes.filter(write => write.name === name).length;
-        const fillItem = new FillItem({
-            bot: burstBot, logger, config: { holdMs: 40, afterRunMs: 60 }
-        });
-
-        // The first command puts the whole mini core down at once: one give and a
-        // placement for every cell around the bot.
-        const first = fillItem.run('say 0');
-        assert.deepStrictEqual(first, fillItem.spots()[0]);
-        assert.strictEqual(count('block_place'), 27, 'the whole mini core in one go');
-        assert.strictEqual(fillItem.pendingCount, 27);
-        assert.strictEqual(count('update_command_block'), 0, 'nothing into air');
-
-        // A burst that arrives before they answer is spread over them: each waiting
-        // block takes one command instead of the whole burst piling onto one.
-        const queued = [];
-        for (let i = 1; i < 27; i++) queued.push(fillItem.run(`say ${i}`));
-        assert.strictEqual(new Set(queued.map(at => `${at.x}:${at.y}:${at.z}`)).size, 26,
-            'a cell each');
-        assert.strictEqual(count('block_place'), 27, 'no more blocks for a burst');
-
-        // They all answer: one write each, no block taking the whole burst, and the
-        // commands are the ones that were sent for them.
-        for (const placement of [...fillItem.pending.values()]) {
-            fillItem.noteBlockChange({ location: { ...placement.cell }, type: CMD_STATE });
-        }
-        assert.strictEqual(fillItem.pendingCount, 0);
-        assert.strictEqual(fillItem.ready, 27, 'the whole mini core is standing');
-        assert.strictEqual(count('update_command_block'), 27, 'one command each');
-        assert.deepStrictEqual(
-            writes.filter(write => write.name === 'update_command_block')
-                .map(write => write.payload.command).sort(),
-            Array.from({ length: 27 }, (_, i) => `say ${i}`).sort()
-        );
-        assert.strictEqual(count('block_dig'), 0, 'nothing is dug while it runs');
-
-        // With every block standing a burst is nothing but writes: a block that is
-        // asked for again keeps running, so not one placement happens.
-        const before = count('update_command_block');
-        for (let i = 0; i < 27; i++) assert.ok(fillItem.run(`say again ${i}`));
-        assert.strictEqual(count('block_place'), 27, 'a full mini core places nothing');
-        assert.strictEqual(count('update_command_block'), before + 27);
-
-        // Once the burst stops the mini core cleans itself up.
-        await new Promise(resolve => setTimeout(resolve, 400));
-        assert.strictEqual(count('block_dig'), 27, 'every block is dug when idle');
-        assert.strictEqual(fillItem.standing, false);
-
-        fillItem.destroy();
-    });
-
-    await check('the mini core is as many blocks as the config asks for', async () => {
-        const { FillItem } = require('../src/fillitem');
-        const writes = [];
-        const cubeBot = {
-            client: { version: '1.21.4' },
-            position: { x: 10.7, y: 64, z: -3.2 },
-            selfCare: { gamemode: 1 },
-            registries: { item: new Map([['repeating_command_block', 1234]]) },
-            write: (name, payload) => (writes.push({ name, payload }), true)
-        };
-        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
-
-        // 27 blocks by default, spread around the bot on every side.
-        const mini = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40 } });
-        assert.strictEqual(mini.count, 27, '27 blocks by default');
-        const spots = mini.spots({ x: 0, y: 64, z: 0 });
-        assert.strictEqual(spots.length, 27);
-        assert.ok(spots.some(at => at.x < 0) && spots.some(at => at.x > 0), 'all around along x');
-        assert.ok(spots.some(at => at.z < 0) && spots.some(at => at.z > 0), 'all around along z');
-        assert.ok(!spots.some(at => at.x === 0 && at.z === 0), 'never the cell the bot stands in');
-
-        // The count is the number of blocks, not a cube edge: five is five.
-        const five = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 5 } });
-        assert.strictEqual(five.spots({ x: 0, y: 64, z: 0 }).length, 5, 'five blocks');
-        const capped = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 999 } });
-        assert.strictEqual(capped.count, 240, 'a silly count is capped');
-
-        // A level holds 120 blocks within five of the bot; the next one goes a
-        // block higher instead of further out.
-        const layered = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 121 } });
-        const level = layered.spots({ x: 0, y: 64, z: 0 });
-        assert.strictEqual(level.length, 121);
-        assert.ok(level.slice(0, 120).every(at => at.y === 64), 'a whole level at the feet');
-        assert.ok(level.slice(0, 120).every(at => Math.max(Math.abs(at.x), Math.abs(at.z)) <= 5),
-            'never further than five blocks out');
-        assert.deepStrictEqual(level[120], { x: -1, y: 65, z: -1 }, 'the next block one level up');
-
-        // One block is still a mini core, and it is reused instead of placed again.
-        const single = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 1 } });
-        assert.strictEqual(single.count, 1);
-        const cell = single.run('say one');
-        single.noteBlockChange({ location: cell, type: CMD_STATE });
-        assert.deepStrictEqual(single.run('say two'), cell, 'the same block again');
-        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 1,
-            'no second block for a one-block core');
-
-        single.destroy();
-        layered.destroy();
         mini.destroy();
-        five.destroy();
-        capped.destroy();
     });
 
-    await check('the mini core breaks its blocks once their command has run', async () => {
-        const { FillItem } = require('../src/fillitem');
+    await check('a mini core cell counts only once the server shows a command block there', () => {
+        const { MiniCore } = require('../src/minicore');
         const writes = [];
-        const breakBot = {
+        const miniBot = {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
-            selfCare: { gamemode: 1 },
-            registries: { item: new Map([['repeating_command_block', 1234]]) },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
         const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
-        const digs = () => writes.filter(write => write.name === 'block_dig');
+        const mini = new MiniCore({ bot: miniBot, logger, config: {} });
 
-        const fillItem = new FillItem({
-            bot: breakBot, logger, config: { holdMs: 40, afterRunMs: 60, itemCount: 1 }
-        });
-        const cell = fillItem.run('say once');
-        fillItem.noteBlockChange({ location: cell, type: CMD_STATE });
-        assert.strictEqual(fillItem.standing, true, 'the block stands while the command runs');
-        assert.strictEqual(digs().length, 0, 'nothing is broken before the command has run');
+        mini.fillCommand();
+        // Air says the fill did not land, and a floor says it landed somewhere
+        // else: neither is the bot's block.
+        assert.strictEqual(mini.noteBlockChange({ location: { x: 9, y: 66, z: -5 }, type: 0 }), false);
+        assert.strictEqual(mini.standing, false);
+        // The block update that comes with the fill is the answer.
+        assert.strictEqual(mini.noteBlockChange({ location: { x: 9, y: 66, z: -5 }, type: CMD_STATE }), false);
+        assert.strictEqual(mini.standing, true);
+        assert.deepStrictEqual(mini.cells(), [{ x: 9, y: 66, z: -5 }]);
 
-        await new Promise(resolve => setTimeout(resolve, 300));
-        assert.strictEqual(digs().length, 1, 'the block is broken after it');
-        assert.deepStrictEqual(digs()[0].payload.location, cell, 'the block that ran');
-        assert.strictEqual(fillItem.standing, false, 'nothing is left standing');
-        assert.strictEqual(fillItem.cells().length, 0);
+        // A block the server has not shown is never written into.
+        const cell = mini.run('say hi');
+        assert.deepStrictEqual(cell, { x: 9, y: 66, z: -5 });
+        assert.strictEqual(writes.length, 1);
+        assert.strictEqual(writes[0].name, 'update_command_block');
+        assert.strictEqual(writes[0].payload.command, 'say hi');
 
-        // The next command places a fresh block instead of writing into the one
-        // that has just been broken.
-        const again = fillItem.run('say twice');
-        assert.deepStrictEqual(again, cell, 'the same cell, a fresh block');
-        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 2);
+        // A cube that the server never answers is asked for again later, not
+        // filled over and over.
+        const refused = new MiniCore({ bot: miniBot, logger, config: {} });
+        assert.ok(refused.fillCommand());
+        assert.strictEqual(refused.fillCommand(), null, 'the fill is already out');
+        refused.refused();
+        assert.strictEqual(refused.fillCommand(), null, 'a cube that did not land is left alone');
 
-        fillItem.destroy();
+        mini.destroy();
+        refused.destroy();
+    });
+
+    await check('a burst is spread over the mini core instead of one block', () => {
+        const { MiniCore } = require('../src/minicore');
+        const writes = [];
+        const miniBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+        const mini = new MiniCore({ bot: miniBot, logger, config: {} });
+        const box = mini.boxFor(mini.feet());
+
+        // The fill lands in one go: every cell is shown at once.
+        for (const cell of box.cells) mini.noteBlockChange({ location: cell, type: CMD_STATE });
+        assert.strictEqual(mini.cells().length, 27, 'the whole cube stands');
+        assert.strictEqual(mini.ready, 27);
+
+        // One command per block, in turn: 27 commands take 27 different cells, and
+        // not one of them is a placement.
+        const used = new Set();
+        for (let i = 0; i < 27; i++) {
+            const cell = mini.run(`say ${i}`);
+            assert.ok(cell, 'a block took the command');
+            used.add(`${cell.x}:${cell.y}:${cell.z}`);
+        }
+        assert.strictEqual(used.size, 27, 'every block of the cube is used once');
+        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 0,
+            'nothing is placed by hand');
+
+        // A block that is still running the command before is passed over.
+        writes.length = 0;
+        const before = mini.turn;
+        mini.write(box.cells[before], 'say long');
+        mini.slots.get(`${box.cells[before].x}:${box.cells[before].y}:${box.cells[before].z}`).busyUntil = Date.now() + 60000;
+        const next = mini.run('say next');
+        assert.notDeepStrictEqual(next, box.cells[before], 'a busy block is not overwritten');
+
+        mini.destroy();
+    });
+
+    await check('a mini core block that goes is filled again, not written into', () => {
+        const { MiniCore } = require('../src/minicore');
+        const writes = [];
+        const miniBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+        const mini = new MiniCore({ bot: miniBot, logger, config: {} });
+        const box = mini.boxFor(mini.feet());
+        for (const cell of box.cells) mini.noteBlockChange({ location: cell, type: CMD_STATE });
+
+        // Air at one of its cells: that block is gone, and the cube is filled again
+        // instead of a command being written into nothing.
+        const first = mini.cells()[0];
+        assert.strictEqual(mini.noteBlockChange({ location: first, type: 0 }), true, 'the block is gone');
+        assert.strictEqual(mini.cells().length, 26);
+        assert.strictEqual(mini.fillCommand(), 'fill 9 66 -5 11 68 -3 repeating_command_block');
+
+        // A block replaced by something else is gone too.
+        const second = mini.cells()[0];
+        const floor = require('minecraft-data')('1.21.4').blocksByName.stone.defaultState;
+        assert.strictEqual(mini.noteBlockChange({ location: second, type: floor }), true);
+        assert.strictEqual(mini.cells().length, 25);
+
+        // A bulk edit takes all of them with no block update at all.
+        assert.strictEqual(mini.goneAll(), 25, 'the whole set is dropped');
+        assert.strictEqual(mini.standing, false);
+
+        // A bot that walks away leaves the cube behind and gets a new one.
+        miniBot.position = { x: 10.7 + 200, y: 64, z: -3.2 };
+        const moved = mini.fillCommand();
+        assert.match(moved, /^fill /);
+        assert.notStrictEqual(moved, 'fill 9 66 -5 11 68 -3 repeating_command_block');
+
+        mini.destroy();
     });
 
     await check('item numbers come from the server registries', async () => {
@@ -1150,7 +966,6 @@ async function main() {
 
         core.refill('damaged', { force: true });
         assert.strictEqual(used.length, 2);
-        assert.strictEqual(core.itemFills, 2);
 
         // A command is not run in the mini core either: it is told to write the
         // core block, with the command and `auto` inside it.
@@ -1473,7 +1288,9 @@ async function main() {
         };
         const core = new Core({
             bot: coreBot,
-            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
+            // The mini core has its own checks: with it off, everything goes
+            // through what is left of the main core.
+            config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true, item: false } },
             logger
         });
         core.reset();
@@ -1893,6 +1710,8 @@ async function main() {
 
         const core = new Core({
             bot: routingBot,
+            // Nothing of the bot's own is standing here: the fill goes out as
+            // chat, one line at a time, because there is nothing else to run it.
             config: { enabled: true, area: { size: 2, y: 64 }, refill: { enabled: true } },
             logger
         });
@@ -1907,12 +1726,18 @@ async function main() {
         assert.strictEqual(packets[0].name, 'update_command_block');
         assert.strictEqual(packets[0].payload.command, 'gamemode creative vbot');
 
-        // No fill has landed yet and no mini core can be placed: there is nothing
-        // to run the fill in, and chat is not a fallback for it either.
+        // Nothing is standing to run a fill in: the one way left is chat, and it
+        // is one line, not one per retry.
         packets.length = 0;
+        spoken.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken, [], 'a fill never goes out as chat');
+        assert.strictEqual(spoken.length, 1, 'one chat fill');
+        assert.match(spoken[0],
+            /^\/fill -?\d+ -?\d+ -?\d+ -?\d+ -?\d+ -?\d+ minecraft:repeating_command_block( replace)?$/,
+            'one fill, at the whole core or the mini core');
         assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
+        core.refill('damaged', { force: true });
+        assert.strictEqual(spoken.length, 1, 'a fill is not repeated while the last one is out');
         core.destroy();
     });
 
@@ -2624,19 +2449,17 @@ async function main() {
         core.destroy();
     });
 
-    await check('a mini core emptied without a block update is placed again', () => {
+    await check('a mini core emptied without a block update is filled again', () => {
         const writes = [];
         const miniBot = {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
-            selfCare: { gamemode: 1 },
-            registries: { item: new Map([['repeating_command_block', 1234]]) },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
         const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
         const core = new Core({
             bot: miniBot,
-            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true, itemCount: 2, holdMs: 40 } },
+            config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
             logger
         });
         // The area is beside the bot, not around it, so only the mini core is
@@ -2649,13 +2472,13 @@ async function main() {
 
         const mini = core.fillItem;
         const stand = () => {
-            for (const placement of [...mini.pending.values()]) {
-                mini.noteBlockChange({ location: { ...placement.cell }, type: CMD_STATE });
+            for (const cell of mini.current().cells) {
+                mini.noteBlockChange({ location: { ...cell }, type: CMD_STATE });
             }
         };
-        mini.run('say one');
+        mini.fillCommand();
         stand();
-        assert.strictEqual(mini.cells().length, 2, 'the mini core stands');
+        assert.strictEqual(mini.cells().length, 27, 'the mini core stands');
 
         // A bulk update that turns one of the cells to air: no block update of its
         // own ever arrives, so the packet is all the bot has.
@@ -2665,7 +2488,7 @@ async function main() {
             chunkCoordinates: { x: first.x >> 4, y: first.y >> 4, z: first.z >> 4 },
             records: [record]
         }), true, 'a mini block that went to air is noticed');
-        assert.strictEqual(mini.cells().length, 1, 'that cell is free again');
+        assert.strictEqual(mini.cells().length, 26, 'that cell is free again');
 
         // A chunk resend with nothing in it says the same about the rest.
         const rest = mini.cells()[0];
@@ -2677,23 +2500,31 @@ async function main() {
         );
         assert.strictEqual(mini.cells().length, 0, 'nothing is left standing');
 
-        // The next command places the set again instead of writing into air.
+        // The next refill fills the cube again - through a core block of the area
+        // that is still standing - instead of writing into air.
         writes.length = 0;
-        assert.ok(mini.run('say two'));
-        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 2, 'placed again');
+        core.lastRefillAt = 0;
+        core.refilling = false;
+        core.everReady = true;
+        mini.flushedAt = 0;
+        core.refill('damaged', { force: true });
+        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 0,
+            'nothing is placed by hand any more');
+        assert.ok(writes.some(write => write.name === 'update_command_block'
+            && /^fill .*(minecraft:)?repeating_command_block( replace)?$/.test(write.payload.command)),
+        'the cube is filled again');
         stand();
-        assert.strictEqual(mini.cells().length, 2);
+        assert.strictEqual(mini.cells().length, 27);
 
         // A deletion that sends nothing at all is only found by asking: the answer
-        // says the cell is not a command block, so the set is dropped.
+        // says the cell is not a command block, so the cube is dropped.
         assert.strictEqual(core.probe('item', mini.cells()[0]), true);
         const silent = writes.filter(write => write.name === 'query_block_nbt').pop();
         assert.deepStrictEqual(silent.payload.location, mini.cells()[0], 'it asks about the block it stands on');
         core.onQueryResponse({ transactionId: silent.payload.transactionId, nbt: null });
-        assert.strictEqual(mini.cells().length, 0, 'a silent deletion drops the whole set');
+        assert.strictEqual(mini.cells().length, 0, 'a silent deletion drops the whole cube');
 
-        // A block that is still there is kept, and marked as confirmed.
-        mini.run('say three');
+        // A block that is still there is kept and counted as standing.
         stand();
         core.probe('item', mini.cells()[0]);
         const standing = writes.filter(write => write.name === 'query_block_nbt').pop();
@@ -2701,9 +2532,11 @@ async function main() {
             transactionId: standing.payload.transactionId,
             nbt: { type: 'compound', value: { id: { type: 'string', value: 'minecraft:command_block' } } }
         });
-        assert.strictEqual(mini.cells().length, 2, 'a standing block is kept');
+        assert.strictEqual(mini.cells().length, 27, 'a standing block is kept');
 
         // The same question covers the main area, and a block that is gone refills it.
+        core.refilling = false;
+        core.graceUntil = 0;
         core.probe('core', { x: 0, y: 64, z: 0 });
         const forCore = writes.filter(write => write.name === 'query_block_nbt').pop();
         core.onQueryResponse({ transactionId: forCore.payload.transactionId, nbt: null });
@@ -2724,6 +2557,7 @@ async function main() {
         }
         core.destroy();
     });
+
 
     await check('command loops persist and run through the core', async () => {
         const { Cloops } = require('../src/cloops');

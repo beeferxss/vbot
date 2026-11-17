@@ -142,22 +142,20 @@ function defaults() {
                 spamMs: 150,
                 // Start the spam refill by itself once the core is placed.
                 auto: false,
-                // Refill and run commands through the bot's own command blocks,
-                // placed from a creative slot packet: they only ever receive
-                // block writes (setblock/fill) that put the command into a real
-                // core block, so the core is never edited directly.
+                // Keep a mini core of the bot's own: size x size x size command
+                // blocks above its head, put down with one /fill and written into
+                // by packet. Nothing is placed from the inventory, so this needs
+                // no item, no slot packet and no block in hand.
                 item: true,
-                // The blocks the bot places for itself: repeating blocks, so the
-                // wrapper they hold keeps running without redstone.
-                itemBlock: 'minecraft:repeating_command_block',
-                // How many blocks of its own the mini core has, spread around
-                // the bot on every side of it: 27 by default. A block is dug up
-                // again once the command written into it has run and nothing else
-                // is using it, so a burst keeps its blocks and an idle mini core
-                // leaves nothing standing behind the bot.
-                itemCount: 27,
-                // How long the given item stays in the hotbar before it is cleared.
-                breakDelayMs: 250
+                // Blocks on a side of the mini core's cube: 3 is 27 blocks. It is
+                // filled again where it was built when blocks go missing, and
+                // only moved once the bot is far away from it.
+                miniSize: 3,
+                // Send the fill, and a command no core block took, as plain chat
+                // when the bot has nothing of its own to run it in: that is the
+                // only way to build the first core block on a server that does
+                // not let the bot place one.
+                chatFallback: true
             }
         }
     };
