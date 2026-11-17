@@ -179,8 +179,8 @@
       "auto": false,
       "item": true,
       "itemBlock": "minecraft:repeating_command_block",
-      "itemCount": 27,
-      "breakDelayMs": 250
+      "itemCount": 48,
+      "breakDelayMs": 150
     }
   }
 }
