@@ -22,8 +22,15 @@
 // what makes back-to-back commands safe.
 //
 // A block is not kept once its command has run: it is dug up a moment later, so
-// the cube never leaves a command block behind in the world and the next command
-// places a fresh one instead of writing over a block that is still working.
+// the cube never leaves a command block behind in the world. A block that is
+// asked for again before that moment stays, which is what makes a burst (a
+// punishment loop, a scan) as fast as the main core: while commands keep coming,
+// each one is a single write into a block that is already there, and the digging
+// only starts once nothing has used the block for a moment.
+//
+// Commands are spread over the cube in parallel rather than queued behind one
+// block: while one cell is still being placed or is running what was written into
+// it, the next command takes the next cell, so a burst is not one block wide.
 //
 // Nothing but the item id goes into the slot packet. A `block_entity_data`
 // component on it is not portable: Paper 26.1.2 fails to decode
@@ -126,7 +133,6 @@ class FillItem {
         // The blocks are not kept: once the command written into one has had the
         // time to run, the block is broken and the cell is free again.
         this.afterRunMs = Number(config.afterRunMs) > 0 ? Number(config.afterRunMs) : AFTER_RUN_MS;
-        this.breakTimers = new Set();
         // The cube's edge in blocks: 3 means 3x3x3, 27 blocks of its own.
         const size = Math.floor(Number(config.itemSize));
         this.size = Number.isFinite(size) ? Math.min(Math.max(size, 1), MAX_SIZE) : SIZE;
@@ -135,7 +141,9 @@ class FillItem {
         this.turn = 0;            // which cell of the cube the next command goes to
         this.origin = null;       // where the bot stood when the cube was placed
         this.placedAt = 0;
-        this.pending = null;      // a placement waiting for the server's answer
+        // Placements waiting for the server's answer, by cube cell. Several can be
+        // in the air at once, one per cell, so a burst is not held up by the first.
+        this.pending = new Map();
         this.blocked = new Set(); // cells that refused a block
         this.sequence = 0;
         this.clearTimer = null;
@@ -146,6 +154,17 @@ class FillItem {
     // Any block of the cube is enough: the mini core is up.
     get standing() {
         return this.slots.size > 0;
+    }
+
+    // How many blocks of the cube are still being placed.
+    get pendingCount() {
+        return this.pending.size;
+    }
+
+    // Blocks that are free right now: placed, and not still running a command.
+    get ready() {
+        const now = Date.now();
+        return [...this.slots.values()].filter(slot => !(slot.busyUntil > now)).length;
     }
 
     // Cells the mini core currently stands on; the core keeps them out of refills.
@@ -161,7 +180,7 @@ class FillItem {
 
         this.broken = true;
         this.lastSendAt = 0;
-        this.pending = null;
+        this.pending.clear();
         this.log.warn(
             'the refill command block item got the bot disconnected; ' +
             'using the core blocks instead (set core.refill.item false to skip it)'
@@ -290,43 +309,53 @@ class FillItem {
         if (this.moved(at)) this.reposition();
         if (!this.origin) this.origin = { ...at };
 
-        // While a placement is still being confirmed the block is not known yet;
-        // the commands wait with it instead of being written into air.
-        if (this.pending) {
-            this.pending.queue.push(...list);
-            return this.pending.cell;
-        }
-
         const start = this.anchor(at);
         if (!start) return null;
         const cells = this.cube(start);
+        const now = Date.now();
 
         for (let step = 0; step < cells.length; step++) {
             const index = (this.turn + step) % cells.length;
             const cell = cells[index];
             const key = cellKey(cell);
             if (this.blocked.has(key)) continue;
+            // A cell that is still being placed, or whose block is still running
+            // what was written into it, is passed over: the next command goes to
+            // the next cell instead of waiting for that one.
+            if (this.pending.has(key)) continue;
+            const slot = this.slots.get(key);
+            if (slot && slot.busyUntil > now) continue;
 
             this.turn = (index + 1) % cells.length;
-            const slot = this.slots.get(key);
             if (slot) {
-                if (!this.writeAll(slot.cell, list, key)) return null;
+                if (!this.writeAll(slot.cell, list, slot)) return null;
                 return slot.cell;
             }
             return this.placeSlot(key, cell, list);
         }
 
-        // Every cell of the cube refused a block: forget that and try again from
-        // where the turn stands.
+        // Every cell of the cube is busy, being placed, or refused a block: the
+        // command goes where the turn stands, queued behind that block.
         this.blocked.clear();
         const cell = cells[this.turn];
-        return this.placeSlot(cellKey(cell), cell, list);
+        const key = cellKey(cell);
+        const waiting = this.pending.get(key);
+        if (waiting) {
+            waiting.queue.push(...list);
+            return waiting.cell;
+        }
+        const busy = this.slots.get(key);
+        if (busy) {
+            if (!this.writeAll(busy.cell, list, busy)) return null;
+            return busy.cell;
+        }
+        return this.placeSlot(key, cell, list);
     }
 
     // Writes the commands of one operation into the block, one step at a time, and
     // digs the block up once the last of them has run: the cube only ever holds a
     // command for as long as that command needs.
-    writeAll(cell, commands, key = null) {
+    writeAll(cell, commands, slot = null) {
         const list = [...commands];
         if (!list.length) return true;
         if (!this.write(cell, list.shift())) return false;
@@ -334,19 +363,29 @@ class FillItem {
             const timer = setTimeout(() => this.write(cell, command), this.stepMs * (index + 1));
             timer.unref?.();
         });
-        if (key) this.scheduleBreak(cell, key, this.stepMs * list.length + this.afterRunMs);
+        if (slot) {
+            // Busy until the last step is out; after that the block holds a command
+            // that has run and is free for the next one, until it is dug.
+            slot.busyUntil = Date.now() + this.stepMs * list.length;
+            this.scheduleBreak(cell, slot, this.stepMs * list.length + this.afterRunMs);
+        }
         return true;
     }
 
-    // The command has run: the block goes, and its cell is free for the next one.
-    scheduleBreak(cell, key, after) {
+    // The command has run: unless the block is used again first, it is dug up and
+    // its cell is free for a fresh one. Every write pushes that back, so a burst
+    // keeps its blocks and an idle cube leaves nothing behind.
+    scheduleBreak(cell, slot, after) {
+        if (slot.breakTimer) clearTimeout(slot.breakTimer);
         const timer = setTimeout(() => {
-            this.breakTimers.delete(timer);
+            slot.breakTimer = null;
+            const key = cellKey(slot.cell);
+            if (this.slots.get(key) !== slot) return;
             this.slots.delete(key);
-            this.breakAt(cell);
+            this.breakAt(slot.cell);
         }, Math.max(Number(after) || 0, 0));
         timer.unref?.();
-        this.breakTimers.add(timer);
+        slot.breakTimer = timer;
     }
 
     // Writes one command into the block: the same packet the core uses for its
@@ -364,12 +403,14 @@ class FillItem {
     // The bot moved away: the cube is too far to be worth keeping, so it is dug up
     // and placed again where the bot stands now.
     reposition() {
-        for (const timer of this.breakTimers) clearTimeout(timer);
-        this.breakTimers.clear();
-        for (const slot of this.slots.values()) this.breakAt(slot.cell);
+        for (const slot of this.slots.values()) {
+            if (slot.breakTimer) clearTimeout(slot.breakTimer);
+            slot.breakTimer = null;
+            this.breakAt(slot.cell);
+        }
         this.slots.clear();
         this.blocked.clear();
-        this.pending = null;
+        this.pending.clear();
         this.turn = 0;
         this.origin = this.feet();
     }
@@ -401,7 +442,7 @@ class FillItem {
         // the ground under the target instead of above it, and a command written
         // to the guessed cell lands in air and is lost. The update that arrives
         // next says which cell it is; the commands follow there.
-        this.pending = {
+        const placement = {
             key,
             cell: { ...cell },
             support: { x: cell.x, y: cell.y - 1, z: cell.z },
@@ -412,7 +453,7 @@ class FillItem {
             refused: false,
             timer: null
         };
-        const placement = this.pending;
+        this.pending.set(key, placement);
         placement.timer = setTimeout(() => this.settle(placement), SETTLE_MS);
         placement.timer.unref?.();
         return cell;
@@ -421,8 +462,8 @@ class FillItem {
     // The placement is over: write the queued commands into the block that is
     // really there, or give up on this cell when nothing was placed.
     settle(placement) {
-        if (this.pending !== placement) return;
-        this.pending = null;
+        if (this.pending.get(placement.key) !== placement) return;
+        this.pending.delete(placement.key);
         if (placement.timer) clearTimeout(placement.timer);
         placement.timer = null;
 
@@ -436,12 +477,15 @@ class FillItem {
         }
 
         const at = { ...placement.landed };
-        this.slots.set(placement.key, {
+        const slot = {
             cell: at,
             state: placement.state,
-            placedAt: Date.now()
-        });
-        this.writeAll(at, placement.queue, placement.key);
+            placedAt: Date.now(),
+            busyUntil: 0,
+            breakTimer: null
+        };
+        this.slots.set(placement.key, slot);
+        this.writeAll(at, placement.queue, slot);
     }
 
     // The item goes into the hotbar slot the bot is holding, by packet only.
@@ -516,8 +560,8 @@ class FillItem {
 
         const state = blockState(packet);
 
-        if (this.pending && Date.now() - this.pending.at < SETTLE_MS + PENDING_MS) {
-            const placement = this.pending;
+        for (const placement of [...this.pending.values()]) {
+            if (Date.now() - placement.at >= SETTLE_MS + PENDING_MS) continue;
             if (this.isOwnState(state) && (sameCell(location, placement.cell) || sameCell(location, placement.support))) {
                 placement.landed = { x: location.x, y: location.y, z: location.z };
                 placement.state = state;
@@ -552,11 +596,13 @@ class FillItem {
     destroy() {
         if (this.clearTimer) clearTimeout(this.clearTimer);
         this.clearTimer = null;
-        for (const timer of this.breakTimers) clearTimeout(timer);
-        this.breakTimers.clear();
+        for (const slot of this.slots.values()) {
+            if (slot.breakTimer) clearTimeout(slot.breakTimer);
+            slot.breakTimer = null;
+        }
         this.slots.clear();
         this.origin = null;
-        this.pending = null;
+        this.pending.clear();
     }
 }
 

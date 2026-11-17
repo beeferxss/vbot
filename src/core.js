@@ -474,11 +474,13 @@ class Core {
 
     // A command has just run in a core block, and the server may well have taken
     // the command back out of it, so the mini core fills the area again right
-    // away instead of waiting for the damage to be noticed. Only ever one of
-    // these is pending: a burst of commands needs one refill, not one each.
+    // away instead of waiting for the damage to be noticed. Every command pushes
+    // the wait back: a burst - a punishment loop, a scan - refills once when it
+    // goes quiet instead of filling the area over commands that are still being
+    // written.
     refillAfterRun(delay = REFILL_AFTER_RUN_MS) {
         if (!this.enabled || !this.refillEnabled) return null;
-        if (this.afterRunTimer) return this.afterRunTimer;
+        if (this.afterRunTimer) clearTimeout(this.afterRunTimer);
         const timer = setTimeout(() => {
             this.afterRunTimer = null;
             this.refill('after-run', { minIntervalMs: AFTER_RUN_MIN_MS });
@@ -520,9 +522,29 @@ class Core {
 
             this.markOwn(cell);
 
-            // The mini core does not run the command itself: it writes the core
-            // block, with the command and `auto` already in it, so the block that
-            // executes is a real core block.
+            // A cell that already holds a core block is the normal core, and a
+            // command written into it runs on the next tick: one packet, no
+            // waiting for a block to be placed and created. That is the path a
+            // burst like `filter` needs, and the mini core is not in it.
+            const live = this.blocks.get(keyOf(cell)) === true;
+            if (live && this.bot.write) {
+                const sent = this.bot.write('update_command_block', {
+                    location: cell,
+                    command: text.slice(0, 32000),
+                    mode: this.blockMode(),
+                    flags: 0b101
+                });
+                if (sent !== false) {
+                    this.lastLocation = cell;
+                    this.lastViaItem = false;
+                    this.refillAfterRun();
+                    return cell;
+                }
+            }
+
+            // Nothing stands in this cell yet: the mini core does not run the
+            // command itself, it writes the core block with the command and `auto`
+            // already in it, so the block that executes is a real core block.
             if (this.fillItem?.usable) {
                 const own = this.fillItem.run(this.cellCommands(cell, text));
                 if (own) {
@@ -616,7 +638,7 @@ class Core {
         // Through the mini core the core block is created by the wrapper it runs,
         // and a fresh mini block has to be placed before any of that can happen.
         const wait = delay ?? (this.lastViaItem
-            ? (this.fillItem?.pending ? 1500 : 600)
+            ? (this.fillItem?.pendingCount ? 1500 : 600)
             : 150);
 
         const transactionId = this.queryId++;
