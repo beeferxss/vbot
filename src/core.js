@@ -129,15 +129,15 @@ class Core {
         this.joinTimer = null;
         this.joinStartedAt = 0;
         this.positionTries = 0;
-        // The bot's own command blocks, a small cube beside it: everything is
-        // written into them and they run against the main core.
+        // The bot's own command blocks, spread around it: everything is written
+        // into them and they run against the main core.
         this.fillItem = this.config.refill?.item === false
             ? null
             : new FillItem({
                 bot,
                 logger,
                 config: this.config.refill,
-                // Its own fill would replace the cube, so keep it out of the area
+                // Its own fill would replace the blocks, so keep them out of the area
                 // whenever a side of the bot allows it.
                 avoid: (cell) => Boolean(this.origin) && this.origin.x !== null && this.inside(cell.x, cell.y, cell.z)
             });

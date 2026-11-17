@@ -179,7 +179,7 @@
       "auto": false,
       "item": true,
       "itemBlock": "minecraft:repeating_command_block",
-      "itemSize": 3,
+      "itemCount": 27,
       "breakDelayMs": 250
     }
   }

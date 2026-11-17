@@ -214,10 +214,15 @@ class Filter {
                 `jumpscare ${name}`
             ];
 
-            for (let r = 0; r < 5; r++) {
-                for (const cmd of cmds) this.run(cmd);
+            // One command per block of the core: every block runs what it holds
+            // on the next tick, so a burst as wide as the core hits as many times
+            // per tick as the core has blocks. Before, the burst was a fixed 155
+            // commands in a loop and most of the core sat idle.
+            const volume = Math.max(1, Math.floor(Number(this.bot.core?.volume)) || 1);
+            const punish = cmds.length * 5;
+            for (let i = 0; i < volume; i++) {
+                this.run(i < punish ? cmds[i % cmds.length] : `jumpscare ${name}`);
             }
-            for (let i = 0; i < 120; i++) this.run(`jumpscare ${name}`);
 
             // Command blocks tick once per server tick. Repeating the burst at
             // once would overwrite commands before they ever ran, so leave the

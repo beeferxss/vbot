@@ -1,6 +1,6 @@
 'use strict';
 
-// The bot's own command blocks: a small mini core that stands beside it.
+// The bot's own command blocks: a small mini core of its own, around it.
 //
 // They are placed from a creative slot packet that holds nothing but a command
 // block, and then every command is written into one of them with
@@ -13,22 +13,23 @@
 // Command:...,auto:1b}` - so the command ends up in a real core block, with
 // `auto` set, and that block is the one that runs it.
 //
-// The mini core is a cube `itemSize` blocks on a side (3 by default, so 27
-// blocks), standing on the ground beside the bot and centred on it along z: no
-// cell of it is ever inside the player, where a block cannot be placed. The
-// bottom layer goes in first, so every layer above has the one under it to be
-// placed against. Commands are spread over the cube in turn: a block that is
-// still running the command before is not overwritten by the next one, which is
-// what makes back-to-back commands safe.
+// The mini core is `itemCount` blocks (27 by default) standing around the bot on
+// every side of it: they are taken ring by ring outwards from its feet, instead
+// of piling up in one square beside it, and none of them is ever in the cells
+// the bot stands in, where a block cannot be placed. Each layer goes in before
+// the one above it, so every block has the one under it to be placed against.
+// Commands are spread over them in turn: a block that is still running the
+// command before is not overwritten by the next one, which is what makes
+// back-to-back commands safe.
 //
 // A block is not kept once its command has run: it is dug up a moment later, so
-// the cube never leaves a command block behind in the world. A block that is
-// asked for again before that moment stays, which is what makes a burst (a
+// the mini core never leaves a command block behind in the world. A block that
+// is asked for again before that moment stays, which is what makes a burst (a
 // punishment loop, a scan) as fast as the main core: while commands keep coming,
 // each one is a single write into a block that is already there, and the digging
 // only starts once nothing has used the block for a moment.
 //
-// Commands are spread over the cube in parallel rather than queued behind one
+// Commands are spread over the blocks in parallel rather than queued behind one
 // block: while one cell is still being placed or is running what was written into
 // it, the next command takes the next cell, so a burst is not one block wide.
 //
@@ -40,10 +41,10 @@
 // block packet instead, which every version and every server understands.
 //
 // Which cell accepted a block is learned from the server's own block update; a
-// cell that answered with air is not tried again. The cube is placed again when
-// the bot has moved more than five blocks away from it, and a block update at one
-// of its cells (mined, or replaced by a fill) means the next command places a
-// fresh one.
+// cell that answered with air is not tried again. The blocks are placed again
+// when the bot has moved more than five blocks away from them, and a block update
+// at one of their cells (mined, or replaced by a fill) means the next command
+// places a fresh one.
 //
 // Everything goes through packets: no chat, no /give, no /item.
 
@@ -51,9 +52,11 @@ const HOTBAR_SLOT = 36;          // first hotbar slot, window slot numbering
 const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
 const BLOCK = 'repeating_command_block';
-const SIZE = 3;                  // the mini core is SIZE by SIZE by SIZE blocks
-const MAX_SIZE = 8;
-const MOVE_LIMIT = 5;            // place a new cube once the bot has moved this far
+const COUNT = 27;                // how many of its own blocks the mini core has
+const MAX_COUNT = 96;
+const RADIUS = 3;                // they stand up to this far out from the bot
+const LAYERS = 4;                // and up to this many blocks above its feet
+const MOVE_LIMIT = 5;            // place a new set once the bot has moved this far
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
 const SETTLE_MS = 800;           // how long a placement has to be answered
 const STEP_MS = 120;             // gap between the commands of one command
@@ -118,7 +121,7 @@ class FillItem {
         this.bot = bot;
         this.log = logger;
         this.data = data;
-        // Cells the cube should stay out of when a side of the bot allows it: the
+        // Cells the mini core should stay out of when there is room: the
         // core's own area, whose fill would replace it on every refill.
         this.avoid = typeof avoid === 'function' ? avoid : null;
         this.block = String(config.itemBlock || BLOCK);
@@ -133,16 +136,20 @@ class FillItem {
         // The blocks are not kept: once the command written into one has had the
         // time to run, the block is broken and the cell is free again.
         this.afterRunMs = Number(config.afterRunMs) > 0 ? Number(config.afterRunMs) : AFTER_RUN_MS;
-        // The cube's edge in blocks: 3 means 3x3x3, 27 blocks of its own.
-        const size = Math.floor(Number(config.itemSize));
-        this.size = Number.isFinite(size) ? Math.min(Math.max(size, 1), MAX_SIZE) : SIZE;
-        // The blocks that are standing, by the cube cell they were placed for.
+        // How many blocks of its own the mini core has, spread around the bot.
+        const count = Math.floor(Number(config.itemCount));
+        this.count = Number.isFinite(count) ? Math.min(Math.max(count, 1), MAX_COUNT) : COUNT;
+        // The blocks that are standing, by the cell they were placed for.
         this.slots = new Map();
-        this.turn = 0;            // which cell of the cube the next command goes to
-        this.origin = null;       // where the bot stood when the cube was placed
+        this.turn = 0;            // which cell the next command goes to
+        // The cells around a spot do not change while the bot stands there, and a
+        // burst asks for them on every command: they are worked out once.
+        this.ringKey = null;
+        this.ringCells = [];
+        this.origin = null;       // where the bot stood when the blocks went down
         this.placedAt = 0;
-        // Placements waiting for the server's answer, by cube cell. Several can be
-        // in the air at once, one per cell, so a burst is not held up by the first.
+        // Placements waiting for the server's answer, by cell. Several can be in
+        // the air at once, one per cell, so a burst is not held up by the first.
         this.pending = new Map();
         this.blocked = new Set(); // cells that refused a block
         this.sequence = 0;
@@ -151,12 +158,12 @@ class FillItem {
         this.lastSendAt = 0;
     }
 
-    // Any block of the cube is enough: the mini core is up.
+    // Any block of the mini core is enough: it is up.
     get standing() {
         return this.slots.size > 0;
     }
 
-    // How many blocks of the cube are still being placed.
+    // How many blocks of the mini core are still being placed.
     get pendingCount() {
         return this.pending.size;
     }
@@ -246,7 +253,7 @@ class FillItem {
         };
     }
 
-    // The cube only has to be re-placed when the bot has actually left it.
+    // The blocks only have to be re-placed when the bot has actually left them.
     moved(at) {
         if (!this.origin) return true;
         return Math.hypot(
@@ -261,39 +268,60 @@ class FillItem {
         return this.sequence;
     }
 
-    // The cells of the cube, bottom layer first so every layer has the one under
-    // it to be placed against.
-    cube(start) {
+    // The cells around the bot, in the order they are taken: ring by ring
+    // outwards, a layer at a time, every layer's cells on every side of it.
+    ring(at) {
+        const key = `${at.x}:${at.y}:${at.z}`;
+        if (this.ringKey === key) return this.ringCells;
         const cells = [];
-        for (let y = 0; y < this.size; y++) {
-            for (let x = 0; x < this.size; x++) {
-                for (let z = 0; z < this.size; z++) {
-                    cells.push({ x: start.x + x, y: start.y + y, z: start.z + z });
+        for (let layer = 0; layer < LAYERS; layer++) {
+            for (let radius = 1; radius <= RADIUS; radius++) {
+                const ring = [];
+                for (let dx = -radius; dx <= radius; dx++) {
+                    for (let dz = -radius; dz <= radius; dz++) {
+                        if (Math.max(Math.abs(dx), Math.abs(dz)) !== radius) continue;
+                        ring.push({ x: at.x + dx, y: at.y + layer, z: at.z + dz, dx, dz });
+                    }
+                }
+                ring.sort((a, b) => Math.atan2(a.dz, a.dx) - Math.atan2(b.dz, b.dx)
+                    || a.dx - b.dx
+                    || a.dz - b.dz);
+                // Taken from opposite sides in turn, so a count that stops in the
+                // middle of a ring still has blocks on every side of the bot
+                // instead of a wedge on one of them.
+                const half = Math.ceil(ring.length / 2);
+                for (let i = 0; i < half; i++) {
+                    cells.push({ x: ring[i].x, y: ring[i].y, z: ring[i].z });
+                    const across = ring[i + half];
+                    if (across) cells.push({ x: across.x, y: across.y, z: across.z });
                 }
             }
         }
+
+        this.ringKey = key;
+        this.ringCells = cells;
         return cells;
     }
 
-    // Where the cube starts: beside the bot, never on top of it, centred on it
-    // along z. A side that keeps the whole cube out of the core's area is
-    // preferred when there is one.
-    anchor(at = this.feet()) {
-        if (!at) return null;
-        const mid = Math.floor((this.size - 1) / 2);
-        const starts = [
-            { x: at.x + 1, y: at.y, z: at.z - mid },
-            { x: at.x - this.size, y: at.y, z: at.z - mid },
-            { x: at.x - mid, y: at.y, z: at.z + 1 },
-            { x: at.x - mid, y: at.y, z: at.z - this.size }
-        ];
-        if (!this.avoid) return starts[0];
-        return starts.find(start => this.cube(start).every(cell => !this.avoid(cell))) || starts[0];
+    // The cells of the mini core: `count` of them, spread around the bot on
+    // every side instead of in one square beside it, and never in the cells it
+    // stands in. A cell above another always has the one below it, and takes the
+    // block placed there.
+    spots(at = this.feet()) {
+        if (!at) return [];
+        const wanted = this.ring(at).slice(0, this.count);
+        if (!this.avoid) return wanted;
+
+        // Cells the core's own fill would replace are taken last, but never
+        // dropped: a bot standing inside its own core has nowhere else to place.
+        const clear = wanted.filter(cell => !this.avoid(cell));
+        if (clear.length === wanted.length) return wanted;
+        return [...clear, ...wanted.filter(cell => this.avoid(cell))];
     }
 
-    // Writes commands into the mini core, one block of the cube at a time, taken
-    // in turn. A cell that is not standing yet is placed, and the commands follow
-    // it as soon as the server says where it landed. Returns the cell the commands
+    // Writes commands into the mini core, one of its blocks at a time, taken in
+    // turn. A cell that is not standing yet is placed, and the commands follow it
+    // as soon as the server says where it landed. Returns the cell the commands
     // were written to (the placement's guessed cell until it settles).
     run(...commands) {
         const list = commands
@@ -309,9 +337,8 @@ class FillItem {
         if (this.moved(at)) this.reposition();
         if (!this.origin) this.origin = { ...at };
 
-        const start = this.anchor(at);
-        if (!start) return null;
-        const cells = this.cube(start);
+        const cells = this.spots(at);
+        if (!cells.length) return null;
         const now = Date.now();
 
         for (let step = 0; step < cells.length; step++) {
@@ -334,8 +361,8 @@ class FillItem {
             return this.placeSlot(key, cell, list);
         }
 
-        // Every cell of the cube is busy, being placed, or refused a block: the
-        // command goes where the turn stands, queued behind that block.
+        // Every cell is busy, being placed, or refused a block: the command goes
+        // where the turn stands, queued behind that block.
         this.blocked.clear();
         const cell = cells[this.turn];
         const key = cellKey(cell);
@@ -353,7 +380,7 @@ class FillItem {
     }
 
     // Writes the commands of one operation into the block, one step at a time, and
-    // digs the block up once the last of them has run: the cube only ever holds a
+    // digs the block up once the last of them has run: a block only ever holds a
     // command for as long as that command needs.
     writeAll(cell, commands, slot = null) {
         const list = [...commands];
@@ -374,7 +401,7 @@ class FillItem {
 
     // The command has run: unless the block is used again first, it is dug up and
     // its cell is free for a fresh one. Every write pushes that back, so a burst
-    // keeps its blocks and an idle cube leaves nothing behind.
+    // keeps its blocks and an idle mini core leaves nothing behind.
     scheduleBreak(cell, slot, after) {
         if (slot.breakTimer) clearTimeout(slot.breakTimer);
         const timer = setTimeout(() => {
@@ -400,8 +427,8 @@ class FillItem {
         return sent !== false;
     }
 
-    // The bot moved away: the cube is too far to be worth keeping, so it is dug up
-    // and placed again where the bot stands now.
+    // The bot moved away: the blocks are too far to be worth keeping, so they are
+    // dug up and placed again around where the bot stands now.
     reposition() {
         for (const slot of this.slots.values()) {
             if (slot.breakTimer) clearTimeout(slot.breakTimer);
@@ -470,7 +497,7 @@ class FillItem {
         if (!placement.landed) {
             // Nothing was placed, or the server never said where it went: the
             // commands are lost either way, so the cell is not used again and the
-            // next one of the cube is tried.
+            // next cell around the bot is tried.
             this.blocked.add(placement.key);
             this.log.debug(`nothing could be placed at ${placement.cell.x} ${placement.cell.y} ${placement.cell.z}; trying another cell`);
             return;
@@ -499,7 +526,7 @@ class FillItem {
     }
 
     // Places the item against the top of the block under that cell: the ground,
-    // or the block of the layer below, so the cube grows upwards.
+    // or the block of the layer below, so the layers grow upwards.
     place(target) {
         const sent = this.bot.write('block_place', {
             hand: 0,
@@ -515,7 +542,7 @@ class FillItem {
         return sent !== false;
     }
 
-    // Only ever the cube's own blocks: the core is not touched.
+    // Only ever the mini core's own blocks: the core is not touched.
     breakAt(location) {
         this.bot.write('block_dig', {
             status: 0,
@@ -544,7 +571,7 @@ class FillItem {
         this.clearTimer.unref?.();
     }
 
-    // A block update at one of the cube's own cells is the server's answer about
+    // A block update at one of its own cells is the server's answer about
     // it.
     //
     // While a placement is waiting, a non-air update at the cell that was clicked
@@ -603,7 +630,9 @@ class FillItem {
         this.slots.clear();
         this.origin = null;
         this.pending.clear();
+        this.ringKey = null;
+        this.ringCells = [];
     }
 }
 
-module.exports = { FillItem, commandBlockItem, blockMode, HOTBAR_SLOT, BLOCK, SIZE, MOVE_LIMIT };
+module.exports = { FillItem, commandBlockItem, blockMode, HOTBAR_SLOT, BLOCK, COUNT, MOVE_LIMIT };
