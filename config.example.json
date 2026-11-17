@@ -1,6 +1,5 @@
 {
   "minecraft": {
-    "version": false,
     "servers": [
       {
         "id": "chomens",
@@ -9,8 +8,7 @@
         "port": 25565,
         "channelId": "1532880964852912360",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       },
       {
         "id": "blackbox",
@@ -19,8 +17,7 @@
         "port": 25565,
         "channelId": "1571143032689131631",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       },
       {
         "id": "kbpw",
@@ -29,8 +26,7 @@
         "port": 25565,
         "channelId": "1571546119736135690",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       },
       {
         "id": "qwertyad",
@@ -39,8 +35,7 @@
         "port": 25565,
         "channelId": "1571143294719631380",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       },
       {
         "id": "hceboom",
@@ -49,8 +44,7 @@
         "port": 25565,
         "channelId": "1532881552009203812",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       },
       {
         "id": "kaboom",
@@ -59,8 +53,7 @@
         "port": 25565,
         "channelId": "1450456463871971481",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       },
       {
         "id": "chipmunk",
@@ -69,45 +62,19 @@
         "port": 17891,
         "channelId": "1450456420343480370",
         "username": "vbot",
-        "auth": "offline",
-        "version": false
+        "auth": "offline"
       }
     ],
     "connection": {
-      "autoReconnect": true,
-      "reconnectDelayMs": 3000,
-      "maxReconnectDelayMs": 60000,
-      "maxAttempts": 0
+      "autoReconnect": true
     }
   },
   "bot": {
-    "prefixes": [
-      "v\\",
-      "°"
-    ],
     "prefix": "&a[prefix: v\\]",
-    "nick": "vbot",
-    "reply": "tellraw"
-  },
-  "list": {
-    "scanMs": 10000
-  },
-  "alts": {
-    "enabled": true,
-    "lookupCommand": "seen {player}",
-    "fallbackCommand": "",
-    "detailCommand": "whois {player}",
-    "cacheMs": 600000,
-    "gapMs": 1200,
-    "timeoutMs": 3000,
-    "rescanMs": 60000
+    "nick": "vbot"
   },
   "selfCare": {
-    "enabled": true,
-    "creative": true,
-    "commandSpy": true,
     "vanish": false,
-    "unmute": true,
     "nick": true,
     "nickName": "&2§lV&aB&2§lO&aT",
     "username": true,
@@ -121,41 +88,15 @@
     },
     "owner": [
       "VojtaV12"
-    ],
-    "admin": [],
-    "trusted": []
-  },
-  "storage": {
-    "path": "data/vbot.sqlite"
-  },
-  "logging": {
-    "level": "info",
-    "chat": true
-  },
-  "console": {
-    "enabled": true
-  },
-  "cloops": {
-    "enabled": true,
-    "minIntervalMs": 100
+    ]
   },
   "discord": {
     "enabled": true,
     "token": "",
     "guildId": "",
-    "commandPrefix": "!",
-    "channels": {},
     "trustedId": "1450509583360725002",
     "adminId": "1450487330409287832",
-    "ownerId": "1450509314648178908",
-    "adminIds": [],
-    "relay": {
-      "chat": true,
-      "discord": true
-    }
-  },
-  "chat": {
-    "trustUnsigned": "auto"
+    "ownerId": "1450509314648178908"
   },
   "core": {
     "enabled": true,
@@ -165,21 +106,12 @@
       "y": 0
     },
     "joinRtp": {
-      "enabled": false,
-      "range": 10000000,
-      "height": 100,
-      "waitMs": 6000
+      "enabled": false
     },
     "refill": {
       "enabled": true,
-      "block": "minecraft:repeating_command_block",
-      "mode": "replace",
-      "intervalMs": 1000,
-      "spamMs": 150,
-      "auto": false,
-      "item": true,
-      "miniSize": 3,
-      "chatFallback": true
+      "miniSize": 4,
+      "miniName": "{\"text\":\"mini core™\",\"color\":\"green\"}"
     }
   }
 }

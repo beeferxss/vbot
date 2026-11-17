@@ -146,7 +146,11 @@ class Core {
         // /fill and then written into like any other core block.
         this.fillItem = this.config.refill?.item === false
             ? null
-            : new MiniCore({ bot, logger, config: { ...this.config.refill, block: this.block } });
+            : new MiniCore({
+                bot,
+                logger,
+                config: { ...this.config.refill, block: this.block, name: this.config.refill?.miniName }
+            });
         // Whether the last command went in through the mini core, which adds a
         // round trip before the core block exists.
         this.lastViaItem = false;
@@ -335,34 +339,26 @@ class Core {
         }
 
         const command = this.fillCommand();
-
-        // The bot's own command blocks come first: they are the mini core, and a
-        // refill written into one of them only replaces the command it holds.
-        let viaCore = false;
-        let viaMini = false;
-        let usedSurvivor = null;
-        let viaChat = false;
-        // Set when the mini core itself was put down on this pass, which is a fill
-        // of its own; the main core follows on the next one.
-        let built = false;
         const mini = this.fillItem;
 
-        if (this.origin.x !== null && mini?.usable) {
-            viaMini = Boolean(mini.run(command));
-            viaCore = viaMini;
-            if (viaMini) this.verifyMiniFill();
-        }
-
-        // None of the bot's own blocks is standing: the cube goes down in its own
-        // fill, through a core block that is still standing. Nothing is placed by
-        // hand, so a fill is the only way it is ever built.
+        let viaCore = false;
+        let viaMini = false;        // the main fill went through one of the cube's own blocks
+        let usedSurvivor = null;
+        let viaChat = false;
+        // Set when the cube was put down on this pass, which is a fill of its own.
+        let built = false;
         let miniCell = null;
-        if (!viaCore && this.origin.x !== null && !mini?.standing) {
-            const make = mini?.fillCommand?.();
+
+        // The cube is topped up first, whether none of it is standing or only some
+        // of its cells are: a hole in the mini core heals instead of waiting for
+        // the whole thing to be broken. It goes down through a core block that is
+        // still standing, through one of its own blocks, or as chat.
+        if (this.origin.x !== null && mini?.needsFill?.()) {
+            const make = mini.fillCommand?.();
             if (make) {
-                miniCell = this.writeIntoSurvivor(make);
-                if (miniCell) built = true;
-                else if (this.chatFill(make, reason)) {
+                miniCell = this.writeIntoSurvivor(make) || mini.run(make);
+                built = Boolean(miniCell);
+                if (!built && this.chatFill(make, reason)) {
                     built = true;
                     viaChat = true;
                 }
@@ -370,16 +366,20 @@ class Core {
             }
         }
 
-        // The main core, through a block that is still standing - one other than
-        // the cell the mini core's fill just went into, which holds that command
-        // now - or as chat when nothing is left. A mini core that is still being
-        // built is filled into on the next pass, once the server shows it.
+        // Then the main core, through a block that is still standing - one other
+        // than the cell the cube's fill just went into, which holds that command
+        // now - a block of the cube, or as chat when nothing is left.
+        // The cell that just took the cube's fill is held back for a moment: the
+        // fill has to run before anything is written over it.
+        if (miniCell) mini.busy?.(miniCell, 500);
+
         const used = miniCell ? new Set([keyOf(miniCell)]) : null;
-        if (!viaCore && !viaChat) {
-            const cell = this.writeIntoSurvivor(command, used);
-            if (cell) {
+        if (!viaChat) {
+            if (mini && (usedSurvivor = mini.run(command))) {
                 viaCore = true;
-                usedSurvivor = cell;
+                viaMini = true;
+            } else if ((usedSurvivor = this.writeIntoSurvivor(command, used))) {
+                viaCore = true;
             } else if (built) {
                 this.log.debug(`core refill (${reason}) put the mini core down; the area follows`);
             } else if (this.chatFill(command, reason)) {
@@ -432,9 +432,12 @@ class Core {
         this.verifyTimer = setTimeout(() => {
             this.verifyTimer = null;
             if (!this.enabled || this.bot?.destroyed) return;
-            if (this.fillItem?.standing) return;
+            const mini = this.fillItem;
+            if (!mini?.needsFill?.()) return;
 
-            const cell = this.fillItem?.watchCells?.()[0];
+            // A cell the fill was meant to put down is what it is asked about: a
+            // cell that was already standing only says the cube was there before.
+            const cell = mini.missingCells?.()[0] || mini.watchCells?.()[0];
             if (!cell) return this.miniFillLost();
             if (!this.probe('item', cell)) return this.miniFillLost();
 
@@ -443,7 +446,7 @@ class Core {
             // cube: writing a fill into one of those is how a fill is lost silently.
             this.verifyTimer = setTimeout(() => {
                 this.verifyTimer = null;
-                if (this.fillItem?.standing) return;
+                if (!this.fillItem?.needsFill?.()) return;
                 this.miniFillLost();
             }, VERIFY_TIMEOUT_MS + 500);
             this.verifyTimer.unref?.();
@@ -1145,6 +1148,8 @@ class Core {
         }
 
         if (!this.enabled || !this.refillEnabled) return dropped > 0;
+        // A bulk edit that took part of the cube is healed before anything else.
+        if (dropped > 0 && this.fillItem?.needsFill?.()) this.refill('mini core damaged');
         if (!this.ready || this.refilling || Date.now() < this.graceUntil) return dropped > 0;
 
         let damaged = 0;
@@ -1329,8 +1334,9 @@ class Core {
             const standing = this.aliveCount();
             // Only rebuild when the core is not usable. Readiness alone is not a
             // reason: a fill the server answered with "nothing changed" must not
-            // keep the watchdog filling through chat forever.
-            if (this.ready && standing > 0) return;
+            // keep the watchdog filling through chat forever. A cube with a hole in
+            // it is a reason: it is topped up where it stands.
+            if (this.ready && standing > 0 && !this.fillItem?.needsFill?.()) return;
 
             // A server that keeps refusing needs backoff, not a fill every tick.
             if (standing === 0 && this.fillFailures >= 2 && Date.now() - (this.lastRefillAt || 0) < 10000) {
@@ -1359,8 +1365,11 @@ class Core {
     onBlockChange(packet) {
         // The bot's own block lives outside the area; if something changes it, the
         // next command places a new one.
-        this.fillItem?.noteBlockChange?.(packet);
+        const miniLost = this.fillItem?.noteBlockChange?.(packet);
         if (!this.enabled || !this.refillEnabled) return false;
+        // The cube is filled again where it stands, whether all of it went or only
+        // the cell this update is about.
+        if (miniLost && this.fillItem?.needsFill?.()) this.refill('mini core damaged');
         const location = packet?.location;
         if (!location || this.origin.x === null) return false;
         if (!this.inside(location.x, location.y, location.z)) return false;

@@ -1,8 +1,8 @@
 'use strict';
 
 // The bot's own command blocks, in a small cube of its own: `miniSize` blocks on
-// a side, three by default - size x size x size, 27 blocks - standing above the
-// bot's head.
+// a side, four by default - size x size x size, 64 blocks - standing above the
+// bot's head, each one named green.
 //
 // Nothing is taken out of the inventory and no block is ever placed by hand: the
 // whole cube is one `/fill`, run through a core block that is still standing or,
@@ -22,13 +22,15 @@
 // removes it.
 
 const BLOCK = 'repeating_command_block';
-const SIDE = 3;                 // blocks on a side: 3 x 3 x 3
+const SIDE = 4;                 // blocks on a side: 4 x 4 x 4
 const MAX_SIDE = 8;             // a cube this big is 512 blocks, which is plenty
 const MOVE_LIMIT = 64;          // the cube is only rebuilt once the bot is this far
 const MINI_RETRY_MS = 60000;    // a cube that did not land is not asked for again for a while
 const MINI_FILL_MS = 2000;      // one fill on its way at a time
 const STEP_MS = 120;            // gap between the commands of one operation
 const AIR = 0;                  // air's block state number in every version
+
+const tellraw = require('./minecraft/tellraw');
 
 function cellKey(cell) {
     return `${Math.floor(cell.x)}:${Math.floor(cell.y)}:${Math.floor(cell.z)}`;
@@ -64,6 +66,9 @@ class MiniCore {
         this.data = data;
         this.block = String(config.block || BLOCK);
         this.mode = blockMode(this.block);
+        // The cube's own name, as a raw SNBT component: it is written into the fill,
+        // so every block of the cube is named the same way.
+        this.name = config.name ? String(config.name) : null;
         // A cube on a side, so the mini core is size x size x size: `miniSize`
         // directly, or the cube root of the old `itemCount` for a config that
         // still asks for a number of blocks.
@@ -203,7 +208,42 @@ class MiniCore {
 
         this.flushedAt = Date.now();
         return `fill ${box.min.x} ${box.min.y} ${box.min.z} ` +
-            `${box.max.x} ${box.max.y} ${box.max.z} ${this.block}`;
+            `${box.max.x} ${box.max.y} ${box.max.z} ${this.blockSpec()}`;
+    }
+
+    // The block as the fill writes it, with the name the cube is given. NBT text
+    // components changed in 1.21.5: a name used to be a JSON string wrapped in
+    // quotes, and is now the component written inline.
+    blockSpec() {
+        if (!this.name) return this.block;
+        if (!tellraw.isModern(this.bot?.client?.version)) {
+            return `${this.block}{CustomName:'${this.name.replace(/'/g, "\\'")}'}`;
+        }
+
+        let component = this.name;
+        try {
+            component = JSON.parse(this.name);
+        } catch {
+            // Already SNBT; use it as written.
+            return `${this.block}{CustomName:${this.name}}`;
+        }
+        return `${this.block}{CustomName:${tellraw.snbt(component)}}`;
+    }
+
+    // The cube is not all there: a fill has not been answered at all, or cells of
+    // it are gone. A cube with a hole in it is filled again where it stands, so a
+    // few broken blocks are enough - the whole of it does not have to be gone.
+    needsFill() {
+        if (!this.usable) return false;
+        if (!this.standing) return true;
+        return this.slots.size < this.count;
+    }
+
+    // Cells of the cube the server has not shown a command block in.
+    missingCells() {
+        const box = this.current();
+        if (!box) return [];
+        return box.cells.filter(cell => !this.slots.get(cellKey(cell))?.confirmed);
     }
 
     // The fill did not land: the cube is not asked for again for a while, and the
@@ -329,6 +369,15 @@ class MiniCore {
             return false;
         }
         return false;
+    }
+
+    // Keeps a cell out of the rotation for a moment: it holds a command that has
+    // to run before anything is written over it.
+    busy(cell, ms = 500) {
+        const slot = this.slots.get(cellKey(cell));
+        if (!slot) return false;
+        slot.busyUntil = Math.max(slot.busyUntil || 0, Date.now() + ms);
+        return true;
     }
 
     // Writes commands into the mini core, one of its blocks at a time, taken in

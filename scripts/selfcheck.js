@@ -69,7 +69,9 @@ async function main() {
         // kept as it is, and only what it leaves out comes from the defaults.
         assert.deepStrictEqual(config.core.area, example.core.area, 'the example keeps its own core area');
         assert.ok(config.core.area.size >= 3, 'the core has a size to build from');
-        assert.deepStrictEqual(config.core.joinRtp, example.core.joinRtp, 'the example keeps its own join');
+        assert.strictEqual(config.core.joinRtp.enabled, example.core.joinRtp.enabled,
+            'the example keeps its own join');
+        assert.strictEqual(config.core.joinRtp.range, 10000000, 'the rest of the join is the default');
         assert.deepStrictEqual(config.core.refill, {
             enabled: true,
             block: 'minecraft:repeating_command_block',
@@ -78,7 +80,8 @@ async function main() {
             spamMs: 150,
             auto: false,
             item: true,
-            miniSize: 3,
+            miniSize: 4,
+            miniName: '{"text":"mini core™","color":"green"}',
             chatFallback: true
         });
         // Addresses come from /seen only; whois is kept for the identity fields.
@@ -792,10 +795,10 @@ async function main() {
         };
 
         const mini = new MiniCore({ bot: miniBot, logger, config: {} });
-        assert.strictEqual(mini.side, 3, 'three on a side');
-        assert.strictEqual(mini.count, 27, 'three by three by three');
+        assert.strictEqual(mini.side, 4, 'four on a side');
+        assert.strictEqual(mini.count, 64, 'four by four by four');
         // One fill, over the bot's head: no item, no slot packet, no placement.
-        assert.strictEqual(mini.fillCommand(), 'fill 9 66 -5 11 68 -3 repeating_command_block');
+        assert.strictEqual(mini.fillCommand(), 'fill 8 66 -6 11 69 -3 repeating_command_block');
         assert.deepStrictEqual(writes, [], 'the cube is never a packet of its own');
         assert.strictEqual(mini.standing, false, 'nothing counts until the server shows a block');
         assert.strictEqual(mini.run('say hi'), null, 'nothing is written into a cube that is not there');
@@ -865,18 +868,18 @@ async function main() {
 
         // The fill lands in one go: every cell is shown at once.
         for (const cell of box.cells) mini.noteBlockChange({ location: cell, type: CMD_STATE });
-        assert.strictEqual(mini.cells().length, 27, 'the whole cube stands');
-        assert.strictEqual(mini.ready, 27);
+        assert.strictEqual(mini.cells().length, 64, 'the whole cube stands');
+        assert.strictEqual(mini.ready, 64);
 
-        // One command per block, in turn: 27 commands take 27 different cells, and
+        // One command per block, in turn: 64 commands take 64 different cells, and
         // not one of them is a placement.
         const used = new Set();
-        for (let i = 0; i < 27; i++) {
+        for (let i = 0; i < 64; i++) {
             const cell = mini.run(`say ${i}`);
             assert.ok(cell, 'a block took the command');
             used.add(`${cell.x}:${cell.y}:${cell.z}`);
         }
-        assert.strictEqual(used.size, 27, 'every block of the cube is used once');
+        assert.strictEqual(used.size, 64, 'every block of the cube is used once');
         assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 0,
             'nothing is placed by hand');
 
@@ -908,26 +911,104 @@ async function main() {
         // instead of a command being written into nothing.
         const first = mini.cells()[0];
         assert.strictEqual(mini.noteBlockChange({ location: first, type: 0 }), true, 'the block is gone');
-        assert.strictEqual(mini.cells().length, 26);
-        assert.strictEqual(mini.fillCommand(), 'fill 9 66 -5 11 68 -3 repeating_command_block');
+        assert.strictEqual(mini.cells().length, 63);
+        assert.strictEqual(mini.fillCommand(), 'fill 8 66 -6 11 69 -3 repeating_command_block');
 
         // A block replaced by something else is gone too.
         const second = mini.cells()[0];
         const floor = require('minecraft-data')('1.21.4').blocksByName.stone.defaultState;
         assert.strictEqual(mini.noteBlockChange({ location: second, type: floor }), true);
-        assert.strictEqual(mini.cells().length, 25);
+        assert.strictEqual(mini.cells().length, 62);
 
         // A bulk edit takes all of them with no block update at all.
-        assert.strictEqual(mini.goneAll(), 25, 'the whole set is dropped');
+        assert.strictEqual(mini.goneAll(), 62, 'the whole set is dropped');
         assert.strictEqual(mini.standing, false);
 
         // A bot that walks away leaves the cube behind and gets a new one.
         miniBot.position = { x: 10.7 + 200, y: 64, z: -3.2 };
         const moved = mini.fillCommand();
         assert.match(moved, /^fill /);
-        assert.notStrictEqual(moved, 'fill 9 66 -5 11 68 -3 repeating_command_block');
+        assert.notStrictEqual(moved, 'fill 8 66 -6 11 69 -3 repeating_command_block');
 
         mini.destroy();
+    });
+
+    await check('the mini core is filled with its own name', () => {
+        const { MiniCore } = require('../src/minicore');
+        const name = '{"text":"mini core™","color":"green"}';
+        const miniBot = {
+            client: { version: '26.1' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            write: () => true
+        };
+        const named = new MiniCore({ bot: miniBot, logger, config: { name } });
+        assert.strictEqual(named.fillCommand(),
+            "fill 8 66 -6 11 69 -3 repeating_command_block{CustomName:{text:'mini core™',color:'green'}}");
+        assert.strictEqual(named.name, name);
+
+        // Before 1.21.5 the name is a JSON string, and it goes in quoted.
+        const oldBot = { ...miniBot, client: { version: '1.21.4' } };
+        const old = new MiniCore({ bot: oldBot, logger, config: { name } });
+        assert.strictEqual(old.fillCommand(),
+            `fill 8 66 -6 11 69 -3 repeating_command_block{CustomName:'${name}'}`);
+
+        // A cube with no name is filled as the plain block.
+        const plain = new MiniCore({ bot: miniBot, logger, config: {} });
+        assert.strictEqual(plain.fillCommand(), 'fill 8 66 -6 11 69 -3 repeating_command_block');
+
+        named.destroy();
+        old.destroy();
+        plain.destroy();
+    });
+
+    await check('a mini core with a hole in it is filled again while the rest stands', () => {
+        const writes = [];
+        const miniBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            write: (name, payload) => (writes.push({ name, payload }), true),
+            chat: () => true
+        };
+        const core = new Core({
+            bot: miniBot,
+            config: {
+                enabled: true,
+                area: { size: 9, y: 64 },
+                refill: { enabled: true, miniName: '{"text":"mini core™","color":"green"}' }
+            },
+            logger
+        });
+        // The area is beside the bot, so only the cube is under test here.
+        core.origin = { x: 0, y: 64, z: 0 };
+        core.bounds = { x: 8, y: 72, z: 8 };
+        core.ready = true;
+        core.everReady = true;
+        core.graceUntil = 0;
+        core.markAllAlive();
+
+        const mini = core.fillItem;
+        assert.strictEqual(mini.name, '{"text":"mini core™","color":"green"}', 'the name comes from the config');
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+        for (const cell of mini.current().cells) mini.noteBlockChange({ location: { ...cell }, type: CMD_STATE });
+        assert.strictEqual(mini.standing, true);
+        assert.strictEqual(mini.needsFill(), false, 'a whole cube needs nothing');
+
+        // One block of the cube goes: the rest still stands, and the cube is filled
+        // again anyway, instead of waiting for all of it to be gone.
+        mini.gone(mini.cells()[0]);
+        assert.strictEqual(mini.standing, true, 'the rest of the cube is still there');
+        assert.strictEqual(mini.needsFill(), true, 'a cube with a hole is not whole');
+
+        writes.length = 0;
+        core.lastRefillAt = 0;
+        assert.strictEqual(core.refill('test'), true);
+        assert.ok(writes.some(write => write.name === 'update_command_block'
+            && /^fill 8 66 -6 11 69 -3 .*mini core/.test(write.payload.command)),
+        'the cube is filled again, with its name, from a block that still stands');
+        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 0,
+            'nothing is placed by hand');
+
+        core.destroy();
     });
 
     await check('item numbers come from the server registries', async () => {
@@ -2490,7 +2571,7 @@ async function main() {
         };
         mini.fillCommand();
         stand();
-        assert.strictEqual(mini.cells().length, 27, 'the mini core stands');
+        assert.strictEqual(mini.cells().length, 64, 'the mini core stands');
 
         // A bulk update that turns one of the cells to air: no block update of its
         // own ever arrives, so the packet is all the bot has.
@@ -2500,7 +2581,13 @@ async function main() {
             chunkCoordinates: { x: first.x >> 4, y: first.y >> 4, z: first.z >> 4 },
             records: [record]
         }), true, 'a mini block that went to air is noticed');
-        assert.strictEqual(mini.cells().length, 26, 'that cell is free again');
+        assert.strictEqual(mini.cells().length, 63, 'that cell is free again');
+        // A lost cell fills the cube again where it stands, so the next bulk edit
+        // is looked at once that fill has settled.
+        assert.strictEqual(core.refilling, true, 'a missing cell is filled again at once');
+        core.refilling = false;
+        core.ready = true;
+        core.graceUntil = 0;
 
         // A chunk resend with nothing in it says the same about the rest.
         const rest = mini.cells()[0];
@@ -2526,7 +2613,7 @@ async function main() {
             && /^fill .*(minecraft:)?repeating_command_block( replace)?$/.test(write.payload.command)),
         'the cube is filled again');
         stand();
-        assert.strictEqual(mini.cells().length, 27);
+        assert.strictEqual(mini.cells().length, 64);
 
         // A deletion that sends nothing at all is only found by asking: the answer
         // says the cell is not a command block, so the cube is dropped.
@@ -2544,7 +2631,7 @@ async function main() {
             transactionId: standing.payload.transactionId,
             nbt: { type: 'compound', value: { id: { type: 'string', value: 'minecraft:command_block' } } }
         });
-        assert.strictEqual(mini.cells().length, 27, 'a standing block is kept');
+        assert.strictEqual(mini.cells().length, 64, 'a standing block is kept');
 
         // The same question covers the main area, and a block that is gone refills it.
         core.refilling = false;

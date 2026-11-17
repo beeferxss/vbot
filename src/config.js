@@ -147,10 +147,13 @@ function defaults() {
                 // by packet. Nothing is placed from the inventory, so this needs
                 // no item, no slot packet and no block in hand.
                 item: true,
-                // Blocks on a side of the mini core's cube: 3 is 27 blocks. It is
-                // filled again where it was built when blocks go missing, and
-                // only moved once the bot is far away from it.
-                miniSize: 3,
+                // Blocks on a side of the mini core's cube: 4 is 64 blocks. It is
+                // filled again where it was built as soon as any of its blocks go
+                // missing, and only moved once the bot is far away from it.
+                miniSize: 4,
+                // The cube's own name, as a raw SNBT component: every block of it
+                // is filled with this name.
+                miniName: '{"text":"mini core™","color":"green"}',
                 // Send the fill, and a command no core block took, as plain chat
                 // when the bot has nothing of its own to run it in: that is the
                 // only way to build the first core block on a server that does
