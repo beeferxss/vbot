@@ -2275,6 +2275,21 @@ async function main() {
             'Command set: whois 9Pon4Inkr7Kn'
         );
 
+        // Legacy § colours become ANSI so they survive into Discord.
+        assert.strictEqual(
+            toAnsi({ text: '\u00a76Gold \u00a7rwhite' }),
+            '\x1b[33mGold \x1b[0mwhite\x1b[0m'
+        );
+
+        // Some servers send the format itself as the translate key.
+        assert.strictEqual(
+            flatten({
+                translate: '[%s] %s › %s',
+                with: [{ text: 'kbpw' }, { text: 'ChomeNS' }, { text: 'tienda?' }]
+            }, lang),
+            '[kbpw] ChomeNS › tienda?'
+        );
+
         // Indexed placeholders are used by a few messages.
         assert.strictEqual(
             flatten({ translate: 'multiplayer.player.joined', with: [{ text: 'Alex' }] }, {

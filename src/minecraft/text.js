@@ -62,12 +62,16 @@ function flatten(component, lang = null) {
         const args = Array.isArray(component.with) ? component.with : [];
         const template = lang ? lang[component.translate] : null;
 
-        if (typeof template === 'string') {
-            out += interpolate(template, args, lang);
-            argsDone = true;
-        } else {
-            out += component.translate;
-        }
+        // Some servers and plugins send the format string as the translate key
+        // ("[%s] %s › %s") instead of a real key, so a missing key is used as
+        // the template rather than printed with the arguments glued after it.
+        const resolved = typeof template === 'string';
+        const format = resolved ? template : component.translate;
+        out += interpolate(format, args, lang);
+        // Without a table, a key that has placeholders is a format in its own
+        // right; one that has none keeps its arguments appended so nothing is
+        // silently lost.
+        argsDone = resolved || /%%|%(?:\d+\$)?[sd]/.test(format);
     } else if (typeof component.keybind === 'string') {
         out += component.keybind;
     } else if (typeof component.selector === 'string') {
@@ -155,8 +159,24 @@ function ansiCode(color) {
     );
 }
 
+// Legacy servers put colours in the text as §-codes; they are turned into the
+// same ANSI the relay already understands instead of being stripped.
+const LEGACY_COLORS = {
+    '0': 30, '1': 34, '2': 32, '3': 36, '4': 31, '5': 35, '6': 33, '7': 37,
+    '8': 90, '9': 94, a: 92, b: 96, c: 91, d: 95, e: 93, f: 97
+};
+
+function legacyAnsi(text) {
+    return String(text ?? '').replace(/\u00a7([0-9a-fk-or])/gi, (_, code) => {
+        const key = code.toLowerCase();
+        if (key === 'r') return '\x1b[0m';
+        const ansi = LEGACY_COLORS[key];
+        return ansi === undefined ? '' : `\x1b[${ansi}m`;
+    });
+}
+
 function pushAnsi(text, code, out) {
-    const value = String(text ?? '').replace(/\u00a7./g, '').replace(/\x1b\[[0-9;]*m/g, '');
+    const value = legacyAnsi(text).replace(/\u00a7./g, '');
     if (!value) return;
     out.push([value, code]);
 }
@@ -194,7 +214,9 @@ function toAnsi(component, lang = null) {
     collectAnsi(component, null, parts, lang);
     if (!parts.length) return '';
 
-    const styled = parts.some(([, code]) => code);
+    // A reset is needed when any part carries a colour, either from the
+    // component or from §-codes already turned into ANSI.
+    const styled = parts.some(([text, code]) => code || text.includes('\x1b['));
     return parts.map(([text, code]) => (code ? `\x1b[${code}m${text}` : text)).join('') + (styled ? '\x1b[0m' : '');
 }
 

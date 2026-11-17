@@ -179,7 +179,11 @@ async function repliedTo(message) {
 }
 
 function stripAnsiCodes(text) {
-    return String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+    return String(text ?? '')
+        .replace(/\x1b\[[0-9;]*m/g, '')
+        // Replacement characters are broken bytes from the server's own font
+        // or encoding; Discord can only show them as boxes.
+        .replace(/\ufffd/g, '');
 }
 
 // The same line can reach the bridge twice; normalise it to one key so it is
@@ -198,7 +202,8 @@ function toDiscordAnsi(text) {
         .replace(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g, (_, red, green, blue) =>
             `\x1b[${nearestAnsi(Number(red), Number(green), Number(blue))}m`)
         .replace(/\x1b\[48;2;[0-9;]+m/g, '')
-        .replace(/\u00a7./g, '');
+        .replace(/\u00a7./g, '')
+        .replace(/\ufffd/g, '');
 }
 
 // Keep user text from closing the surrounding Discord code block.
