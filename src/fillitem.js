@@ -63,22 +63,34 @@ function blockEntityTag(command) {
 }
 
 // A command block item with the command already inside it, so the placed block
-// runs it straight away. Both recognised item shapes are supported.
-function commandBlockItem(version, itemId, command) {
-    const tag = blockEntityTag(command);
+// runs it straight away. Both recognised item shapes are supported:
+//  - up to 1.21.4 the slot describes the component, and takes the tag itself,
+//  - 1.21.5 and later take the component's own bytes, so the tag is written as
+//    network NBT (no root name) and the id is whatever the server registered.
+function commandBlockItem(version, itemId, command, componentId) {
     if (!usesComponents(version)) return null;
+    const tag = blockEntityTag(command);
 
+    if (!usesRawComponents(version)) {
+        return {
+            itemCount: 1,
+            itemId,
+            addedComponentCount: 1,
+            removedComponentCount: 0,
+            components: [{ type: 'block_entity_data', data: tag }],
+            removeComponents: []
+        };
+    }
+
+    if (componentId === undefined || componentId === null) return null;
     return {
         itemCount: 1,
         itemId,
         addedComponentCount: 1,
         removedComponentCount: 0,
         components: [{
-            type: 'block_entity_data',
-            // The root name is omitted: components hold anonymous NBT.
-            data: usesRawComponents(version)
-                ? nbt.proto.createPacketBuffer('anonymousNbt', tag)
-                : tag
+            type: componentId,
+            data: nbt.proto.createPacketBuffer('anonymousNbt', tag)
         }],
         removeComponents: []
     };
@@ -150,11 +162,27 @@ class FillItem {
         return this.mcd()?.itemsByName?.[name]?.id;
     }
 
+    // The server's data-component registry is the authority on the component id:
+    // the ids move between versions, and the bundled data can be older than the
+    // server (a 26.1 client against a 26.2 server, for instance).
+    componentId() {
+        const fromServer = this.bot?.registries?.components?.get?.('block_entity_data');
+        if (fromServer !== undefined) return fromServer;
+
+        const mappings = this.mcd()?.protocol?.types?.SlotComponentType?.[1]?.mappings;
+        if (!mappings) return undefined;
+        const key = Object.keys(mappings).find(id => mappings[id] === 'block_entity_data');
+        return key === undefined ? undefined : Number(key);
+    }
+
     get usable() {
         if (this.broken) return false;
         if (!this.bot || typeof this.bot.write !== 'function') return false;
-        if (!usesComponents(this.version())) return false;
-        return this.itemId() !== undefined;
+        const version = this.version();
+        if (!usesComponents(version)) return false;
+        if (this.itemId() === undefined) return false;
+        if (usesRawComponents(version) && this.componentId() === undefined) return false;
+        return true;
     }
 
     get standing() {
@@ -251,7 +279,7 @@ class FillItem {
     give(command) {
         const itemId = this.itemId();
         if (itemId === undefined) return false;
-        const item = commandBlockItem(this.version(), itemId, command);
+        const item = commandBlockItem(this.version(), itemId, command, this.componentId());
         if (!item) return false;
 
         if (!this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item })) return false;

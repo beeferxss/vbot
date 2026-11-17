@@ -556,12 +556,15 @@ async function main() {
             TrackOutput: { type: 'byte', value: 1 }
         });
 
-        // 1.21.5 sends the component's NBT bytes instead of its fields.
-        const raw = commandBlockItem('1.21.5', 1234, command);
+        // 1.21.5 sends the component's own bytes, and the id the server uses.
+        const raw = commandBlockItem('1.21.5', 1234, command, 51);
+        assert.strictEqual(raw.components[0].type, 51, 'the numeric component id');
         assert.ok(Buffer.isBuffer(raw.components[0].data), 'raw NBT bytes');
         const back = require('prismarine-nbt').proto.parsePacketBuffer('anonymousNbt', raw.components[0].data);
         assert.strictEqual(back.data.value.Command.value, command);
         assert.strictEqual(back.data.value.auto.value, 1);
+        assert.strictEqual(commandBlockItem('1.21.5', 1234, command), null, 'no component id, no item');
+        assert.deepStrictEqual(back.data.value.id, { type: 'string', value: 'minecraft:command_block' });
 
         const writes = [];
         const itemBot = {
@@ -623,6 +626,12 @@ async function main() {
         assert.deepStrictEqual(writes[writes.length - 1].payload.location, cell, 'only the block it left behind');
         assert.deepStrictEqual(fillItem.carrier, moved);
 
+        // The server's registry decides the component id, not the bundled data:
+        // 1.21.5 registers block_entity_data at 51, 26.1 and later at 60.
+        assert.strictEqual(fillItem.componentId(), 49, 'bundled data for this version');
+        itemBot.registries.components = new Map([['block_entity_data', 60]]);
+        assert.strictEqual(fillItem.componentId(), 60, 'the server registry wins');
+
         // A block update at its cell (mined, or a fill replaced it) means the
         // next command places a new one; updates elsewhere are not its business.
         assert.strictEqual(fillItem.noteBlockChange({ location: { x: 0, y: 0, z: 0 } }), false);
@@ -639,16 +648,40 @@ async function main() {
         const data = require('minecraft-data');
         for (const version of ['1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
             const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
-            const itemId = data(version).itemsByName.repeating_command_block.id;
-            const item = commandBlockItem(version, itemId, command);
-            assert.ok(serializer.createPacketBuffer({
+            const registry = data(version);
+            const itemId = registry.itemsByName.repeating_command_block.id;
+            const mappings = registry.protocol.types.SlotComponentType[1].mappings;
+            const componentId = Number(Object.keys(mappings).find(id => mappings[id] === 'block_entity_data'));
+            const item = commandBlockItem(version, itemId, command, componentId);
+            const packet = serializer.createPacketBuffer({
                 name: 'set_creative_slot',
                 params: { slot: HOTBAR_SLOT, item }
-            }).length > 20, `${version} should encode the command block item`);
+            });
+            assert.ok(packet.length > 20, `${version} should encode the command block item`);
+            assert.strictEqual(packet[1], 0, 'the slot is a short, high byte first');
+            assert.strictEqual(packet[2], HOTBAR_SLOT, 'the hotbar slot number');
             assert.ok(serializer.createPacketBuffer({
                 name: 'update_command_block',
                 params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
             }).length > 0, `${version} should encode the command edit`);
+            assert.ok(serializer.createPacketBuffer({
+                name: 'held_item_slot',
+                params: { slotId: 0 }
+            }).length > 0, `${version} should encode the held slot`);
+            assert.ok(serializer.createPacketBuffer({
+                name: 'block_place',
+                params: {
+                    hand: 0,
+                    location: { x: 1, y: 2, z: 3 },
+                    direction: 1,
+                    cursorX: 0.5,
+                    cursorY: 1,
+                    cursorZ: 0.5,
+                    insideBlock: false,
+                    worldBorderHit: false,
+                    sequence: 1
+                }
+            }).length > 0, `${version} should encode the placement`);
         }
 
         fillItem.destroy();
