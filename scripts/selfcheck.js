@@ -60,14 +60,26 @@ async function main() {
     });
 
     await check('config defaults are merged in', () => {
+        const example = JSON.parse(fs.readFileSync(examplePath, 'utf8'));
         const config = loadConfig(examplePath);
         assert.strictEqual(config.minecraft.connection.autoReconnect, true);
         assert.strictEqual(config.storage.path, 'data/vbot.sqlite');
         assert.deepStrictEqual(config.permissions.keys, { owner: '', admin: '', trusted: '' });
-        assert.strictEqual(config.core.area.size, 9, 'the core is 9x9x9');
-        // A join drops the bot somewhere random before the core is built.
-        assert.deepStrictEqual(config.core.joinRtp, {
-            enabled: true, range: 10000000, height: 100, waitMs: 6000
+        // The example is the bot's own config and is tuned by hand: what it says is
+        // kept as it is, and only what it leaves out comes from the defaults.
+        assert.deepStrictEqual(config.core.area, example.core.area, 'the example keeps its own core area');
+        assert.ok(config.core.area.size >= 3, 'the core has a size to build from');
+        assert.deepStrictEqual(config.core.joinRtp, example.core.joinRtp, 'the example keeps its own join');
+        assert.deepStrictEqual(config.core.refill, {
+            enabled: true,
+            block: 'minecraft:repeating_command_block',
+            mode: 'replace',
+            intervalMs: 1000,
+            spamMs: 150,
+            auto: false,
+            item: true,
+            miniSize: 3,
+            chatFallback: true
         });
         // Addresses come from /seen only; whois is kept for the identity fields.
         assert.match(config.alts.lookupCommand, /^seen /, 'seen is the lookup command');
