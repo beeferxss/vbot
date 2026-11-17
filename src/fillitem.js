@@ -2,42 +2,86 @@
 
 // The bot's own command block: a one-block mini core.
 //
-// It is placed once - `/item replace` puts a repeating command block into the
-// mainhand whose block entity data already holds the fill and `auto: 1b`, and it
-// is placed in the air next to the bot. From then on it is never broken: every
-// later change is written into it with `update_command_block`, exactly how the
-// main core's blocks are written, and the block runs the command against the
-// main core itself. The core's blocks are therefore never edited directly while
-// this block stands.
+// It is placed once, from a creative slot packet that already holds the fill and
+// `auto: 1b` in its block entity data, and then it is never broken: every later
+// change is written into it with `update_command_block`, exactly how the main
+// core's blocks are written, and the block runs the command against the main
+// core itself. The core's blocks are therefore never edited directly while this
+// block stands.
 //
 // The block is placed again when the bot has moved more than five blocks away
 // from it, and a block update at its cell (mined, or replaced by a fill) means
 // the next command places a fresh one.
 //
-// 1.21 and later only: that is where item components and block entity data in a
-// command all exist. The `/item` calls here are the fill path's own use of chat;
-// commands themselves never travel as chat.
+// Everything goes through packets: no chat, no /give, no /item.
+//
+// Only 1.20.5 and later are handled here, because that is where an item's data
+// moved into components. 1.21+ is the target: 1.21.5 changed how the creative
+// slot sends those components (raw NBT bytes instead of described fields).
 
-const MAINHAND = 'weapon.mainhand';
+const nbt = require('prismarine-nbt');
+
+const HOTBAR_SLOT = 36;          // first hotbar slot, window slot numbering
 const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
-const BLOCK = 'minecraft:repeating_command_block';
+const BLOCK = 'repeating_command_block';
 // All three command block types share one block entity id.
 const BLOCK_ENTITY_ID = 'minecraft:command_block';
 const MOVE_LIMIT = 5;            // place a new block once the bot has moved this far
 const PLACE_ECHO_MS = 750;       // its own placement's block update is not damage
 
-function snbtString(value) {
-    return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+// 1.20.5 moved item data out of the item's own tag and into components.
+function usesComponents(version) {
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
+    if (!match) return true;
+    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
+    if (major !== 1) return major > 1;
+    if (minor !== 20) return minor > 20;
+    return patch >= 5;
 }
 
-// The item as the command takes it: a command block that is always active and
-// already holds the command, so placing it is all that is needed.
-function commandBlockItem(command, block = BLOCK) {
-    const tag = '{id:' + snbtString(BLOCK_ENTITY_ID) +
-        ',Command:' + snbtString(String(command || '').replace(/^\//, '')) +
-        ',auto:1b,TrackOutput:1b}';
-    return `${block}[block_entity_data=${tag}]`;
+// 1.21.5 stopped describing item components to the protocol: the creative slot
+// takes each component's data as the NBT bytes themselves.
+function usesRawComponents(version) {
+    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
+    if (!match) return true;
+    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
+    if (major !== 1) return major > 1;
+    if (minor !== 21) return minor > 21;
+    return patch >= 5;
+}
+
+// The command block's own data: the stored command, and "always active" so it
+// runs the moment the block is placed instead of waiting for redstone.
+function blockEntityTag(command) {
+    return nbt.comp({
+        id: nbt.string(BLOCK_ENTITY_ID),
+        Command: nbt.string(String(command || '').replace(/^\//, '')),
+        auto: nbt.byte(1),
+        TrackOutput: nbt.byte(1)
+    });
+}
+
+// A command block item with the command already inside it, so the placed block
+// runs it straight away. Both recognised item shapes are supported.
+function commandBlockItem(version, itemId, command) {
+    const tag = blockEntityTag(command);
+    if (!usesComponents(version)) return null;
+
+    return {
+        itemCount: 1,
+        itemId,
+        addedComponentCount: 1,
+        removedComponentCount: 0,
+        components: [{
+            type: 'block_entity_data',
+            // The root name is omitted: components hold anonymous NBT.
+            data: usesRawComponents(version)
+                ? nbt.proto.createPacketBuffer('anonymousNbt', tag)
+                : tag
+        }],
+        removeComponents: []
+    };
 }
 
 // update_command_block carries the block's own mode, and the command has to be
@@ -49,9 +93,10 @@ function blockMode(block) {
 }
 
 class FillItem {
-    constructor({ bot, logger, config = {} }) {
+    constructor({ bot, logger, data = null, config = {} }) {
         this.bot = bot;
         this.log = logger;
+        this.data = data;
         this.block = String(config.itemBlock || BLOCK);
         this.mode = blockMode(this.block);
         this.holdMs = Number(config.holdMs ?? config.breakDelayMs) > 0
@@ -81,10 +126,35 @@ class FillItem {
         return true;
     }
 
+    mcd() {
+        if (this.data === null) {
+            try {
+                // eslint-disable-next-line global-require
+                this.data = require('minecraft-data')(this.version());
+            } catch {
+                this.data = false;
+            }
+        }
+        return this.data || null;
+    }
+
+    version() {
+        return this.bot?.client?.version || this.bot?.version || null;
+    }
+
+    // The server's own registry beats any bundled data: its position is the id.
+    itemId() {
+        const name = this.block.replace(/^minecraft:/, '');
+        const fromServer = this.bot?.registries?.item?.get?.(name);
+        if (fromServer !== undefined) return fromServer;
+        return this.mcd()?.itemsByName?.[name]?.id;
+    }
+
     get usable() {
         if (this.broken) return false;
         if (!this.bot || typeof this.bot.write !== 'function') return false;
-        return typeof this.bot.sendChat === 'function';
+        if (!usesComponents(this.version())) return false;
+        return this.itemId() !== undefined;
     }
 
     get standing() {
@@ -176,12 +246,16 @@ class FillItem {
         return placed;
     }
 
-    // `/item replace` puts the item with the command already inside it into the
-    // mainhand, so the placed block starts running it straight away.
+    // The item goes into the hotbar slot the bot is holding: the creative slot
+    // packet carries the command block and its data, so no chat is involved.
     give(command) {
-        return this.bot.sendChat(
-            `/item replace entity @s ${MAINHAND} with ${commandBlockItem(command, this.block)}`
-        ) !== false;
+        const itemId = this.itemId();
+        if (itemId === undefined) return false;
+        const item = commandBlockItem(this.version(), itemId, command);
+        if (!item) return false;
+
+        if (!this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item })) return false;
+        return this.bot.write('held_item_slot', { slotId: 0 });
     }
 
     // Places the item against the block the bot stands on, so the block lands at
@@ -215,9 +289,14 @@ class FillItem {
         });
     }
 
-    // The given item was never meant to stay in the inventory.
+    // A creative slot is only cleared by overwriting it with nothing.
+    emptyItem() {
+        return { itemCount: 0, components: [], removeComponents: [] };
+    }
+
     clear() {
-        return this.bot.sendChat(`/item replace entity @s ${MAINHAND} with minecraft:air`) !== false;
+        return this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item: this.emptyItem() })
+            !== false;
     }
 
     scheduleClear() {
@@ -254,4 +333,4 @@ class FillItem {
     }
 }
 
-module.exports = { FillItem, commandBlockItem, blockMode, MAINHAND, BLOCK, MOVE_LIMIT };
+module.exports = { FillItem, commandBlockItem, blockMode, HOTBAR_SLOT, BLOCK, MOVE_LIMIT };

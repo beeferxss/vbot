@@ -317,9 +317,9 @@ class Core {
             this.log.debug(`core refill (${reason}) via ${place}`);
         }
 
-        // A refill through the bot's own block cannot report failure: `/item`
-        // and the placement are accepted even when the server refuses them. Check
-        // for a real block update and send the fill as chat if nothing changed.
+        // A refill through the bot's own block cannot report failure: the slot
+        // packet and the placement are accepted even when the server drops them.
+        // Check for a real block update and send the fill as chat if nothing changed.
         if (viaItem) this.verifyItemFill(command);
 
         setTimeout(() => {
