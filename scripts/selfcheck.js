@@ -2355,6 +2355,36 @@ async function main() {
         ]);
     });
 
+    await check('discord links and attachments open in game', () => {
+        const { describeMessage, discordComponent } = require('../src/discord');
+
+        const parts = describeMessage({
+            content: 'look at https://example.com/a now',
+            attachments: new Map([['1', { url: 'https://cdn.example.com/x.png', name: 'x.png' }]]),
+            stickers: new Map(),
+            embeds: []
+        });
+
+        const link = parts.find(part => part.click?.action === 'open_url' && part.text === 'https://example.com/a');
+        assert.ok(link, 'a pasted link is clickable');
+        assert.strictEqual(link.click.value, 'https://example.com/a');
+
+        const attachment = parts.find(part => part.text === ' [attachment]');
+        assert.ok(attachment, 'an attachment is a labelled button');
+        assert.strictEqual(attachment.click.value, 'https://cdn.example.com/x.png');
+        assert.strictEqual(attachment.click.action, 'open_url');
+
+        const text = parts.map(part => part.text).join('');
+        assert.ok(text.includes('look at'), text);
+        assert.ok(text.includes('now'), text);
+
+        // Both the link and the attachment stay clickable in the final tellraw.
+        const component = discordComponent({ author: 'Alex', message: parts });
+        assert.strictEqual(component.filter(part => part.click?.action === 'open_url').length, 2);
+        assert.strictEqual(component.map(part => part.text).join(''),
+            '[Discord] Alex: look at https://example.com/a now [attachment]');
+    });
+
     store.close();
 
     console.log(results.join('\n'));

@@ -92,35 +92,75 @@ function stripMarkdown(text) {
         .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
 }
 
+const URL_PATTERN = /https?:\/\/[^\s<>()\[\]]+/g;
+
+// Links are clickable in game, not just text. Chat has no other way to open a
+// URL, and a pasted link is the most common thing a Discord message carries.
+function linkParts(text, color = '#d4d4d4') {
+    const parts = [];
+    let last = 0;
+
+    for (const match of String(text).matchAll(URL_PATTERN)) {
+        if (match.index > last) parts.push({ text: text.slice(last, match.index), color });
+
+        const url = match[0];
+        parts.push({
+            text: url,
+            color: 'aqua',
+            underlined: true,
+            click: { action: 'open_url', value: url },
+            hover: { text: `Open ${url}` }
+        });
+
+        last = match.index + url.length;
+    }
+
+    if (last < text.length) parts.push({ text: text.slice(last), color });
+    return parts;
+}
+
 // Plain messages only carry text, so attachments and embeds are described
-// instead of being dropped silently.
+// instead of being dropped silently. Each attachment is a [attachment] button
+// that opens its URL.
 function describeMessage(message) {
     const parts = [];
     const text = stripMarkdown(formatMentions(message)).trim();
-    if (text) parts.push(text);
+    if (text) parts.push(...linkParts(text));
 
     for (const attachment of message.attachments?.values?.() ?? []) {
-        const type = String(attachment.contentType || '');
-        const kind = type.startsWith('image/')
-            ? 'image'
-            : type.startsWith('video/')
-                ? 'video'
-                : type.startsWith('audio/')
-                    ? 'audio'
-                    : 'file';
-        parts.push(`[${kind}: ${attachment.name || 'attachment'}] ${attachment.url || ''}`.trim());
+        const url = String(attachment.url || '');
+        const label = { text: ' [attachment]', color: 'aqua', underlined: true };
+
+        if (url) {
+            label.click = { action: 'open_url', value: url };
+            label.hover = { text: `Open ${attachment.name || 'attachment'}` };
+        }
+
+        parts.push(label);
     }
 
     for (const sticker of message.stickers?.values?.() ?? []) {
-        parts.push(`[sticker: ${sticker.name || 'sticker'}]`);
+        parts.push({ text: ` [sticker: ${sticker.name || 'sticker'}]`, color: '#d4d4d4' });
     }
 
     for (const embed of message.embeds ?? []) {
         const label = embed.title || embed.description || embed.url || 'embed';
-        parts.push(`[embed: ${stripMarkdown(label).slice(0, 200)}]`);
+        const text = ` [embed: ${stripMarkdown(label).slice(0, 200)}]`;
+
+        if (embed.url) {
+            parts.push({
+                text,
+                color: 'aqua',
+                underlined: true,
+                click: { action: 'open_url', value: String(embed.url) },
+                hover: { text: `Open ${embed.url}` }
+            });
+        } else {
+            parts.push({ text, color: '#d4d4d4' });
+        }
     }
 
-    return parts.join('\n');
+    return parts;
 }
 
 async function repliedTo(message) {
@@ -192,12 +232,36 @@ function onlineNames(bot) {
     return names.sort((a, b) => a.localeCompare(b));
 }
 
+function truncateParts(parts, limit) {
+    const out = [];
+    let used = 0;
+
+    for (const part of parts) {
+        const text = String(part.text ?? '');
+        if (!text) continue;
+        if (used >= limit) break;
+
+        if (used + text.length > limit) {
+            out.push({ ...part, text: text.slice(0, limit - used) });
+            break;
+        }
+
+        out.push(part);
+        used += text.length;
+    }
+
+    return out;
+}
+
 // The in-game message for a Discord post: the author is clickable and hoverable
-// so staff can see the tag and id without leaving the game.
+// so staff can see the tag and id without leaving the game, and the body keeps
+// its links as open_url buttons.
 function discordComponent({ author, message, replyTo = '', link = '', tag = '', id = '' }) {
     const name = oneLine(author, 64) || 'unknown';
-    const body = oneLine(message, MC_LIMIT);
-    const suffix = replyTo ? ` (reply to @${replyTo}): ${body}` : `: ${body}`;
+    const parts = Array.isArray(message)
+        ? message
+        : [{ text: oneLine(message, MC_LIMIT), color: '#d4d4d4' }];
+    const body = truncateParts(parts, MC_LIMIT);
 
     const badge = {
         text: '[Discord] ',
@@ -221,11 +285,10 @@ function discordComponent({ author, message, replyTo = '', link = '', tag = '', 
             }
         },
         {
-            text: suffix,
-            color: '#d4d4d4',
-            click: { action: 'copy_to_clipboard', value: suffix.slice(0, 1000) },
-            hover: { text: `Message\n${body.length} chars\n\nClick to copy` }
-        }
+            text: replyTo ? ` (reply to @${replyTo}): ` : ': ',
+            color: '#d4d4d4'
+        },
+        ...body
     ];
 }
 
@@ -479,9 +542,9 @@ class DiscordBridge {
 
         const author = displayName(message.member, message.author);
         const replyTo = await repliedTo(message);
-        const body = describeMessage(message).slice(0, MC_LIMIT);
+        const body = describeMessage(message);
 
-        if (!body && !replyTo) return;
+        if (!plainText(body).trim() && !replyTo) return;
 
         this.sendToMinecraft(bot, discordComponent({
             author,
@@ -906,8 +969,10 @@ module.exports = {
     ansiBlock,
     channelFor,
     createDiscordBridge,
+    describeMessage,
     discordComponent,
     formatMentions,
+    linkParts,
     stripMarkdown,
     takeBatch,
     toDiscordAnsi
