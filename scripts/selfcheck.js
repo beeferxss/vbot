@@ -742,8 +742,9 @@ async function main() {
         assert.strictEqual(fillItem.block, 'repeating_command_block');
         assert.strictEqual(fillItem.mode, 1, 'a repeating block is written as repeating');
 
-        // First command: the item, then a block on the ground around the bot. The
-        // command waits: where the block lands is the server's answer.
+        // First command: the item, then the whole mini core in one go, a block on
+        // the ground around the bot. The command waits: where the blocks land is
+        // the server's answer.
         const cell = fillItem.run(command);
         // The blocks ring the bot's feet (10, 64, -4), closest ring first, so the
         // first one goes one back and one left of it.
@@ -757,46 +758,47 @@ async function main() {
         assert.deepStrictEqual(writes[2].payload.location, { x: 9, y: 63, z: -5 }, 'the ground under it');
         assert.strictEqual(writes[2].payload.direction, 1, 'placed on top of it');
         assert.strictEqual(writes[2].payload.cursorY, 0.5);
-
-        // A command asked for while that placement is unanswered does not wait for
-        // it: the next cell around the bot is placed for it, in parallel. A burst
-        // is as wide as the mini core instead of a queue behind one block.
-        const second = fillItem.run('say queued');
-        assert.deepStrictEqual(second, fillItem.spots()[1], 'the next cell around the bot');
-        assert.strictEqual(placements().length, 2, 'two placements in the air at once');
+        // One give for the whole set, and a placement for every cell of it: the
+        // blocks are standing before the commands that need them arrive, instead
+        // of one block per command.
+        assert.strictEqual(placements().length, 27, 'the whole mini core at once');
+        assert.strictEqual(
+            writes.filter(write => write.name === 'set_creative_slot').length,
+            1,
+            'one give for the whole set'
+        );
+        assert.strictEqual(fillItem.pendingCount, 27, 'all of them in the air at once');
         assert.strictEqual(edits().length, 0, 'nothing is written into air');
 
         // Each block gets the command that was sent for it, not the other one.
         assert.strictEqual(fillItem.noteBlockChange({ location: { ...cell }, type: CMD_STATE }), false);
-        assert.strictEqual(fillItem.pendingCount, 1, 'the other placement is still open');
+        assert.strictEqual(fillItem.pendingCount, 26, 'the rest of the set is still open');
         assert.strictEqual(fillItem.standing, true);
         assert.deepStrictEqual(edits()[0], {
             name: 'update_command_block',
             payload: { location: cell, command, mode: 1, flags: 0b101 }
         });
-        fillItem.noteBlockChange({ location: { ...second }, type: CMD_STATE });
+
+        // The rest answer: the whole set is standing, and the blocks nothing was
+        // waiting for are not written into.
+        for (const placement of [...fillItem.pending.values()]) {
+            fillItem.noteBlockChange({ location: { ...placement.cell }, type: CMD_STATE });
+        }
+        assert.strictEqual(fillItem.pendingCount, 0);
+        assert.strictEqual(fillItem.cells().length, 27, 'the whole mini core is standing');
+        assert.strictEqual(edits().length, 1, 'one command, one block');
+
+        // The next commands go into standing blocks, taken in turn, so a burst is
+        // as wide as the mini core and none of them is overwritten.
+        const burst = [];
+        for (let i = 0; i < 27; i++) burst.push(fillItem.run(`say ${i}`));
+        assert.strictEqual(new Set(burst.map(at => `${at.x}:${at.y}:${at.z}`)).size, 27,
+            'a block each');
+        assert.strictEqual(placements().length, 27, 'nothing is placed for them');
+        assert.strictEqual(edits().length, 28, 'one write each, into a block already there');
         await new Promise(resolve => setTimeout(resolve, 300));
-        assert.deepStrictEqual(
-            edits().map(write => write.payload.location).sort((a, b) => a.z - b.z),
-            [cell, second].sort((a, b) => a.z - b.z),
-            'one command each'
-        );
         // The slot is emptied again, and the blocks stay where they are.
         assert.ok(slotClears().length > 0, 'the slot is emptied again');
-
-        // The next command takes the next cell, so the standing blocks keep the
-        // commands they were given instead of being overwritten.
-        const placed = placements().length;
-        const third = fillItem.run('say two');
-        assert.deepStrictEqual(third, fillItem.spots()[2], 'the next cell around the bot');
-        assert.strictEqual(placements().length, placed + 1, 'a block of its own');
-        fillItem.noteBlockChange({ location: third, type: CMD_STATE });
-        assert.strictEqual(fillItem.cells().length, 3);
-
-        const fourth = fillItem.run('say three');
-        assert.deepStrictEqual(fourth, fillItem.spots()[3], 'the next cell around the bot');
-        fillItem.noteBlockChange({ location: fourth, type: CMD_STATE });
-        assert.strictEqual(fillItem.cells().length, 4);
 
         // The mini core is 27 blocks of its own, spread all around the bot on the
         // ground it stands on, never in the cells it stands in.
@@ -813,25 +815,25 @@ async function main() {
         assert.ok(!spots.some(at => at.x === 10 && at.z === -4), 'never the cell the bot stands in');
 
         // Moving further than five blocks: the set it leaves behind is dug up and
-        // a new one is placed next to the bot.
+        // a new one is placed around the bot.
         itemBot.position = { x: 10.7 + MOVE_LIMIT + 2, y: 64, z: -3.2 };
         const from = writes.length;
         const moved = fillItem.run(command);
         const tail = writes.slice(from);
         const digs = tail.filter(write => write.name === 'block_dig');
-        assert.strictEqual(digs.length, 4, 'all four blocks it left behind are dug');
+        assert.strictEqual(digs.length, 27, 'all 27 blocks it left behind are dug');
         assert.strictEqual(
             tail.filter(write => write.name === 'block_place').length,
-            1,
-            'then a new one is placed'
+            27,
+            'then a new set is placed'
         );
-        const old = [cell, second, third, fourth];
+        const old = fillItem.spots({ x: 10, y: 64, z: -4 });
         assert.ok(digs.every(write => old.some(
             where => where.x === write.payload.location.x
                 && where.y === write.payload.location.y
                 && where.z === write.payload.location.z
         )), 'only the blocks it left behind');
-        assert.strictEqual(fillItem.cells().length, 0, 'nothing standing until the new block answers');
+        assert.strictEqual(fillItem.cells().length, 0, 'nothing standing until the new blocks answer');
         assert.strictEqual(fillItem.noteBlockChange({ location: moved, type: CMD_STATE }), false);
         assert.strictEqual(fillItem.cells().length, 1);
         assert.deepStrictEqual(edits().pop(), {
@@ -867,7 +869,7 @@ async function main() {
         fillItem.run(command);
         assert.strictEqual(writes.filter(write => write.name === 'block_dig').length, digsBefore,
             'the block that was there is gone, so nothing is dug');
-        assert.strictEqual(placements().length, placedAgain + 1, 'a fresh block is placed');
+        assert.strictEqual(placements().length, placedAgain + 27, 'a fresh set is placed');
 
         // Both item shapes encode on every server this supports.
         const mc = require('minecraft-protocol');
@@ -927,33 +929,36 @@ async function main() {
             bot: burstBot, logger, config: { holdMs: 40, afterRunMs: 60 }
         });
 
-        // Ten commands at once, the way a punishment loop sends them: each takes a
-        // different cell, and all ten blocks are placed in parallel.
-        const cells = [];
-        for (let i = 0; i < 10; i++) cells.push(fillItem.run(`say ${i}`));
-        assert.strictEqual(new Set(cells.map(at => `${at.x}:${at.y}:${at.z}`)).size, 10,
-            'a cell each');
-        assert.strictEqual(count('block_place'), 10, 'ten placements in the air at once');
-        assert.strictEqual(fillItem.pendingCount, 10);
+        // The first command puts the whole mini core down at once: one give and a
+        // placement for every cell around the bot.
+        const first = fillItem.run('say 0');
+        assert.deepStrictEqual(first, fillItem.spots()[0]);
+        assert.strictEqual(count('block_place'), 27, 'the whole mini core in one go');
+        assert.strictEqual(fillItem.pendingCount, 27);
         assert.strictEqual(count('update_command_block'), 0, 'nothing into air');
 
-        // They all answer: one write each, no block taking the whole burst.
-        for (const at of cells) fillItem.noteBlockChange({ location: at, type: CMD_STATE });
+        // A burst that arrives before they answer is spread over them: each waiting
+        // block takes one command instead of the whole burst piling onto one.
+        const queued = [];
+        for (let i = 1; i < 27; i++) queued.push(fillItem.run(`say ${i}`));
+        assert.strictEqual(new Set(queued.map(at => `${at.x}:${at.y}:${at.z}`)).size, 26,
+            'a cell each');
+        assert.strictEqual(count('block_place'), 27, 'no more blocks for a burst');
+
+        // They all answer: one write each, no block taking the whole burst, and the
+        // commands are the ones that were sent for them.
+        for (const placement of [...fillItem.pending.values()]) {
+            fillItem.noteBlockChange({ location: { ...placement.cell }, type: CMD_STATE });
+        }
         assert.strictEqual(fillItem.pendingCount, 0);
-        assert.strictEqual(count('update_command_block'), 10);
+        assert.strictEqual(fillItem.ready, 27, 'the whole mini core is standing');
+        assert.strictEqual(count('update_command_block'), 27, 'one command each');
         assert.deepStrictEqual(
             writes.filter(write => write.name === 'update_command_block')
                 .map(write => write.payload.command).sort(),
-            cells.map((_, i) => `say ${i}`).sort()
+            Array.from({ length: 27 }, (_, i) => `say ${i}`).sort()
         );
         assert.strictEqual(count('block_dig'), 0, 'nothing is dug while it runs');
-
-        // The rest of the mini core fills up the same way, one cell per command.
-        for (let i = 10; i < 27; i++) cells.push(fillItem.run(`say ${i}`));
-        for (const at of cells.slice(10)) fillItem.noteBlockChange({ location: at, type: CMD_STATE });
-        assert.strictEqual(count('block_place'), 27, 'every block of the mini core is placed');
-        assert.strictEqual(fillItem.cells().length, 27);
-        assert.strictEqual(fillItem.ready, 27);
 
         // With every block standing a burst is nothing but writes: a block that is
         // asked for again keeps running, so not one placement happens.
@@ -1026,7 +1031,7 @@ async function main() {
         const digs = () => writes.filter(write => write.name === 'block_dig');
 
         const fillItem = new FillItem({
-            bot: breakBot, logger, config: { holdMs: 40, afterRunMs: 60 }
+            bot: breakBot, logger, config: { holdMs: 40, afterRunMs: 60, itemCount: 1 }
         });
         const cell = fillItem.run('say once');
         fillItem.noteBlockChange({ location: cell, type: CMD_STATE });
@@ -1042,7 +1047,7 @@ async function main() {
         // The next command places a fresh block instead of writing into the one
         // that has just been broken.
         const again = fillItem.run('say twice');
-        assert.notDeepStrictEqual(again, cell, 'a fresh cell');
+        assert.deepStrictEqual(again, cell, 'the same cell, a fresh block');
         assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 2);
 
         fillItem.destroy();

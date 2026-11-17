@@ -61,6 +61,7 @@ const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in
 const SETTLE_MS = 800;           // how long a placement has to be answered
 const STEP_MS = 120;             // gap between the commands of one command
 const AFTER_RUN_MS = 200;        // how long a written command gets before its block goes
+const IDLE_BLOCK_MS = 2000;      // a block placed ahead of use goes if nothing uses it
 const PENDING_MS = 2000;         // a placement echo older than this is not ours
 const AIR = 0;                   // air's block state number in every version
 
@@ -319,6 +320,30 @@ class FillItem {
         return [...clear, ...wanted.filter(cell => this.avoid(cell))];
     }
 
+    // Puts the whole mini core down at once, rather than a block per command: one
+    // give of the item, then a placement for every cell that has none, so the
+    // blocks are standing before the commands that need them arrive. A cell that
+    // refused a block is left alone; the next one around the bot is used instead.
+    grow(at = this.feet()) {
+        if (!this.usable || !this.creative || !at) return 0;
+        if (this.moved(at)) this.reposition();
+        if (!this.origin) this.origin = { ...at };
+
+        const fresh = this.spots(at).filter(cell => {
+            const key = cellKey(cell);
+            return !this.blocked.has(key) && !this.pending.has(key) && !this.slots.has(key);
+        });
+        if (!fresh.length) return 0;
+        if (!this.give()) return 0;
+
+        let placed = 0;
+        for (const cell of fresh) {
+            if (!this.placeSlot(cellKey(cell), cell, [], true)) break;
+            placed += 1;
+        }
+        return placed;
+    }
+
     // Writes commands into the mini core, one of its blocks at a time, taken in
     // turn. A cell that is not standing yet is placed, and the commands follow it
     // as soon as the server says where it landed. Returns the cell the commands
@@ -336,6 +361,10 @@ class FillItem {
 
         if (this.moved(at)) this.reposition();
         if (!this.origin) this.origin = { ...at };
+
+        // The blocks that are not standing yet go down in one go: waiting for a
+        // command per block leaves the first burst writing into a handful of them.
+        if (this.slots.size + this.pending.size < this.count) this.grow(at);
 
         const cells = this.spots(at);
         if (!cells.length) return null;
@@ -361,16 +390,26 @@ class FillItem {
             return this.placeSlot(key, cell, list);
         }
 
-        // Every cell is busy, being placed, or refused a block: the command goes
-        // where the turn stands, queued behind that block.
+        // Every cell is busy, being placed, or refused a block. A placement that
+        // has not answered yet takes the command into its queue, the one with the
+        // fewest already queued first, so a burst that lands while the mini core is
+        // still going down is spread over the whole set instead of one block.
         this.blocked.clear();
-        const cell = cells[this.turn];
-        const key = cellKey(cell);
-        const waiting = this.pending.get(key);
+        let waiting = null;
+        for (let step = 0; step < cells.length; step++) {
+            const found = this.pending.get(cellKey(cells[(this.turn + step) % cells.length]));
+            if (found && (!waiting || found.queue.length < waiting.queue.length)) waiting = found;
+        }
         if (waiting) {
             waiting.queue.push(...list);
+            // The turn moves on, so the next command takes another cell even before
+            // this one has answered.
+            const index = cells.findIndex(cell => cellKey(cell) === waiting.key);
+            if (index !== -1) this.turn = (index + 1) % cells.length;
             return waiting.cell;
         }
+        const cell = cells[this.turn];
+        const key = cellKey(cell);
         const busy = this.slots.get(key);
         if (busy) {
             if (!this.writeAll(busy.cell, list, busy)) return null;
@@ -442,7 +481,7 @@ class FillItem {
         this.origin = this.feet();
     }
 
-    placeSlot(key, cell, commands) {
+    placeSlot(key, cell, commands, given = false) {
         if (!this.creative) {
             this.log.warn(
                 `refill items need creative mode (the bot is in gamemode ${this.bot?.selfCare?.gamemode}); ` +
@@ -453,7 +492,7 @@ class FillItem {
         }
 
         this.lastSendAt = Date.now();
-        if (!this.give()) return null;
+        if (!given && !this.give()) return null;
 
         if (!this.place(cell)) {
             this.clear();
@@ -512,6 +551,9 @@ class FillItem {
             breakTimer: null
         };
         this.slots.set(placement.key, slot);
+        // A block placed ahead of the command it will carry goes again on its own
+        // if no command reaches it, so the set is not left standing unused.
+        if (!placement.queue.length) this.scheduleBreak(at, slot, IDLE_BLOCK_MS);
         this.writeAll(at, placement.queue, slot);
     }
 
