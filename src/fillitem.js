@@ -1,60 +1,45 @@
 'use strict';
 
-// Refilling by giving the bot a command block *item* and placing it, instead of
-// writing into the core: the block is put in the air at the bot's feet, the fill
-// is written into that one block, and it is broken again a moment later. An
-// impulse block would have to be triggered, so the item is a repeating block,
-// which runs whatever it holds every tick until it is broken.
+// Refilling through a command block *item* instead of writing into the core.
+// `/item replace` puts a command block into the bot's mainhand whose block entity
+// data already holds the fill and `auto: 1b`; it is then placed in the air at the
+// bot's feet, runs the fill by itself, and is broken again a moment later.
+// Nothing is written into the block afterwards and no item id is involved: the
+// command takes the block by name.
 //
-// Everything goes through packets: no /give, no chat.
+// 1.21 and later only: that is where item components and block entity data in a
+// command all exist. The `/item` and `/clear` of this path are the fill's own use
+// of chat; the fill command itself never travels as chat.
 
-const nbt = require('prismarine-nbt');
-
-const HOTBAR_SLOT = 36;          // first hotbar slot, packet slot numbering
+const MAINHAND = 'weapon.mainhand';
 const BREAK_DELAY_MS = 250;
 const FACE_UP = 1;
-const BLOCK = 'repeating_command_block';
+const BLOCK = 'minecraft:repeating_command_block';
+// All three command block types share one block entity id.
+const BLOCK_ENTITY_ID = 'minecraft:command_block';
 
-// 1.20.5 stopped sending an absent item as "present: false".
-function usesComponents(version) {
-    const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(version ?? ''));
-    if (!match) return true;
-    const [major, minor, patch] = [Number(match[1]), Number(match[2]), Number(match[3] || 0)];
-    if (major !== 1) return major > 1;
-    if (minor !== 20) return minor > 20;
-    return patch >= 5;
+function snbtString(value) {
+    return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-// A plain block item: no components, so nothing has to be translated between
-// versions and there is no id in the packet to get wrong.
-function plainItem(version, itemId) {
-    if (usesComponents(version)) {
-        return {
-            itemCount: 1,
-            itemId,
-            addedComponentCount: 0,
-            removedComponentCount: 0,
-            components: [],
-            removeComponents: []
-        };
-    }
-    return { present: true, itemCount: 1, itemId };
+// The item as the command takes it: a repeating command block that is always
+// active and already holds the fill, so placing it is all that is needed.
+function commandBlockItem(command, block = BLOCK) {
+    const tag = '{id:' + snbtString(BLOCK_ENTITY_ID) +
+        ',Command:' + snbtString(String(command || '').replace(/^\//, '')) +
+        ',auto:1b,TrackOutput:1b}';
+    return `${block}[block_entity_data=${tag}]`;
 }
 
 class FillItem {
-    constructor({ bot, logger, data = null, config = {} }) {
+    constructor({ bot, logger, config = {} }) {
         this.bot = bot;
         this.log = logger;
-        this.data = data;
         this.breakDelayMs = Number(config.breakDelayMs) > 0 ? Number(config.breakDelayMs) : BREAK_DELAY_MS;
         this.block = String(config.itemBlock || BLOCK);
         this.sequence = 0;
         this.timer = null;
         this.placed = null;
-        // The server sends the slot back when it accepts a creative slot, so an
-        // item that never comes back was never given.
-        this.confirmed = false;
-        this.misses = 0;
         this.broken = false;
         this.lastSendAt = 0;
     }
@@ -74,36 +59,13 @@ class FillItem {
         return true;
     }
 
-    mcd() {
-        if (this.data === null) {
-            try {
-                // eslint-disable-next-line global-require
-                this.data = require('minecraft-data')(this.version());
-            } catch {
-                this.data = false;
-            }
-        }
-        return this.data || null;
-    }
-
-    version() {
-        return this.bot?.client?.version || this.bot?.version || null;
-    }
-
-    // The server's own registry beats any bundled data: its position is the id.
-    itemId() {
-        const fromServer = this.bot?.registries?.item?.get?.(this.block);
-        if (fromServer !== undefined) return fromServer;
-        return this.mcd()?.itemsByName?.[this.block]?.id;
-    }
-
     get usable() {
         if (this.broken) return false;
         if (!this.bot || typeof this.bot.write !== 'function') return false;
-        return this.itemId() !== undefined;
+        return typeof this.bot.sendChat === 'function';
     }
 
-    // Creative is the only mode where a creative slot is accepted at all.
+    // Command blocks can only be placed in creative.
     get creative() {
         const mode = this.bot?.selfCare?.gamemode;
         return mode === null || mode === undefined || mode === 1;
@@ -114,21 +76,12 @@ class FillItem {
         return this.sequence;
     }
 
-    noteSlot(packet) {
-        if (Number(packet?.slot) !== HOTBAR_SLOT) return;
-        const item = packet?.item;
-        if (item && (item.itemCount ?? 0) > 0) this.confirmed = true;
-    }
-
-    // Two packets: the item into the hotbar, and the hotbar slot selected.
-    give() {
-        const itemId = this.itemId();
-        if (itemId === undefined) return false;
-        if (!this.bot.write('set_creative_slot', {
-            slot: HOTBAR_SLOT,
-            item: plainItem(this.version(), itemId)
-        })) return false;
-        return this.bot.write('held_item_slot', { slotId: 0 });
+    // The mainhand is the selected hotbar slot, so the item is in hand as soon as
+    // the server runs the command: no slot has to be chosen.
+    give(command) {
+        return this.bot.sendChat(
+            `/item replace entity @s ${MAINHAND} with ${commandBlockItem(command, this.block)}`
+        ) !== false;
     }
 
     // Places the item against the block the bot stands on, so the block lands at
@@ -158,17 +111,6 @@ class FillItem {
         return sent ? target : null;
     }
 
-    // The block is repeating, so the command runs on the next tick and keeps
-    // running until the block is gone.
-    writeCommand(location, command, mode) {
-        return this.bot.write('update_command_block', {
-            location,
-            command,
-            mode,
-            flags: 0b101
-        });
-    }
-
     // Only ever this block: the core is not touched.
     breakAt(location) {
         this.bot.write('block_dig', {
@@ -179,21 +121,15 @@ class FillItem {
         });
     }
 
-    // A creative slot is only cleared by overwriting it with nothing.
-    emptyItem() {
-        if (usesComponents(this.version())) {
-            return { itemCount: 0, components: [], removeComponents: [] };
-        }
-        return { present: false };
-    }
-
+    // The given item was never meant to stay in the inventory.
     clear() {
-        return this.bot.write('set_creative_slot', { slot: HOTBAR_SLOT, item: this.emptyItem() });
+        return this.bot.sendChat(`/item replace entity @s ${MAINHAND} with minecraft:air`) !== false;
     }
 
-    // Give, place, fill that block, and break it after a moment. One cycle at a
-    // time: the next placement would land in the block still standing.
-    run(command, mode) {
+    // Give, place (the block runs the fill straight away), and break it after a
+    // moment. One cycle at a time: the next placement would land in the block
+    // still standing.
+    run(command) {
         if (!this.usable) return false;
         if (this.timer) return false;
 
@@ -206,9 +142,8 @@ class FillItem {
             return false;
         }
 
-        this.confirmed = false;
         this.lastSendAt = Date.now();
-        if (!this.give()) return false;
+        if (!this.give(command)) return false;
 
         const placed = this.place();
         if (!placed) {
@@ -216,7 +151,6 @@ class FillItem {
             return false;
         }
 
-        this.writeCommand(placed, String(command || '').replace(/^\//, ''), mode);
         this.placed = placed;
         this.timer = setTimeout(() => {
             this.timer = null;
@@ -224,27 +158,10 @@ class FillItem {
             this.placed = null;
             this.breakAt(location);
             this.clear();
-            this.checkGiven();
         }, this.breakDelayMs);
         this.timer.unref?.();
 
         return true;
-    }
-
-    // The slot never came back: this server will not take the item, so stop
-    // asking and leave refills to the core.
-    checkGiven() {
-        if (this.confirmed) {
-            this.misses = 0;
-            return;
-        }
-
-        this.misses += 1;
-        this.log.warn(
-            `the command block item did not arrive (version ${this.version() ?? 'unknown'}, ` +
-            `attempt ${this.misses}); is the bot opped and in creative?`
-        );
-        if (this.misses >= 2) this.broken = true;
     }
 
     destroy() {
@@ -254,4 +171,4 @@ class FillItem {
     }
 }
 
-module.exports = { FillItem, plainItem, usesComponents, HOTBAR_SLOT, nbt };
+module.exports = { FillItem, commandBlockItem, MAINHAND, BLOCK };

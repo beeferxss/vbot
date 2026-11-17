@@ -538,68 +538,56 @@ async function main() {
         plainCore.destroy();
     });
 
-    await check('a command block item is placed, filled and broken again', async () => {
-        const { FillItem, plainItem, usesComponents } = require('../src/fillitem');
-        const data = { itemsByName: { repeating_command_block: { id: 419 } } };
+    await check('the refill item is a mainhand command block with the fill, placed and broken again', async () => {
+        const { FillItem, commandBlockItem } = require('../src/fillitem');
+        const command = 'fill 1 2 3 4 5 6 minecraft:command_block replace';
 
-        // A plain item: no components, so there is nothing to translate.
-        assert.strictEqual(usesComponents('1.21.4'), true);
-        assert.strictEqual(usesComponents('1.20.4'), false);
-        assert.deepStrictEqual(plainItem('1.21.4', 419), {
-            itemCount: 1,
-            itemId: 419,
-            addedComponentCount: 0,
-            removedComponentCount: 0,
-            components: [],
-            removeComponents: []
-        });
-        assert.deepStrictEqual(plainItem('1.20.4', 394), { present: true, itemCount: 1, itemId: 394 });
+        // The command takes the item by name: no item ids, no slot bookkeeping.
+        assert.strictEqual(
+            commandBlockItem(`/${command}`),
+            'minecraft:repeating_command_block[block_entity_data={' +
+            'id:"minecraft:command_block",' +
+            `Command:"${command}",` +
+            'auto:1b,TrackOutput:1b}]'
+        );
+        assert.ok(commandBlockItem(command).includes('auto:1b'), 'always active, so placing it runs it');
 
+        const chats = [];
         const writes = [];
         const itemBot = {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
+            sendChat: message => (chats.push(message), true),
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
-        const fillItem = new FillItem({ bot: itemBot, logger, data, config: { breakDelayMs: 40 } });
+        const fillItem = new FillItem({ bot: itemBot, logger, config: { breakDelayMs: 40 } });
 
         assert.strictEqual(fillItem.usable, true);
-        assert.strictEqual(
-            fillItem.run('fill 1 2 3 4 5 6 minecraft:command_block replace', 2),
-            true
-        );
-        assert.strictEqual(fillItem.run('anything', 1), false, 'one placement at a time');
+        assert.strictEqual(fillItem.run(command), true);
+        assert.strictEqual(fillItem.run('anything'), false, 'one placement at a time');
 
-        assert.deepStrictEqual(writes.map(write => write.name), [
-            'set_creative_slot',
-            'held_item_slot',
-            'block_place',
-            'update_command_block'
+        // One chat command puts the item in the mainhand; the placement follows.
+        assert.deepStrictEqual(chats, [
+            `/item replace entity @s weapon.mainhand with ${commandBlockItem(command)}`
         ]);
-        assert.strictEqual(writes[0].payload.slot, 36);
-        assert.strictEqual(writes[0].payload.item.itemId, 419);
-        assert.strictEqual(writes[0].payload.item.components.length, 0, 'the item carries no data');
-        assert.strictEqual(writes[1].payload.slotId, 0);
-        assert.deepStrictEqual(writes[2].payload.location, { x: 10, y: 63, z: -4 }, 'the block the bot stands on');
-        assert.strictEqual(writes[2].payload.direction, 1, 'placed on its top face');
-        // The command goes into the placed block, which repeats, so it runs.
-        assert.deepStrictEqual(writes[3].payload.location, { x: 10, y: 64, z: -4 });
-        assert.strictEqual(writes[3].payload.mode, 2, 'impulse');
-        assert.match(writes[3].payload.command, /^fill 1 2 3 4 5 6 /);
+        assert.deepStrictEqual(writes.map(write => write.name), ['block_place']);
+        assert.deepStrictEqual(writes[0].payload.location, { x: 10, y: 63, z: -4 }, 'the block the bot stands on');
+        assert.strictEqual(writes[0].payload.direction, 1, 'placed in the air above it, at the bot');
 
         await new Promise(resolve => setTimeout(resolve, 90));
 
-        // Every protocol the bot can speak encodes these packets, or nothing
-        // leaves the client at all.
+        assert.ok(!writes.some(write => write.name === 'update_command_block'), 'no command write is sent');
+        const dig = writes.find(write => write.name === 'block_dig');
+        assert.ok(dig, 'the placed block has to be broken again');
+        assert.deepStrictEqual(dig.payload.location, { x: 10, y: 64, z: -4 }, 'only that block');
+        assert.strictEqual(dig.payload.status, 0);
+        // The given item is taken back out of the hand.
+        assert.strictEqual(chats[1], '/item replace entity @s weapon.mainhand with minecraft:air');
+
+        // The placement packets still encode on every server this supports.
         const mc = require('minecraft-protocol');
-        for (const version of ['1.20.1', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
-            const d = require('minecraft-data')(version);
-            const item = plainItem(version, d.itemsByName.repeating_command_block.id);
+        for (const version of ['1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
             const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
-            assert.ok(
-                serializer.createPacketBuffer({ name: 'set_creative_slot', params: { slot: 36, item } }).length > 0,
-                `${version} should encode the item`
-            );
             assert.ok(serializer.createPacketBuffer({
                 name: 'block_place',
                 params: {
@@ -615,24 +603,15 @@ async function main() {
                 }
             }).length > 0, `${version} should encode the placement`);
             assert.ok(serializer.createPacketBuffer({
-                name: 'update_command_block',
-                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
-            }).length > 0, `${version} should encode the command write`);
+                name: 'block_dig',
+                params: { status: 0, location: { x: 1, y: 2, z: 3 }, face: 1, sequence: 2 }
+            }).length > 0, `${version} should encode the break`);
         }
-
-        const dig = writes.find(write => write.name === 'block_dig');
-        assert.ok(dig, 'the placed block has to be broken again');
-        assert.deepStrictEqual(dig.payload.location, { x: 10, y: 64, z: -4 }, 'only that block');
-        assert.strictEqual(dig.payload.status, 0);
-        assert.deepStrictEqual(writes.map(write => write.name).slice(-2), ['block_dig', 'set_creative_slot']);
-        assert.strictEqual(writes[writes.length - 1].payload.item.itemCount, 0, 'the slot is cleared');
 
         fillItem.destroy();
     });
 
     await check('item numbers come from the server registries', async () => {
-        const { FillItem } = require('../src/fillitem');
-
         // A registry packet is a list; the position in it is the id.
         const registryBot = new Bot({
             server: { id: 'reg', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline' },
@@ -654,25 +633,6 @@ async function main() {
         assert.strictEqual(registryBot.registries.components.get('block_entity_data'), 1);
         assert.strictEqual(registryBot.noteRegistry({ id: 'minecraft:item', entries: [] }), false);
         registryBot.destroy();
-
-        // The server's number is what gets sent, not the bundled one.
-        const writes = [];
-        const bot = {
-            client: { version: '1.21.4' },
-            position: { x: 0, y: 64, z: 0 },
-            write: (name, payload) => (writes.push({ name, payload }), true),
-            registries: { item: new Map([['repeating_command_block', 281]]), components: null }
-        };
-        const item = new FillItem({
-            bot,
-            logger,
-            data: { itemsByName: { repeating_command_block: { id: 419 } } }
-        });
-        assert.strictEqual(item.itemId(), 281);
-        assert.strictEqual(item.usable, true);
-        item.give();
-        assert.strictEqual(writes[0].payload.item.itemId, 281);
-        item.destroy();
     });
 
     await check('refills place a command block item before anything else', async () => {

@@ -364,7 +364,7 @@ class Core {
     // when the server or the version will not take the item.
     placeFill(command) {
         if (!this.fillItem?.usable) return false;
-        if (!this.fillItem.run(command, this.blockMode())) return false;
+        if (!this.fillItem.run(command)) return false;
         this.itemFills += 1;
         return true;
     }
