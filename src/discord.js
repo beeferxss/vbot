@@ -2,12 +2,14 @@
 
 // Two-way Discord bridge.
 //
-//   Minecraft -> Discord: player chat is posted to that server's channel as an
-//   ANSI code block, one message per burst. System output stays in game, so the
-//   core's command-block bookkeeping never reaches a channel.
+//   Minecraft -> Discord: the whole chat feed - player chat, tellraw, command
+//   output, joins and leaves - is posted to that server's channel as an ANSI
+//   code block. Lines are batched, the same line is only posted once, and the
+//   bot never echoes its own relay back.
 //
 //   Discord -> Minecraft: messages in that channel are shown in game with a
-//   tellraw, through the core when it is ready and as chat when it is not.
+//   coloured tellraw (name, reply target, click to copy), through the core when
+//   it is ready and as chat when it is not.
 //
 //   Slash commands: /servers, /players and /mc, which runs a vbot command with
 //   the member's Discord rank.
@@ -19,11 +21,15 @@ const tellraw = require('./minecraft/tellraw');
 const { LEVEL, levelName } = require('./permissions');
 const { nearestAnsi } = require('./minecraft/text');
 
-const RELAY_INTERVAL_MS = 900;
-const RELAY_MAX_BUFFER = 50;
-const RELAY_LIMIT = 1900;
+const RELAY = Object.freeze({
+    interval: 900,
+    maxBuffer: 50,
+    limit: 1900,
+    maxRetries: 3
+});
 const ECHO_TTL_MS = 15000;
-const MC_LIMIT = 256;
+const SEEN_TTL_MS = 3000;
+const MC_LIMIT = 500;
 
 function channelFor(config, server) {
     const channels = config?.discord?.channels || {};
@@ -41,19 +47,108 @@ function oneLine(text, limit) {
         .slice(0, limit);
 }
 
-function formatMinecraftLine({ server, username, message }) {
-    const name = oneLine(username, 64) || '?';
-    const body = oneLine(message, RELAY_LIMIT);
-    return `[${server}] ${name}: ${body}`.slice(0, RELAY_LIMIT);
+function displayName(member, user) {
+    return String(member?.displayName || user?.globalName || user?.username || 'unknown')
+        .replace(/§/g, '')
+        .slice(0, 80);
 }
 
-function discordComponent({ author, message }) {
-    return [
-        { text: '[Discord] ', color: 'blue' },
-        { text: oneLine(author, 64) || '?', color: 'aqua' },
-        { text: ': ', color: 'gray' },
-        { text: oneLine(message, MC_LIMIT), color: 'white' }
-    ];
+function formatMentions(message) {
+    let text = message.content || '';
+
+    for (const [id, role] of message.mentions?.roles ?? []) {
+        text = text.split(`<@&${id}>`).join(`@${role.name || 'role'}`);
+    }
+
+    for (const [id, channel] of message.mentions?.channels ?? []) {
+        text = text.split(`<#${id}>`).join(`#${channel.name || 'channel'}`);
+    }
+
+    for (const [id, user] of message.mentions?.users ?? []) {
+        const name = message.mentions.members?.get(id)?.displayName
+            || user.globalName
+            || user.username
+            || 'user';
+
+        text = text
+            .split(`<@${id}>`).join(`@${name}`)
+            .split(`<@!${id}>`).join(`@${name}`);
+    }
+
+    return text.replace(/<a?:([A-Za-z0-9_~]+):\d+>/g, ':$1:');
+}
+
+function stripMarkdown(text) {
+    return String(text ?? '')
+        .replace(/```([\s\S]*?)```/g, '$1')
+        .replace(/`([^`]*)`/g, '$1')
+        .replace(/\*\*\*(.+?)\*\*\*/g, '$1')
+        .replace(/\*\*(.+?)\*\*/g, '$1')
+        .replace(/__(.+?)__/g, '$1')
+        .replace(/~~(.+?)~~/g, '$1')
+        .replace(/\|\|(.+?)\|\|/g, '$1')
+        .replace(/^\s*>\s?/gm, '')
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '$1 ($2)')
+        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+}
+
+// Plain messages only carry text, so attachments and embeds are described
+// instead of being dropped silently.
+function describeMessage(message) {
+    const parts = [];
+    const text = stripMarkdown(formatMentions(message)).trim();
+    if (text) parts.push(text);
+
+    for (const attachment of message.attachments?.values?.() ?? []) {
+        const type = String(attachment.contentType || '');
+        const kind = type.startsWith('image/')
+            ? 'image'
+            : type.startsWith('video/')
+                ? 'video'
+                : type.startsWith('audio/')
+                    ? 'audio'
+                    : 'file';
+        parts.push(`[${kind}: ${attachment.name || 'attachment'}] ${attachment.url || ''}`.trim());
+    }
+
+    for (const sticker of message.stickers?.values?.() ?? []) {
+        parts.push(`[sticker: ${sticker.name || 'sticker'}]`);
+    }
+
+    for (const embed of message.embeds ?? []) {
+        const label = embed.title || embed.description || embed.url || 'embed';
+        parts.push(`[embed: ${stripMarkdown(label).slice(0, 200)}]`);
+    }
+
+    return parts.join('\n');
+}
+
+async function repliedTo(message) {
+    const id = message.reference?.messageId;
+    if (!id) return '';
+
+    const channel = message.channel;
+    let target = channel?.messages?.cache?.get?.(id);
+
+    if (!target) {
+        target = await channel?.messages?.fetch?.(id).catch(() => null);
+    }
+
+    if (!target || target.author?.bot) return '';
+    return displayName(target.member, target.author);
+}
+
+function stripAnsiCodes(text) {
+    return String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// The same line can reach the bridge twice; normalise it to one key so it is
+// only posted once.
+function dedupeKey(text) {
+    let key = stripAnsiCodes(text).trim();
+    key = key.replace(/^(\[[^\]]+\]\s*)+/g, '');
+    key = key.replace(/^<([^>]+)>\s*/, '$1: ');
+    return key.replace(/\s+/g, ' ').trim();
 }
 
 // Discord's ansi code block only renders the sixteen terminal colours, so any
@@ -66,12 +161,27 @@ function toDiscordAnsi(text) {
         .replace(/\u00a7./g, '');
 }
 
+// Keep user text from closing the surrounding Discord code block.
 function protectFences(text) {
-    return String(text ?? '').replace(/```/g, "'''");
+    return String(text ?? '').replace(/```/g, '`\u200b`\u200b`');
 }
 
 function ansiBlock(text) {
     return `\`\`\`ansi\n${protectFences(text)}\n\`\`\``;
+}
+
+function takeBatch(lines) {
+    let content = '';
+    let consumed = 0;
+
+    for (const line of lines) {
+        const next = content ? `${content}\n${line}` : line;
+        if (next.length > RELAY.limit) break;
+        content = next;
+        consumed += 1;
+    }
+
+    return { content, consumed };
 }
 
 function onlineNames(bot) {
@@ -80,6 +190,43 @@ function onlineNames(bot) {
         for (const player of bot.online.values()) if (player?.name) names.push(player.name);
     }
     return names.sort((a, b) => a.localeCompare(b));
+}
+
+// The in-game message for a Discord post: the author is clickable and hoverable
+// so staff can see the tag and id without leaving the game.
+function discordComponent({ author, message, replyTo = '', link = '', tag = '', id = '' }) {
+    const name = oneLine(author, 64) || 'unknown';
+    const body = oneLine(message, MC_LIMIT);
+    const suffix = replyTo ? ` (reply to @${replyTo}): ${body}` : `: ${body}`;
+
+    const badge = {
+        text: '[Discord] ',
+        color: '#55aaff'
+    };
+
+    if (link) {
+        badge.click = { action: 'copy_to_clipboard', value: link };
+        badge.hover = { text: `Discord\n\n${link}` };
+    }
+
+    return [
+        badge,
+        {
+            text: name,
+            color: '#62d66b',
+            click: { action: 'copy_to_clipboard', value: name },
+            hover: {
+                text: `Discord User\n\nTag: ${tag || name}\nID: ${id || 'unknown'}` +
+                    (replyTo ? `\nReplying to: ${replyTo}` : '')
+            }
+        },
+        {
+            text: suffix,
+            color: '#d4d4d4',
+            click: { action: 'copy_to_clipboard', value: suffix.slice(0, 1000) },
+            hover: { text: `Message\n${body.length} chars\n\nClick to copy` }
+        }
+    ];
 }
 
 class DiscordBridge {
@@ -96,6 +243,10 @@ class DiscordBridge {
         this.relays = new Map();      // server id -> relay
         this.channelBots = new Map(); // channel id -> bot
         this.onMinecraftChat = (bot, event) => this.handleMinecraftChat(bot, event);
+        this.onBotDisconnect = bot => {
+            const relay = this.relays.get(bot.id);
+            if (relay) void this.flush(relay);
+        };
     }
 
     get enabled() {
@@ -156,6 +307,7 @@ class DiscordBridge {
         client.on('error', error => this.log?.warn?.(`discord: client error: ${error.message}`));
 
         this.manager.on('chat', this.onMinecraftChat);
+        this.manager.on('disconnect', this.onBotDisconnect);
 
         client.login(this.config.token).catch(error => {
             this.log?.warn?.(`discord: login failed: ${error.message}`);
@@ -180,15 +332,17 @@ class DiscordBridge {
                 continue;
             }
 
-            const relay = {
+            this.relays.set(bot.id, {
                 bot,
                 channelId,
                 buffer: [],
                 timer: null,
                 flushing: false,
-                echoes: new Map()
-            };
-            this.relays.set(bot.id, relay);
+                retries: 0,
+                echoes: new Map(),
+                recent: new Map(),
+                stopped: false
+            });
             this.channelBots.set(channelId, bot);
         }
     }
@@ -200,8 +354,9 @@ class DiscordBridge {
     }
 
     noteEcho(relay, text) {
-        if (!relay) return;
+        if (!relay || !text) return;
         relay.echoes.set(String(text), Date.now() + ECHO_TTL_MS);
+
         if (relay.echoes.size > 50) {
             const now = Date.now();
             for (const [key, expiry] of relay.echoes) {
@@ -216,6 +371,7 @@ class DiscordBridge {
     consumeEcho(relay, text) {
         if (!relay) return false;
         const now = Date.now();
+
         for (const [key, expiry] of relay.echoes) {
             if (expiry < now) {
                 relay.echoes.delete(key);
@@ -226,6 +382,27 @@ class DiscordBridge {
                 return true;
             }
         }
+
+        return false;
+    }
+
+    // The server can repeat a line (system and player packets, a reload), so the
+    // same text inside a short window is only posted once.
+    alreadySeen(relay, text, ttl = SEEN_TTL_MS) {
+        const key = dedupeKey(text);
+        if (!key) return true;
+
+        const now = Date.now();
+        const seen = relay.recent.get(key);
+        if (seen && now - seen < ttl) return true;
+
+        relay.recent.set(key, now);
+        if (relay.recent.size > 100) {
+            for (const [entry, at] of relay.recent) {
+                if (now - at > 10000) relay.recent.delete(entry);
+            }
+        }
+
         return false;
     }
 
@@ -235,64 +412,93 @@ class DiscordBridge {
         const relay = this.relays.get(bot.id);
         if (!relay) return;
 
-        // Only player chat is relayed. System output carries the core's own
-        // command-block confirmations and server plugin chatter, which does not
-        // belong in a channel.
         const parsed = event?.parsed;
-        if (!parsed?.username || !parsed?.message) return;
-        if (parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
-        if (this.isCommand(parsed.message)) return;
-        if (this.consumeEcho(relay, parsed.message)) return;
+        const ansi = String(event?.ansi || event?.line || '').replace(/\u0000/g, '').replace(/\s+$/, '');
+        if (!ansi.trim()) return;
 
-        const body = String(event?.ansi || '').trim()
-            || `\x1b[96m<${parsed.username}>\x1b[0m ${parsed.message}`;
+        const plain = stripAnsiCodes(ansi).trim();
+        // Our own chat, command spam and relay echoes stay out.
+        if (parsed?.username && parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
+        if (parsed?.message && this.isCommand(parsed.message)) return;
+        if (this.consumeEcho(relay, plain)) return;
+        if (this.alreadySeen(relay, plain)) return;
 
-        relay.buffer.push(toDiscordAnsi(`\x1b[90m[${bot.id}]\x1b[0m ${body}`));
-        while (relay.buffer.length > RELAY_MAX_BUFFER) relay.buffer.shift();
+        relay.buffer.push(toDiscordAnsi(ansi));
+        while (relay.buffer.length > RELAY.maxBuffer) relay.buffer.shift();
+        this.schedule(relay);
+    }
 
-        if (!relay.timer) {
-            relay.timer = setTimeout(() => {
-                relay.timer = null;
-                void this.flush(relay);
-            }, RELAY_INTERVAL_MS);
-            relay.timer.unref?.();
+    schedule(relay, delay = RELAY.interval) {
+        if (relay.timer || relay.stopped) return;
+        relay.timer = setTimeout(() => {
+            relay.timer = null;
+            void this.flush(relay);
+        }, delay);
+        relay.timer.unref?.();
+    }
+
+    async fetchChannel(channelId) {
+        if (!this.ready) return null;
+        try {
+            const channel = this.client.channels.cache.get(String(channelId))
+                || await this.client.channels.fetch(String(channelId));
+            if (!channel || typeof channel.send !== 'function') return null;
+            return channel;
+        } catch {
+            return null;
         }
     }
 
     async flush(relay) {
-        if (relay.flushing || !relay.buffer.length || !this.ready) return;
+        if (relay.flushing || relay.stopped || !relay.buffer.length || !this.ready) return;
+
         relay.flushing = true;
 
         try {
-            const channel = this.client.channels.cache.get(relay.channelId)
-                || await this.client.channels.fetch(relay.channelId).catch(() => null);
-            if (!channel || typeof channel.send !== 'function') {
-                this.log?.warn?.(`discord: channel ${relay.channelId} is not available; dropping ${relay.buffer.length} line(s)`);
-                relay.buffer.length = 0;
+            const channel = await this.fetchChannel(relay.channelId);
+            if (!channel) {
+                relay.retries += 1;
+                if (relay.retries > RELAY.maxRetries) {
+                    this.log?.warn?.(`discord: channel ${relay.channelId} is unavailable; dropping ${relay.buffer.length} line(s)`);
+                    relay.buffer.length = 0;
+                    relay.retries = 0;
+                } else {
+                    this.schedule(relay, 5000 * relay.retries);
+                }
                 return;
             }
 
             while (relay.buffer.length) {
-                const batch = [];
-                let size = 0;
-                while (relay.buffer.length) {
-                    const line = relay.buffer[0];
-                    if (batch.length && size + line.length + 1 > RELAY_LIMIT) break;
-                    batch.push(relay.buffer.shift());
-                    size += line.length + 1;
-                }
-                if (!batch.length) break;
+                const { content, consumed } = takeBatch(relay.buffer);
+                if (!content || !consumed) break;
+
                 await channel.send({
-                    content: ansiBlock(batch.join('\n').slice(0, RELAY_LIMIT)),
+                    content: ansiBlock(content),
                     allowedMentions: { parse: [] }
                 });
+
+                relay.buffer.splice(0, consumed);
             }
+
+            relay.retries = 0;
         } catch (error) {
-            this.log?.warn?.(`discord: relay send failed: ${error.message}`);
-            relay.buffer.length = 0;
+            relay.retries += 1;
+            if (relay.retries > RELAY.maxRetries) {
+                this.log?.warn?.(`discord: relay failed ${relay.retries} time(s); dropping ${relay.buffer.length} line(s): ${error.message}`);
+                relay.buffer.length = 0;
+                relay.retries = 0;
+            } else {
+                this.log?.warn?.(`discord: relay send failed (attempt ${relay.retries}), retrying: ${error.message}`);
+                this.schedule(relay, 2000 * relay.retries);
+            }
         } finally {
             relay.flushing = false;
+            if (relay.buffer.length && !relay.timer && !relay.stopped) this.schedule(relay);
         }
+    }
+
+    flushAll() {
+        for (const relay of this.relays.values()) void this.flush(relay);
     }
 
     async handleDiscordMessage(message) {
@@ -300,27 +506,44 @@ class DiscordBridge {
         if (!message?.guild || message.author?.bot) return;
 
         const content = String(message.content || '').trim();
-        if (!content) return;
         if (content.startsWith(String(this.config.commandPrefix || '!'))) return;
 
         const bot = this.channelBots.get(message.channelId);
         if (!bot) return;
 
         const relay = this.relays.get(bot.id);
-        const author = message.member?.displayName || message.author?.username || 'Discord';
-        this.noteEcho(relay, content);
-        this.sendToMinecraft(bot, author, content);
+        const author = displayName(message.member, message.author);
+        const replyTo = await repliedTo(message);
+        const body = describeMessage(message).slice(0, MC_LIMIT);
+
+        if (!body && !replyTo) return;
+
+        const suffix = replyTo ? ` (reply to @${replyTo}): ${body}` : `: ${body}`;
+        this.noteEcho(relay, `[Discord] ${author}${suffix}`);
+
+        this.sendToMinecraft(bot, discordComponent({
+            author,
+            message: body,
+            replyTo,
+            link: this.config.link || '',
+            tag: message.author?.tag || message.author?.username || author,
+            id: message.author?.id || ''
+        }));
     }
 
-    sendToMinecraft(bot, author, text) {
+    sendToMinecraft(bot, component) {
         if (!bot || bot.state !== 'ready') return false;
-        const component = discordComponent({ author, message: text });
-        const payload = tellraw.payload(component, bot.client?.version || null);
-        // A tellraw needs a command block when the bot is not opped in chat; the
-        // plain chat line is the last resort.
-        const sent = bot.chat(`/tellraw @a ${payload}`);
+
+        const command = tellraw.command('@a', component, bot.client?.version || null);
+        // A tellraw needs the core (or op in chat); a plain line is the last
+        // resort so the message is not lost.
+        const sent = bot.chat(command);
         if (sent !== false) return true;
-        return bot.sendChat(`[Discord] ${oneLine(author, 64)}: ${oneLine(text, MC_LIMIT)}`) !== false;
+
+        const text = Array.isArray(component)
+            ? component.map(part => part.text || '').join('')
+            : String(component?.text || '');
+        return bot.sendChat(text.slice(0, 256)) !== false;
     }
 
     async registerCommands() {
@@ -521,12 +744,20 @@ class DiscordBridge {
     }
 
     destroy() {
-        if (this.manager) this.manager.removeListener?.('chat', this.onMinecraftChat);
+        if (this.manager) {
+            this.manager.removeListener?.('chat', this.onMinecraftChat);
+            this.manager.removeListener?.('disconnect', this.onBotDisconnect);
+        }
+
+        this.flushAll();
+
         for (const relay of this.relays.values()) {
+            relay.stopped = true;
             if (relay.timer) clearTimeout(relay.timer);
             relay.timer = null;
             relay.buffer.length = 0;
         }
+
         this.relays.clear();
         this.channelBots.clear();
         try { this.client?.destroy(); } catch { /* already gone */ }
@@ -555,6 +786,8 @@ module.exports = {
     channelFor,
     createDiscordBridge,
     discordComponent,
-    formatMinecraftLine,
+    formatMentions,
+    stripMarkdown,
+    takeBatch,
     toDiscordAnsi
 };

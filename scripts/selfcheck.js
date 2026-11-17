@@ -2045,20 +2045,24 @@ async function main() {
 
     await check('discord bridge formats both directions', () => {
         const {
-            formatMinecraftLine,
             discordComponent,
             channelFor,
-            createDiscordBridge
+            createDiscordBridge,
+            stripMarkdown,
+            takeBatch
         } = require('../src/discord');
 
-        assert.strictEqual(
-            formatMinecraftLine({ server: 'kbpw', username: 'Alex', message: 'hi\nthere' }),
-            '[kbpw] Alex: hi there'
-        );
         assert.strictEqual(
             discordComponent({ author: 'Alex', message: 'hello' }).map(part => part.text).join(''),
             '[Discord] Alex: hello'
         );
+        assert.strictEqual(
+            discordComponent({ author: 'Alex', message: 'hello', replyTo: 'Sam' })
+                .map(part => part.text).join(''),
+            '[Discord] Alex (reply to @Sam): hello'
+        );
+        assert.strictEqual(stripMarkdown('**bold** and `code`'), 'bold and code');
+        assert.deepStrictEqual(takeBatch(['a', 'b', 'c']), { content: 'a\nb\nc', consumed: 3 });
         assert.strictEqual(
             channelFor({ discord: { channels: { kbpw: '123' } } }, { id: 'kbpw' }),
             '123'
@@ -2185,22 +2189,53 @@ async function main() {
         await bridge.flush(bridge.relays.get('kbpw'));
 
         assert.strictEqual(posted.length, 1);
-        assert.strictEqual(
-            posted[0].content,
-            '```ansi\n\x1b[90m[kbpw]\x1b[0m \x1b[96m<Alex>\x1b[0m hi there\n```'
-        );
+        assert.strictEqual(posted[0].content, '```ansi\n\x1b[96m<Alex>\x1b[0m hi there\n```');
         assert.deepStrictEqual(posted[0].allowedMentions, { parse: [] });
 
-        // System output, including every command-block confirmation, stays in
-        // game: only player chat is relayed.
+        // System chat, tellraw and command output are relayed with their colour.
         bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
-            content: { text: 'Command set: whois 9Pon4Inkr7Kn', color: 'gray' }
+            content: { text: 'oDpPuqfKKNGT6g left the game', color: 'yellow' }
         }));
+        bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
+            content: { text: 'There are 3 of a max of 20 players online', color: 'gray' }
+        }));
+        await bridge.flush(bridge.relays.get('kbpw'));
+
+        assert.strictEqual(posted.length, 2, 'system lines do reach the channel');
+        assert.strictEqual(
+            posted[1].content,
+            '```ansi\n\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m\n' +
+            '\x1b[37mThere are 3 of a max of 20 players online\x1b[0m\n```'
+        );
+
+        // The server can repeat a line; the same text is only posted once.
         bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
             content: { text: 'oDpPuqfKKNGT6g left the game', color: 'yellow' }
         }));
         await bridge.flush(bridge.relays.get('kbpw'));
-        assert.strictEqual(posted.length, 1, 'system lines are not relayed');
+        assert.strictEqual(posted.length, 2, 'duplicate lines are dropped');
+
+        // Discord -> Minecraft is a tellraw, and its echo stays out of Discord.
+        const sent = [];
+        bot.chat = text => (sent.push(text), true);
+        await bridge.handleDiscordMessage({
+            guild: {},
+            author: { bot: false, username: 'Alex', id: '1', tag: 'alex' },
+            member: { displayName: 'Alex' },
+            channelId: '111',
+            content: 'yo from **discord**'
+        });
+
+        assert.strictEqual(sent.length, 1);
+        assert.match(sent[0], /^\/tellraw @a /);
+        assert.match(sent[0], /yo from discord/);
+        assert.ok(!sent[0].includes('**'), 'markdown is stripped before it reaches chat');
+
+        bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
+            content: { text: '[Discord] Alex: yo from discord', color: '#55aaff' }
+        }));
+        await bridge.flush(bridge.relays.get('kbpw'));
+        assert.strictEqual(posted.length, 2, 'the relay echo is not posted back');
 
         bridge.destroy();
     });
