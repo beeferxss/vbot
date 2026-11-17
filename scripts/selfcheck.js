@@ -538,8 +538,8 @@ async function main() {
         plainCore.destroy();
     });
 
-    await check('the refill item is a mainhand command block with the fill, placed and broken again', async () => {
-        const { FillItem, commandBlockItem } = require('../src/fillitem');
+    await check('the bot places its own command block and edits that instead of the core', async () => {
+        const { FillItem, commandBlockItem, MOVE_LIMIT } = require('../src/fillitem');
         const command = 'fill 1 2 3 4 5 6 minecraft:command_block replace';
 
         // The command takes the item by name: no item ids, no slot bookkeeping.
@@ -560,29 +560,58 @@ async function main() {
             sendChat: message => (chats.push(message), true),
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
-        const fillItem = new FillItem({ bot: itemBot, logger, config: { breakDelayMs: 40 } });
+        const fillItem = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 } });
 
         assert.strictEqual(fillItem.usable, true);
-        assert.strictEqual(fillItem.run(command), true);
-        assert.strictEqual(fillItem.run('anything'), false, 'one placement at a time');
+        assert.strictEqual(fillItem.standing, false);
 
-        // One chat command puts the item in the mainhand; the placement follows.
+        // First run: one item, one placement - the block already holds the fill.
+        const cell = fillItem.run(command);
+        assert.deepStrictEqual(cell, { x: 10, y: 64, z: -4 });
         assert.deepStrictEqual(chats, [
             `/item replace entity @s weapon.mainhand with ${commandBlockItem(command)}`
         ]);
         assert.deepStrictEqual(writes.map(write => write.name), ['block_place']);
         assert.deepStrictEqual(writes[0].payload.location, { x: 10, y: 63, z: -4 }, 'the block the bot stands on');
         assert.strictEqual(writes[0].payload.direction, 1, 'placed in the air above it, at the bot');
+        assert.strictEqual(fillItem.standing, true);
 
         await new Promise(resolve => setTimeout(resolve, 90));
-
-        assert.ok(!writes.some(write => write.name === 'update_command_block'), 'no command write is sent');
-        const dig = writes.find(write => write.name === 'block_dig');
-        assert.ok(dig, 'the placed block has to be broken again');
-        assert.deepStrictEqual(dig.payload.location, { x: 10, y: 64, z: -4 }, 'only that block');
-        assert.strictEqual(dig.payload.status, 0);
-        // The given item is taken back out of the hand.
+        // The hand is emptied again, and the block stays where it is.
         assert.strictEqual(chats[1], '/item replace entity @s weapon.mainhand with minecraft:air');
+        assert.strictEqual(fillItem.carrier.y, 64);
+        assert.ok(!writes.some(write => write.name === 'block_dig'), 'the block is not broken');
+
+        // Every later change is written into that block, like a core block.
+        assert.deepStrictEqual(fillItem.run('say hi'), cell);
+        assert.deepStrictEqual(writes[1], {
+            name: 'update_command_block',
+            payload: { location: cell, command: 'say hi', mode: 1, flags: 0b101 }
+        });
+        assert.strictEqual(chats.length, 2, 'no second item, no second placement');
+
+        // Standing still keeps editing the same block.
+        fillItem.run(command);
+        assert.strictEqual(writes[2].name, 'update_command_block');
+        assert.deepStrictEqual(writes[2].payload.location, cell);
+
+        // Moving further than five blocks: a new block next to the bot, the old
+        // one removed.
+        itemBot.position = { x: 10.7 + MOVE_LIMIT + 1, y: 64, z: -3.2 };
+        const moved = fillItem.run(command);
+        assert.strictEqual(moved.x, 16);
+        assert.deepStrictEqual(writes.map(write => write.name).slice(-2), ['block_place', 'block_dig']);
+        assert.deepStrictEqual(writes[writes.length - 1].payload.location, cell, 'only the block it left behind');
+        assert.deepStrictEqual(fillItem.carrier, moved);
+
+        // A block update at its cell (mined, or a fill replaced it) means the
+        // next command places a new one; updates elsewhere are not its business.
+        assert.strictEqual(fillItem.noteBlockChange({ location: { x: 0, y: 0, z: 0 } }), false);
+        fillItem.placedAt = 0;
+        assert.strictEqual(fillItem.noteBlockChange({ location: moved }), true);
+        assert.strictEqual(fillItem.standing, false);
+        fillItem.run(command);
+        assert.strictEqual(writes.map(write => write.name).slice(-1)[0], 'block_place');
 
         // The placement packets still encode on every server this supports.
         const mc = require('minecraft-protocol');
@@ -603,9 +632,9 @@ async function main() {
                 }
             }).length > 0, `${version} should encode the placement`);
             assert.ok(serializer.createPacketBuffer({
-                name: 'block_dig',
-                params: { status: 0, location: { x: 1, y: 2, z: 3 }, face: 1, sequence: 2 }
-            }).length > 0, `${version} should encode the break`);
+                name: 'update_command_block',
+                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
+            }).length > 0, `${version} should encode the command edit`);
         }
 
         fillItem.destroy();
@@ -635,7 +664,7 @@ async function main() {
         registryBot.destroy();
     });
 
-    await check('refills place a command block item before anything else', async () => {
+    await check('refills and commands go through the bot\'s own command block first', async () => {
         const used = [];
         const core = new Core({
             bot: { position: { x: 0, y: 70, z: 0 }, chat: () => true, write: () => true, log: logger },
@@ -646,16 +675,27 @@ async function main() {
         // Only a core that has worked before rebuilds through an item: the first
         // build has no fallback if the placement is refused, so it goes as chat.
         core.everReady = true;
-        core.fillItem = { usable: true, run: command => (used.push(command), true), destroy: () => {} };
+        core.fillItem = {
+            usable: true,
+            run: command => (used.push(command), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
 
         assert.strictEqual(core.refill('damaged', { force: true }), true);
         assert.strictEqual(used.length, 1);
         assert.match(used[0], /^fill 0 64 0 8 72 8 /, 'the item carries the fill');
 
-        // No chat fill went out: the item was used instead.
+        // No chat fill went out: the block was used instead.
         core.refill('damaged', { force: true });
         assert.strictEqual(used.length, 2);
         assert.strictEqual(core.itemFills, 2);
+
+        // Commands are edited into that same block, not into core blocks: the
+        // core is only changed by the block running them.
+        const cell = core.run('say hi');
+        assert.deepStrictEqual(cell, { x: 0, y: 63, z: 0 });
+        assert.strictEqual(used[2], 'say hi');
+        assert.strictEqual(core.lastLocation, cell);
         core.destroy();
     });
 

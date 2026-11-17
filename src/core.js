@@ -86,7 +86,8 @@ class Core {
         this.spamTimer = null;
         this.spam = null;
         this.spamMs = positive(this.config.refill?.spamMs, DEFAULT_SPAM_MS);
-        // The fastest refill path: a command block item placed and broken again.
+        // The bot's own command block, a one-block mini core: everything is
+        // edited into it and it runs against the main core.
         this.fillItem = this.config.refill?.item === false
             ? null
             : new FillItem({ bot, logger, config: this.config.refill });
@@ -259,12 +260,23 @@ class Core {
 
         const command = this.fillCommand();
 
-        // Whatever is left of the core refills it: writing the fill into a
-        // surviving block needs no item and no chat. Try all known survivors
-        // before falling back. Explicit refill commands (viaChat) skip this.
+        // The bot's own command block comes first: it is the mini core, so a
+        // refill only replaces the command inside it and the block fills the
+        // main core itself. Its own blocks are never written to directly.
         let viaCore = false;
+        let viaItem = false;
         let usedSurvivor = null;
-        if (!viaChat && !this.refilling && this.everReady && this.origin.x !== null) {
+        // Forced refills are allowed on top of a fill still in flight: the bot's
+        // block only has its command replaced, so nothing is placed twice.
+        if (!viaChat && this.everReady && this.origin.x !== null) {
+            viaItem = Boolean(this.placeFill(command));
+            viaCore = viaItem;
+        }
+
+        // Whatever is left of the main core refills it when there is no block of
+        // the bot's own: writing the fill into a surviving block needs no item
+        // and no chat. Explicit refill commands (viaChat) skip this.
+        if (!viaChat && !viaCore && !this.refilling && this.everReady && this.origin.x !== null) {
             for (const [id, alive] of this.blocks) {
                 if (!alive) continue;
                 const [sx, sy, sz] = id.split(':').map(Number);
@@ -286,13 +298,6 @@ class Core {
             }
         }
 
-        // Next: place a command block item carrying the fill. That only happens
-        // once the core has worked before: the very first fill has nothing to
-        // fall back on, and a packet write cannot confirm that a block was
-        // actually placed, so the first build goes out as chat.
-        const viaItem = !viaChat && !viaCore && this.everReady && this.placeFill(command);
-        if (viaItem) viaCore = true;
-
         // Chat is the last resort, never a second attempt on top of a block: a
         // server that silences command block output would otherwise get every
         // fill twice. Explicit refill commands request chat directly.
@@ -304,7 +309,7 @@ class Core {
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
         let place = 'chat';
-        if (viaItem) place = 'a placed command block';
+        if (viaItem) place = 'its own command block';
         else if (viaCore && usedSurvivor) place = `block ${usedSurvivor.x} ${usedSurvivor.y} ${usedSurvivor.z}`;
         if (reason === 'startup' || reason === 'manual' || reason === 'command') {
             this.log.info(`core refill (${reason}) via ${place}`);
@@ -312,8 +317,8 @@ class Core {
             this.log.debug(`core refill (${reason}) via ${place}`);
         }
 
-        // An item refill is the only path that cannot report failure: every
-        // packet is accepted even when the server refuses the placement. Check
+        // A refill through the bot's own block cannot report failure: `/item`
+        // and the placement are accepted even when the server refuses them. Check
         // for a real block update and send the fill as chat if nothing changed.
         if (viaItem) this.verifyItemFill(command);
 
@@ -346,7 +351,7 @@ class Core {
     verifyItemFill(command) {
         if (this.verifyTimer) clearTimeout(this.verifyTimer);
         const startedAt = Date.now();
-        const wait = Math.max(700, (this.fillItem?.breakDelayMs || 250) + 450);
+        const wait = Math.max(700, (this.fillItem?.holdMs || 250) + 450);
         this.verifyTimer = setTimeout(() => {
             this.verifyTimer = null;
             if (!this.enabled || this.bot.destroyed) return;
@@ -354,19 +359,21 @@ class Core {
             if (this.lastChangeAt >= startedAt) return;
             this.fillFailures += 1;
             this.logEvery('item-fill-unconfirmed', 10000, 'warn',
-                'the refill item did not fill the core (placement refused?); sending the fill as chat');
+                "the bot's command block did not fill the core (placement refused?); sending the fill as chat");
             this.sendFill(command);
         }, wait);
         this.verifyTimer.unref?.();
     }
 
-    // Places the fill as a command block item and breaks only that block. False
-    // when the server or the version will not take the item.
+    // Runs the fill through the bot's own command block, placing it when there is
+    // none. Returns the block that holds the fill, or null when that is not an
+    // option on this server.
     placeFill(command) {
-        if (!this.fillItem?.usable) return false;
-        if (!this.fillItem.run(command)) return false;
+        if (!this.fillItem?.usable) return null;
+        const cell = this.fillItem.run(command);
+        if (!cell) return null;
         this.itemFills += 1;
-        return true;
+        return cell;
     }
 
     // The fill that rebuilds the whole area, as a bare command.
@@ -444,6 +451,15 @@ class Core {
         if (!this.enabled) return null;
         const text = String(command || '').trim().replace(/^\//, '');
         if (!text) return null;
+
+        // The bot's own block is the mini core: the command is edited into it and
+        // it runs against the main core, so no core block is written directly.
+        const own = this.fillItem?.run(text.slice(0, 32000));
+        if (own) {
+            this.lastLocation = own;
+            return own;
+        }
+
         if (this.origin.x === null && !this.reset()) return null;
 
         if (!this.areaLoaded()) {
@@ -824,6 +840,9 @@ class Core {
     // altered; treat as damage but coalesce repairs so heavy command traffic
     // (covered by own-change tracking) does not thrash refills.
     onBlockChange(packet) {
+        // The bot's own block lives outside the area; if something changes it, the
+        // next command places a new one.
+        this.fillItem?.noteBlockChange(packet);
         if (!this.enabled || !this.refillEnabled) return false;
         const location = packet?.location;
         if (!location || this.origin.x === null) return false;
