@@ -2400,6 +2400,15 @@ async function main() {
             '[Discord] Alex: look at https://example.com/a now [attachment]');
     });
 
+    await check('rtp teleports to a random spot through the core', async () => {
+        const output = await run('<Unranked> v:rtp');
+        assert.strictEqual(typeof output, 'string');
+
+        assert.match(output, /^Teleporting Unranked to \d+ 100 \d+$/);
+        assert.strictEqual(sent.length, 2, 'the reply comes before the teleport');
+        assert.match(sent[1], /^\/?tp Unranked \d+ 100 \d+$/);
+    });
+
     store.close();
 
     console.log(results.join('\n'));
