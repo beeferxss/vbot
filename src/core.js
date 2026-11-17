@@ -92,16 +92,16 @@ class Core {
         this.spamTimer = null;
         this.spam = null;
         this.spamMs = positive(this.config.refill?.spamMs, DEFAULT_SPAM_MS);
-        // The bot's own command block, a one-block mini core: everything is
-        // edited into it and it runs against the main core.
+        // The bot's own command blocks, a small cube beside it: everything is
+        // written into them and they run against the main core.
         this.fillItem = this.config.refill?.item === false
             ? null
             : new FillItem({
                 bot,
                 logger,
                 config: this.config.refill,
-                // Its own fill would replace the bot's block, so keep it out of
-                // the area whenever a side of the bot is free.
+                // Its own fill would replace the cube, so keep it out of the area
+                // whenever a side of the bot allows it.
                 avoid: (cell) => Boolean(this.origin) && this.origin.x !== null && this.inside(cell.x, cell.y, cell.z)
             });
         this.itemFills = 0;
@@ -277,9 +277,10 @@ class Core {
 
         const command = this.fillCommand();
 
-        // The bot's own command block comes first: it is the mini core, so a
-        // refill only replaces the command inside it and the block fills the
-        // main core itself. Its own blocks are never written to directly.
+        // The bot's own command blocks come first: they are the mini core, so a
+        // refill only replaces the command inside one of them and that block
+        // fills the main core itself. Its own blocks are never written to
+        // directly.
         let viaCore = false;
         let viaItem = false;
         let usedSurvivor = null;

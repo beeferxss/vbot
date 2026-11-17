@@ -13,9 +13,13 @@
 // Command:...,auto:1b}` - so the command ends up in a real core block, with
 // `auto` set, and that block is the one that runs it.
 //
-// Four blocks are placed, one on each side of the bot, and commands are spread
-// over them in turn: a command that is still being worked on in one block is not
-// overwritten by the next one, which is what makes back-to-back commands safe.
+// The mini core is a cube `itemSize` blocks on a side (3 by default, so 27
+// blocks), standing on the ground beside the bot and centred on it along z: no
+// cell of it is ever inside the player, where a block cannot be placed. The
+// bottom layer goes in first, so every layer above has the one under it to be
+// placed against. Commands are spread over the cube in turn: a block that is
+// still running the command before is not overwritten by the next one, which is
+// what makes back-to-back commands safe.
 //
 // Nothing but the item id goes into the slot packet. A `block_entity_data`
 // component on it is not portable: Paper 26.1.2 fails to decode
@@ -24,14 +28,11 @@
 // servers. The command and "always active" are set afterwards over the command
 // block packet instead, which every version and every server understands.
 //
-// The blocks are placed on the ground next to the bot, never at its feet: a solid
-// block cannot be placed inside the player, and the server silently ignores the
-// attempt. Which side accepted a block is learned from the server's own block
-// update; a side that answered with air is not tried again.
-//
-// The blocks are placed again when the bot has moved more than five blocks away
-// from them, and a block update at one of their cells (mined, or replaced by a
-// fill) means the next command places a fresh one.
+// Which cell accepted a block is learned from the server's own block update; a
+// cell that answered with air is not tried again. The cube is placed again when
+// the bot has moved more than five blocks away from it, and a block update at one
+// of its cells (mined, or replaced by a fill) means the next command places a
+// fresh one.
 //
 // Everything goes through packets: no chat, no /give, no /item.
 
@@ -39,13 +40,14 @@ const HOTBAR_SLOT = 36;          // first hotbar slot, window slot numbering
 const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
 const BLOCK = 'repeating_command_block';
-const MOVE_LIMIT = 5;            // place new blocks once the bot has moved this far
+const SIZE = 3;                  // the mini core is SIZE by SIZE by SIZE blocks
+const MAX_SIZE = 8;
+const MOVE_LIMIT = 5;            // place a new cube once the bot has moved this far
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
 const SETTLE_MS = 800;           // how long a placement has to be answered
 const STEP_MS = 120;             // gap between the commands of one command
 const PENDING_MS = 2000;         // a placement echo older than this is not ours
 const AIR = 0;                   // air's block state number in every version
-const SIDES = 4;
 
 // 1.20.5 is where an item in the slot packet gained the added/removed component
 // counts; before that the packet carries a plain item tag instead.
@@ -104,8 +106,8 @@ class FillItem {
         this.bot = bot;
         this.log = logger;
         this.data = data;
-        // Cells these blocks should stay out of when another side will do: the
-        // core's own area, whose fill would replace them on every refill.
+        // Cells the cube should stay out of when a side of the bot allows it: the
+        // core's own area, whose fill would replace it on every refill.
         this.avoid = typeof avoid === 'function' ? avoid : null;
         this.block = String(config.itemBlock || BLOCK);
         this.mode = blockMode(this.block);
@@ -116,29 +118,30 @@ class FillItem {
         // are written a tick apart, so the second one always sees the first one's
         // result instead of landing in the same moment.
         this.stepMs = Number(config.stepMs) > 0 ? Number(config.stepMs) : STEP_MS;
-        // One block per side, so consecutive commands do not overwrite a block
-        // that is still running the command before.
-        this.slots = new Array(SIDES).fill(null);
-        this.turn = 0;            // which side the next command goes to
-        this.origin = null;       // where the bot stood when the set was placed
+        // The cube's edge in blocks: 3 means 3x3x3, 27 blocks of its own.
+        const size = Math.floor(Number(config.itemSize));
+        this.size = Number.isFinite(size) ? Math.min(Math.max(size, 1), MAX_SIZE) : SIZE;
+        // The blocks that are standing, by the cube cell they were placed for.
+        this.slots = new Map();
+        this.turn = 0;            // which cell of the cube the next command goes to
+        this.origin = null;       // where the bot stood when the cube was placed
         this.placedAt = 0;
         this.pending = null;      // a placement waiting for the server's answer
         this.blocked = new Set(); // cells that refused a block
-        this.side = 0;
         this.sequence = 0;
         this.clearTimer = null;
         this.broken = false;
         this.lastSendAt = 0;
     }
 
-    // Any block of the set is enough: the mini core is up.
+    // Any block of the cube is enough: the mini core is up.
     get standing() {
-        return this.slots.some(slot => Boolean(slot));
+        return this.slots.size > 0;
     }
 
     // Cells the mini core currently stands on; the core keeps them out of refills.
     cells() {
-        return this.slots.filter(Boolean).map(slot => ({ ...slot.cell }));
+        return [...this.slots.values()].map(slot => ({ ...slot.cell }));
     }
 
     // A kick right after the slot packet is that packet's fault. One is enough:
@@ -215,7 +218,7 @@ class FillItem {
         };
     }
 
-    // The blocks only have to be re-placed when the bot has actually left them.
+    // The cube only has to be re-placed when the bot has actually left it.
     moved(at) {
         if (!this.origin) return true;
         return Math.hypot(
@@ -230,10 +233,40 @@ class FillItem {
         return this.sequence;
     }
 
-    // Writes commands into the mini core, one block at a time, taken in turn.
-    // A block that is not standing yet is placed, and the commands follow it as
-    // soon as the server says where it landed. Returns the cell the commands were
-    // written to (the placement's guessed cell until it settles).
+    // The cells of the cube, bottom layer first so every layer has the one under
+    // it to be placed against.
+    cube(start) {
+        const cells = [];
+        for (let y = 0; y < this.size; y++) {
+            for (let x = 0; x < this.size; x++) {
+                for (let z = 0; z < this.size; z++) {
+                    cells.push({ x: start.x + x, y: start.y + y, z: start.z + z });
+                }
+            }
+        }
+        return cells;
+    }
+
+    // Where the cube starts: beside the bot, never on top of it, centred on it
+    // along z. A side that keeps the whole cube out of the core's area is
+    // preferred when there is one.
+    anchor(at = this.feet()) {
+        if (!at) return null;
+        const mid = Math.floor((this.size - 1) / 2);
+        const starts = [
+            { x: at.x + 1, y: at.y, z: at.z - mid },
+            { x: at.x - this.size, y: at.y, z: at.z - mid },
+            { x: at.x - mid, y: at.y, z: at.z + 1 },
+            { x: at.x - mid, y: at.y, z: at.z - this.size }
+        ];
+        if (!this.avoid) return starts[0];
+        return starts.find(start => this.cube(start).every(cell => !this.avoid(cell))) || starts[0];
+    }
+
+    // Writes commands into the mini core, one block of the cube at a time, taken
+    // in turn. A cell that is not standing yet is placed, and the commands follow
+    // it as soon as the server says where it landed. Returns the cell the commands
+    // were written to (the placement's guessed cell until it settles).
     run(...commands) {
         const list = commands
             .flat()
@@ -255,15 +288,30 @@ class FillItem {
             return this.pending.cell;
         }
 
-        const index = this.turn % SIDES;
-        this.turn = (this.turn + 1) % SIDES;
+        const start = this.anchor(at);
+        if (!start) return null;
+        const cells = this.cube(start);
 
-        const slot = this.slots[index];
-        if (slot) {
-            if (!this.writeAll(slot.cell, list)) return null;
-            return slot.cell;
+        for (let step = 0; step < cells.length; step++) {
+            const index = (this.turn + step) % cells.length;
+            const cell = cells[index];
+            const key = cellKey(cell);
+            if (this.blocked.has(key)) continue;
+
+            this.turn = (index + 1) % cells.length;
+            const slot = this.slots.get(key);
+            if (slot) {
+                if (!this.writeAll(slot.cell, list)) return null;
+                return slot.cell;
+            }
+            return this.placeSlot(key, cell, list);
         }
-        return this.placeSlot(index, list);
+
+        // Every cell of the cube refused a block: forget that and try again from
+        // where the turn stands.
+        this.blocked.clear();
+        const cell = cells[this.turn];
+        return this.placeSlot(cellKey(cell), cell, list);
     }
 
     // Writes the commands of one operation into the block, one step at a time.
@@ -290,19 +338,18 @@ class FillItem {
         return sent !== false;
     }
 
-    // The bot moved away: the blocks are too far to be worth keeping, so they are
-    // removed and a new set is placed where it stands now.
+    // The bot moved away: the cube is too far to be worth keeping, so it is dug up
+    // and placed again where the bot stands now.
     reposition() {
-        for (const slot of this.slots) {
-            if (slot) this.breakAt(slot.cell);
-        }
-        this.slots = new Array(SIDES).fill(null);
+        for (const slot of this.slots.values()) this.breakAt(slot.cell);
+        this.slots.clear();
         this.blocked.clear();
         this.pending = null;
+        this.turn = 0;
         this.origin = this.feet();
     }
 
-    placeSlot(index, commands) {
+    placeSlot(key, cell, commands) {
         if (!this.creative) {
             this.log.warn(
                 `refill items need creative mode (the bot is in gamemode ${this.bot?.selfCare?.gamemode}); ` +
@@ -315,8 +362,7 @@ class FillItem {
         this.lastSendAt = Date.now();
         if (!this.give()) return null;
 
-        const cell = this.spot(index);
-        if (!cell || !this.place(cell)) {
+        if (!this.place(cell)) {
             this.clear();
             return null;
         }
@@ -331,7 +377,7 @@ class FillItem {
         // to the guessed cell lands in air and is lost. The update that arrives
         // next says which cell it is; the commands follow there.
         this.pending = {
-            index,
+            key,
             cell: { ...cell },
             support: { x: cell.x, y: cell.y - 1, z: cell.z },
             at: Date.now(),
@@ -348,7 +394,7 @@ class FillItem {
     }
 
     // The placement is over: write the queued commands into the block that is
-    // really there, or give up on this side when nothing was placed.
+    // really there, or give up on this cell when nothing was placed.
     settle(placement) {
         if (this.pending !== placement) return;
         this.pending = null;
@@ -358,19 +404,18 @@ class FillItem {
         if (!placement.landed) {
             // Nothing was placed, or the server never said where it went: the
             // commands are lost either way, so the cell is not used again and the
-            // next one tries another side.
-            this.blocked.add(cellKey(placement.cell));
-            this.side = (placement.index + 1) % SIDES;
-            this.log.debug(`nothing could be placed at ${placement.cell.x} ${placement.cell.y} ${placement.cell.z}; trying another side`);
+            // next one of the cube is tried.
+            this.blocked.add(placement.key);
+            this.log.debug(`nothing could be placed at ${placement.cell.x} ${placement.cell.y} ${placement.cell.z}; trying another cell`);
             return;
         }
 
         const at = { ...placement.landed };
-        this.slots[placement.index] = {
+        this.slots.set(placement.key, {
             cell: at,
             state: placement.state,
             placedAt: Date.now()
-        };
+        });
         this.writeAll(at, placement.queue);
     }
 
@@ -384,38 +429,8 @@ class FillItem {
         return this.bot.write('held_item_slot', { slotId: 0 }) !== false;
     }
 
-    // The cell for one block of the set: the ground beside the bot, never the
-    // block it is standing in. Sides that answered with air are skipped, and a
-    // side outside the core's area is preferred so a refill does not replace it.
-    spot(index) {
-        const at = this.feet();
-        if (!at) return null;
-
-        const spots = [
-            { x: at.x + 1, y: at.y, z: at.z },
-            { x: at.x, y: at.y, z: at.z + 1 },
-            { x: at.x - 1, y: at.y, z: at.z },
-            { x: at.x, y: at.y, z: at.z - 1 }
-        ];
-        const taken = new Set(this.cells().map(cellKey));
-        const open = [];
-        for (let step = 0; step < SIDES; step++) {
-            const side = (index + step) % SIDES;
-            const cell = spots[side];
-            if (taken.has(cellKey(cell)) || this.blocked.has(cellKey(cell))) continue;
-            open.push(cell);
-        }
-        if (!open.length) {
-            this.blocked.clear();
-            return spots[index % SIDES];
-        }
-
-        const outside = open.find(cell => !this.avoid || !this.avoid(cell));
-        return outside || open[0];
-    }
-
-    // Places the item against the top of the block under that cell, so the block
-    // lands in the air beside the bot.
+    // Places the item against the top of the block under that cell: the ground,
+    // or the block of the layer below, so the cube grows upwards.
     place(target) {
         const sent = this.bot.write('block_place', {
             hand: 0,
@@ -431,7 +446,7 @@ class FillItem {
         return sent !== false;
     }
 
-    // Only ever the bot's own blocks: the core is not touched.
+    // Only ever the cube's own blocks: the core is not touched.
     breakAt(location) {
         this.bot.write('block_dig', {
             status: 0,
@@ -460,12 +475,12 @@ class FillItem {
         this.clearTimer.unref?.();
     }
 
-    // A block update at one of the set's own cells is the server's answer about
+    // A block update at one of the cube's own cells is the server's answer about
     // it.
     //
     // While a placement is waiting, a non-air update at the cell that was clicked
     // or at the cell above it says where the block really is, and the commands are
-    // written there. Air at the target alone means the side refused, and another
+    // written there. Air at the target alone means the cell refused, and another
     // one is tried next time.
     //
     // Later, a block that turns to air - mined, or replaced by a fill - is gone,
@@ -487,9 +502,8 @@ class FillItem {
             if (state === AIR && sameCell(location, placement.cell)) placement.refused = true;
         }
 
-        for (let index = 0; index < SIDES; index++) {
-            const slot = this.slots[index];
-            if (!slot || !sameCell(location, slot.cell)) continue;
+        for (const [key, slot] of this.slots) {
+            if (!sameCell(location, slot.cell)) continue;
 
             // The command edit changes the block's state too, and it can arrive a
             // little after the placement.
@@ -503,7 +517,7 @@ class FillItem {
                 return false;
             }
 
-            this.slots[index] = null;
+            this.slots.delete(key);
             return true;
         }
 
@@ -513,10 +527,10 @@ class FillItem {
     destroy() {
         if (this.clearTimer) clearTimeout(this.clearTimer);
         this.clearTimer = null;
-        this.slots = new Array(SIDES).fill(null);
+        this.slots.clear();
         this.origin = null;
         this.pending = null;
     }
 }
 
-module.exports = { FillItem, commandBlockItem, blockMode, HOTBAR_SLOT, BLOCK, MOVE_LIMIT };
+module.exports = { FillItem, commandBlockItem, blockMode, HOTBAR_SLOT, BLOCK, SIZE, MOVE_LIMIT };

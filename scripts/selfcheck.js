@@ -595,14 +595,16 @@ async function main() {
         // First command: the item, then a block on the ground beside the bot. The
         // command waits: where the block lands is the server's answer.
         const cell = fillItem.run(command);
-        assert.deepStrictEqual(cell, { x: 11, y: 64, z: -4 });
+        // The cube stands beside the bot, centred on it along z, so its first
+        // cell is one block along x from the feet (10, 64, -4) and one back.
+        assert.deepStrictEqual(cell, { x: 11, y: 64, z: -5 });
         assert.deepStrictEqual(writes.slice(0, 3).map(write => write.name), [
             'set_creative_slot', 'held_item_slot', 'block_place'
         ]);
         assert.strictEqual(writes[0].payload.slot, HOTBAR_SLOT);
         assert.deepStrictEqual(writes[0].payload.item, item, 'the plain repeating command block item');
         assert.deepStrictEqual(writes[1].payload, { slotId: 0 }, 'the slot is held');
-        assert.deepStrictEqual(writes[2].payload.location, { x: 11, y: 63, z: -4 }, 'the ground beside the bot');
+        assert.deepStrictEqual(writes[2].payload.location, { x: 11, y: 63, z: -5 }, 'the ground beside the bot');
         assert.strictEqual(writes[2].payload.direction, 1, 'placed on top of it, beside the bot');
         assert.strictEqual(writes[2].payload.cursorY, 0.5);
 
@@ -635,27 +637,29 @@ async function main() {
         // once instead of overwriting each other.
         const placed = placements().length;
         const second = fillItem.run('say two');
-        assert.deepStrictEqual(second, { x: 10, y: 64, z: -3 }, 'the next side');
+        assert.deepStrictEqual(second, { x: 11, y: 64, z: -4 }, 'the next cell of the cube');
         assert.strictEqual(placements().length, placed + 1, 'a second block of its own');
         fillItem.noteBlockChange({ location: second, type: CMD_STATE });
         assert.strictEqual(fillItem.cells().length, 2);
 
         const third = fillItem.run('say three');
-        assert.deepStrictEqual(third, { x: 9, y: 64, z: -4 });
+        assert.deepStrictEqual(third, { x: 11, y: 64, z: -3 });
         fillItem.noteBlockChange({ location: third, type: CMD_STATE });
         const fourth = fillItem.run('say four');
-        assert.deepStrictEqual(fourth, { x: 10, y: 64, z: -5 });
+        assert.deepStrictEqual(fourth, { x: 12, y: 64, z: -5 }, 'the next row of the cube');
         fillItem.noteBlockChange({ location: fourth, type: CMD_STATE });
-        assert.strictEqual(fillItem.cells().length, 4, 'one block on each side');
+        assert.strictEqual(fillItem.cells().length, 4);
 
-        // With all four standing the set is used in turn, not placed again.
-        const before = writes.length;
-        const placedBefore = placements().length;
-        assert.deepStrictEqual(fillItem.run('say five'), cell, 'back to the first block');
-        assert.strictEqual(placements().length, placedBefore, 'no item, no placement');
-        const five = writes.slice(before).filter(write => write.name === 'update_command_block');
-        assert.deepStrictEqual(five.map(write => write.payload.location), [cell]);
-        assert.deepStrictEqual(five[0].payload, { location: cell, command: 'say five', mode: 1, flags: 0b101 });
+        // The mini core is a cube three blocks on a side: 27 cells standing on the
+        // ground beside the bot, never inside it, bottom layer first.
+        assert.strictEqual(fillItem.size, 3, '3 by default');
+        const cube = fillItem.cube(fillItem.anchor({ x: 10, y: 64, z: -4 }));
+        assert.strictEqual(cube.length, 27, '3x3x3');
+        assert.deepStrictEqual(cube[0], { x: 11, y: 64, z: -5 });
+        assert.deepStrictEqual(cube[cube.length - 1], { x: 13, y: 66, z: -3 });
+        assert.ok(!cube.some(where => where.x === 10 && where.y === 64 && where.z === -4),
+            'never the cell the bot stands in');
+        assert.strictEqual(fillItem.anchor({ x: 10, y: 64, z: -4 }).y, 64, 'it stands on the ground');
 
         // Moving further than five blocks: the set it leaves behind is dug up and
         // a new one is placed next to the bot.
@@ -695,15 +699,15 @@ async function main() {
         assert.notDeepStrictEqual(retried, refused, 'the next side');
 
         // A side the core's fill would overwrite is skipped when another is free.
-        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 }, avoid: cellAt => cellAt.x === 40 });
-        assert.deepStrictEqual(avoiding.run(command), { x: 41, y: 64, z: -4 }, 'outside the core area');
+        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 }, avoid: cellAt => cellAt.x >= 40 });
+        assert.deepStrictEqual(avoiding.run(command), { x: 37, y: 64, z: -5 }, 'outside the core area');
 
         // A block update at one of its cells (mined, or a fill replaced it) means
         // the next command places a new one; updates elsewhere are not its
         // business.
         fillItem.noteBlockChange({ location: { ...retried }, type: CMD_STATE });
         assert.strictEqual(fillItem.noteBlockChange({ location: { x: 0, y: 0, z: 0 } }), false);
-        fillItem.slots = fillItem.slots.map(slot => (slot ? { ...slot, placedAt: 0 } : slot));
+        fillItem.slots.forEach(slot => { slot.placedAt = 0; });
         assert.strictEqual(fillItem.noteBlockChange({ location: retried, type: 0 }), true);
         assert.strictEqual(fillItem.standing, false);
         const digsBefore = writes.filter(write => write.name === 'block_dig').length;
@@ -753,6 +757,44 @@ async function main() {
         }
 
         fillItem.destroy();
+    });
+
+    await check('the mini core cube is sized from config', async () => {
+        const { FillItem } = require('../src/fillitem');
+        const writes = [];
+        const cubeBot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            selfCare: { gamemode: 1 },
+            registries: { item: new Map([['repeating_command_block', 1234]]) },
+            write: (name, payload) => (writes.push({ name, payload }), true)
+        };
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+
+        // Three by default, and a cube in every direction.
+        const cube = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40 } });
+        assert.strictEqual(cube.size, 3, '3x3x3 by default');
+        assert.strictEqual(cube.cube(cube.anchor({ x: 0, y: 64, z: 0 })).length, 27);
+
+        // Any size from the config, capped so a typo cannot fill the world.
+        const four = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemSize: 4 } });
+        assert.strictEqual(four.cube(four.anchor({ x: 0, y: 64, z: 0 })).length, 64, '4x4x4');
+        const capped = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemSize: 99 } });
+        assert.strictEqual(capped.size, 8, 'a silly size is capped');
+
+        // One block is still a cube, and it is reused instead of placed again.
+        const single = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemSize: 1 } });
+        assert.strictEqual(single.size, 1);
+        const cell = single.run('say one');
+        single.noteBlockChange({ location: cell, type: CMD_STATE });
+        assert.deepStrictEqual(single.run('say two'), cell, 'the same block again');
+        assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 1,
+            'no second block for a one-block core');
+
+        single.destroy();
+        cube.destroy();
+        four.destroy();
+        capped.destroy();
     });
 
     await check('item numbers come from the server registries', async () => {

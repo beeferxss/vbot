@@ -139,6 +139,9 @@ function defaults() {
                 // The blocks the bot places for itself: repeating blocks, so the
                 // wrapper they hold keeps running without redstone.
                 itemBlock: 'minecraft:repeating_command_block',
+                // The mini core is a cube this many blocks on a side, so 3 is
+                // 3x3x3 = 27 blocks of its own beside the bot.
+                itemSize: 3,
                 // How long the given item stays in the hotbar before it is cleared.
                 breakDelayMs: 250
             }
