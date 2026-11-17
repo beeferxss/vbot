@@ -20,7 +20,7 @@
 
 const tellraw = require('./minecraft/tellraw');
 const { LEVEL, levelName, parseLevel } = require('./permissions');
-const { nearestAnsi } = require('./minecraft/text');
+
 
 const RELAY = Object.freeze({
     interval: 900,
@@ -195,13 +195,10 @@ function dedupeKey(text) {
     return key.replace(/\s+/g, ' ').trim();
 }
 
-// Discord's ansi code block only renders the sixteen terminal colours, so any
-// truecolor the chat renderer produced is reduced to the nearest one.
+// The ansi block renders 24-bit colour as-is, so the component's own colours
+// and styles are passed through; only what Discord cannot show is removed.
 function toDiscordAnsi(text) {
     return String(text ?? '')
-        .replace(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g, (_, red, green, blue) =>
-            `\x1b[${nearestAnsi(Number(red), Number(green), Number(blue))}m`)
-        .replace(/\x1b\[48;2;[0-9;]+m/g, '')
         .replace(/\u00a7./g, '')
         .replace(/\ufffd/g, '');
 }

@@ -2132,7 +2132,8 @@ async function main() {
         const { chatEventFromPacket } = require('../src/minecraft/chat');
 
         assert.strictEqual(ansiBlock('a\nb'), '```ansi\na\nb\n```');
-        assert.strictEqual(toDiscordAnsi('\x1b[38;2;255;255;85mx'), '\x1b[93mx');
+        // 24-bit colour goes to Discord untouched, not reduced to sixteen.
+        assert.strictEqual(toDiscordAnsi('\x1b[38;2;255;255;85mx'), '\x1b[38;2;255;255;85mx');
 
         const event = chatEventFromPacket('player_chat', {
             senderName: { text: 'Alex' },
@@ -2188,8 +2189,8 @@ async function main() {
         assert.strictEqual(posted.length, 2, 'system lines do reach the channel');
         assert.strictEqual(
             posted[1].content,
-            '```ansi\n\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m\n' +
-            '\x1b[37mThere are 3 of a max of 20 players online\x1b[0m\n```'
+            '```ansi\n\x1b[38;2;255;255;85moDpPuqfKKNGT6g left the game\x1b[0m\n' +
+            '\x1b[38;2;170;170;170mThere are 3 of a max of 20 players online\x1b[0m\n```'
         );
 
         // The server can repeat a line; the same text is only posted once.
@@ -2263,6 +2264,12 @@ async function main() {
         assert.strictEqual(
             toAnsi({ text: '\u00a76Gold \u00a7rwhite' }),
             '\x1b[38;2;255;170;0mGold \x1b[0mwhite\x1b[0m'
+        );
+
+        // Styles reach the line too, inherited by the parts that do not set them.
+        assert.strictEqual(
+            toAnsi({ text: 'rank', bold: true, color: 'red', extra: [{ text: ' name', underlined: true }] }),
+            '\x1b[38;2;255;85;85m\x1b[1mrank\x1b[38;2;255;85;85m\x1b[1m\x1b[4m name\x1b[0m'
         );
 
         // Some servers send the format itself as the translate key.

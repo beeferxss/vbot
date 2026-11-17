@@ -102,18 +102,6 @@ function stripColors(text) {
     return String(text ?? '').replace(/\u00a7./g, '').replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-// The chat feed is relayed to Discord as an ANSI code block, which only knows
-// the sixteen terminal colours, so every component colour is reduced to the
-// closest one of those.
-// The same sixteen colours the reference bot uses, so a colour reduced for
-// Discord lands on the same code here as it does there.
-const ANSI_COLORS = [
-    [0x00, 0x00, 0x00, 30], [0xaa, 0x00, 0x00, 31], [0x00, 0xaa, 0x00, 32], [0xaa, 0xaa, 0x00, 33],
-    [0x00, 0x00, 0xaa, 34], [0xaa, 0x00, 0xaa, 35], [0x00, 0xaa, 0xaa, 36], [0xaa, 0xaa, 0xaa, 37],
-    [0x55, 0x55, 0x55, 90], [0xff, 0x55, 0x55, 91], [0x55, 0xff, 0x55, 92], [0xff, 0xff, 0x55, 93],
-    [0x55, 0x55, 0xff, 94], [0xff, 0x55, 0xff, 95], [0x55, 0xff, 0xff, 96], [0xff, 0xff, 0xff, 97]
-];
-
 const NAMED_COLORS = {
     black: '#000000',
     dark_blue: '#0000aa',
@@ -132,21 +120,6 @@ const NAMED_COLORS = {
     yellow: '#ffff55',
     white: '#ffffff'
 };
-
-function nearestAnsi(red, green, blue) {
-    let best = 37;
-    let bestDistance = Infinity;
-
-    for (const [r, g, b, code] of ANSI_COLORS) {
-        const distance = (red - r) ** 2 + (green - g) ** 2 + (blue - b) ** 2;
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            best = code;
-        }
-    }
-
-    return best;
-}
 
 // Colours are rendered as truecolor ANSI, the way a client does, and only
 // reduced to the sixteen terminal colours on the way into Discord.
@@ -175,19 +148,70 @@ const LEGACY_COLORS = {
     c: '#ff5555', d: '#ff55ff', e: '#ffff55', f: '#ffffff'
 };
 
+// Bold, italic, underline, blink (how a terminal can fake obfuscated) and
+// strikethrough, plus the reset.
+const LEGACY_STYLES = { k: 5, l: 1, m: 9, n: 4, o: 3, r: 0 };
+
 function legacyAnsi(text) {
     return String(text ?? '').replace(/\u00a7([0-9a-fk-or])/gi, (_, code) => {
         const key = code.toLowerCase();
-        if (key === 'r') return '\x1b[0m';
+        if (key in LEGACY_STYLES) return `\x1b[${LEGACY_STYLES[key]}m`;
         const rgb = ansiRgb(LEGACY_COLORS[key]);
         return rgb ? ansiTruecolor(rgb) : '';
     });
 }
 
-function pushAnsi(text, code, out) {
+const PLAIN_STYLE = {
+    color: null,
+    bold: false,
+    italic: false,
+    underlined: false,
+    strikethrough: false,
+    obfuscated: false
+};
+
+// A component only overrides what it sets; everything else comes from its
+// parent, which is how the client draws a line.
+function styleOf(component, inherited) {
+    const style = { ...inherited };
+    const color = component.color;
+
+    if (typeof color === 'string') {
+        if (color.toLowerCase() === 'reset') {
+            Object.assign(style, PLAIN_STYLE);
+        } else {
+            const rgb = ansiRgb(color);
+            if (rgb) style.color = rgb;
+        }
+    }
+
+    for (const flag of ['bold', 'italic', 'underlined', 'strikethrough', 'obfuscated']) {
+        if (typeof component[flag] === 'boolean') style[flag] = component[flag];
+    }
+
+    return style;
+}
+
+function styleAnsi(style) {
+    const flags = [];
+    if (style.bold) flags.push(1);
+    if (style.italic) flags.push(3);
+    if (style.underlined) flags.push(4);
+    if (style.obfuscated) flags.push(5);
+    if (style.strikethrough) flags.push(9);
+
+    if (!style.color && !flags.length) return '';
+
+    // Styling without a colour has to clear whatever colour came before it.
+    let out = style.color ? ansiTruecolor(style.color) : '\x1b[39m';
+    for (const flag of flags) out += `\x1b[${flag}m`;
+    return out;
+}
+
+function pushAnsi(text, prefix, out) {
     const value = legacyAnsi(text).replace(/\u00a7./g, '');
     if (!value) return;
-    out.push([value, code]);
+    out.push([value, prefix]);
 }
 
 function collectAnsi(component, inherited, out, lang = null) {
@@ -200,34 +224,32 @@ function collectAnsi(component, inherited, out, lang = null) {
     }
 
     if (typeof component !== 'object') {
-        pushAnsi(flatten(component, lang), inherited, out);
+        pushAnsi(flatten(component, lang), styleAnsi(inherited), out);
         return;
     }
 
-    const own = ansiRgb(component.color) ?? inherited;
+    const style = styleOf(component, inherited);
 
     if (Array.isArray(component.extra) && component.extra.length) {
         const base = { ...component };
         delete base.extra;
-        pushAnsi(flatten(base, lang), own, out);
-        for (const child of component.extra) collectAnsi(child, own, out, lang);
+        pushAnsi(flatten(base, lang), styleAnsi(style), out);
+        for (const child of component.extra) collectAnsi(child, style, out, lang);
         return;
     }
 
-    pushAnsi(flatten(component, lang), own, out);
+    pushAnsi(flatten(component, lang), styleAnsi(style), out);
 }
 
-// Renders a chat component as a single ANSI-styled line.
+// Renders a chat component as a single ANSI-styled line: the colours and styles
+// the server sent, as 24-bit escapes, which both terminals and Discord read.
 function toAnsi(component, lang = null) {
     const parts = [];
-    collectAnsi(component, null, parts, lang);
+    collectAnsi(component, PLAIN_STYLE, parts, lang);
     if (!parts.length) return '';
 
-    // A reset is needed when any part carries a colour, either from the
-    // component or from §-codes already turned into ANSI.
-    const styled = parts.some(([text, rgb]) => rgb || text.includes('\x1b['));
-    return parts.map(([text, rgb]) => (rgb ? `${ansiTruecolor(rgb)}${text}` : text)).join('') +
-        (styled ? '\x1b[0m' : '');
+    const styled = parts.some(([text, prefix]) => prefix || text.includes('\x1b['));
+    return parts.map(([text, prefix]) => `${prefix}${text}`).join('') + (styled ? '\x1b[0m' : '');
 }
 
-module.exports = { flatten, nearestAnsi, stripColors, toAnsi, unwrapNbt };
+module.exports = { flatten, stripColors, toAnsi, unwrapNbt };

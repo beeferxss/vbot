@@ -238,8 +238,9 @@ class Bot extends EventEmitter {
             this.store.linkPlayer(chat.username, chat.uuid);
         }
 
+        // The console shows the line the way the server drew it.
         if (this.config.logging?.chat) {
-            this.log.info(`${chat.verified ? '' : '(system) '}${chat.line}`);
+            this.log.info(`${chat.verified ? '' : '(system) '}${chat.ansi || chat.line}`);
         }
 
         // A button was clicked: the matching /random line names the clicker and
