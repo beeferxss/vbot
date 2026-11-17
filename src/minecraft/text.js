@@ -105,8 +105,10 @@ function stripColors(text) {
 // The chat feed is relayed to Discord as an ANSI code block, which only knows
 // the sixteen terminal colours, so every component colour is reduced to the
 // closest one of those.
+// The same sixteen colours the reference bot uses, so a colour reduced for
+// Discord lands on the same code here as it does there.
 const ANSI_COLORS = [
-    [0x00, 0x00, 0x00, 30], [0xaa, 0x00, 0x00, 31], [0x00, 0xaa, 0x00, 32], [0xaa, 0x55, 0x00, 33],
+    [0x00, 0x00, 0x00, 30], [0xaa, 0x00, 0x00, 31], [0x00, 0xaa, 0x00, 32], [0xaa, 0xaa, 0x00, 33],
     [0x00, 0x00, 0xaa, 34], [0xaa, 0x00, 0xaa, 35], [0x00, 0xaa, 0xaa, 36], [0xaa, 0xaa, 0xaa, 37],
     [0x55, 0x55, 0x55, 90], [0xff, 0x55, 0x55, 91], [0x55, 0xff, 0x55, 92], [0xff, 0xff, 0x55, 93],
     [0x55, 0x55, 0xff, 94], [0xff, 0x55, 0xff, 95], [0x55, 0xff, 0xff, 96], [0xff, 0xff, 0xff, 97]
@@ -146,32 +148,39 @@ function nearestAnsi(red, green, blue) {
     return best;
 }
 
-function ansiCode(color) {
+// Colours are rendered as truecolor ANSI, the way a client does, and only
+// reduced to the sixteen terminal colours on the way into Discord.
+function ansiRgb(color) {
     if (!color || typeof color !== 'string') return null;
     const key = color.toLowerCase();
     const hex = NAMED_COLORS[key] || (/^#[0-9a-f]{6}$/.test(key) ? key : null);
     if (!hex) return null;
 
-    return nearestAnsi(
+    return [
         parseInt(hex.slice(1, 3), 16),
         parseInt(hex.slice(3, 5), 16),
         parseInt(hex.slice(5, 7), 16)
-    );
+    ];
+}
+
+function ansiTruecolor([red, green, blue]) {
+    return `\x1b[38;2;${red};${green};${blue}m`;
 }
 
 // Legacy servers put colours in the text as §-codes; they are turned into the
 // same ANSI the relay already understands instead of being stripped.
 const LEGACY_COLORS = {
-    '0': 30, '1': 34, '2': 32, '3': 36, '4': 31, '5': 35, '6': 33, '7': 37,
-    '8': 90, '9': 94, a: 92, b: 96, c: 91, d: 95, e: 93, f: 97
+    '0': '#000000', '1': '#0000aa', '2': '#00aa00', '3': '#00aaaa', '4': '#aa0000', '5': '#aa00aa',
+    '6': '#ffaa00', '7': '#aaaaaa', '8': '#555555', '9': '#5555ff', a: '#55ff55', b: '#55ffff',
+    c: '#ff5555', d: '#ff55ff', e: '#ffff55', f: '#ffffff'
 };
 
 function legacyAnsi(text) {
     return String(text ?? '').replace(/\u00a7([0-9a-fk-or])/gi, (_, code) => {
         const key = code.toLowerCase();
         if (key === 'r') return '\x1b[0m';
-        const ansi = LEGACY_COLORS[key];
-        return ansi === undefined ? '' : `\x1b[${ansi}m`;
+        const rgb = ansiRgb(LEGACY_COLORS[key]);
+        return rgb ? ansiTruecolor(rgb) : '';
     });
 }
 
@@ -195,7 +204,7 @@ function collectAnsi(component, inherited, out, lang = null) {
         return;
     }
 
-    const own = ansiCode(component.color) ?? inherited;
+    const own = ansiRgb(component.color) ?? inherited;
 
     if (Array.isArray(component.extra) && component.extra.length) {
         const base = { ...component };
@@ -216,8 +225,9 @@ function toAnsi(component, lang = null) {
 
     // A reset is needed when any part carries a colour, either from the
     // component or from §-codes already turned into ANSI.
-    const styled = parts.some(([text, code]) => code || text.includes('\x1b['));
-    return parts.map(([text, code]) => (code ? `\x1b[${code}m${text}` : text)).join('') + (styled ? '\x1b[0m' : '');
+    const styled = parts.some(([text, rgb]) => rgb || text.includes('\x1b['));
+    return parts.map(([text, rgb]) => (rgb ? `${ansiTruecolor(rgb)}${text}` : text)).join('') +
+        (styled ? '\x1b[0m' : '');
 }
 
 module.exports = { flatten, nearestAnsi, stripColors, toAnsi, unwrapNbt };

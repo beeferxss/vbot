@@ -59,6 +59,32 @@ function messageAnsi(packet, message, lang) {
     return message;
 }
 
+// The server decorates player chat itself: rank prefix, name colour, message
+// colours. Relaying that component keeps every colour it chose instead of
+// inventing one, so the line in Discord looks like the line in game.
+function decoratedName(packet, lang, username) {
+    for (const candidate of [packet.networkName, packet.senderName, packet.message]) {
+        const ansi = toAnsi(candidate, lang);
+        const plain = stripColors(ansi).trim();
+        if (!plain) continue;
+        // An undecorated name adds nothing; the <name> framing below is clearer.
+        if (plain === username) continue;
+        return ansi;
+    }
+    return '';
+}
+
+function playerAnsi(packet, lang, username, message) {
+    // Newer servers send the whole decorated line ready to print.
+    const full = toAnsi(packet.formattedMessage, lang);
+    if (full && stripColors(full).includes(message)) return full;
+
+    const body = messageAnsi(packet, message, lang);
+    const name = decoratedName(packet, lang, username);
+    if (name) return `${name} ${body}`;
+    return username ? `<${username}> ${body}` : body;
+}
+
 // Colours live in the component, and the plain line has already thrown them
 // away, so the same candidates are rendered again with their ANSI styling.
 function ansiFromPacket(packet, lang = null) {
@@ -130,10 +156,9 @@ function chatEventFromPacket(event, packet, lang = null) {
             : stripColors(flatten(packet.unsignedChatContent, lang)).trim();
         if (!message) return null;
 
-        const bodyAnsi = messageAnsi(packet, message, lang);
         return {
             line: username ? `<${username}> ${message}` : message,
-            ansi: username ? `\x1b[96m<${username}>\x1b[0m ${bodyAnsi}` : bodyAnsi,
+            ansi: playerAnsi(packet, lang, username, message),
             message,
             username,
             uuid: normalizeUuid(packet.senderUuid ?? packet.sender),

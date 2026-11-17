@@ -2139,7 +2139,7 @@ async function main() {
             plainMessage: 'hi there'
         });
         assert.strictEqual(event.line, '<Alex> hi there');
-        assert.strictEqual(event.ansi, '\x1b[96m<Alex>\x1b[0m hi there');
+        assert.strictEqual(event.ansi, '<Alex> hi there');
 
         const posted = [];
         const bot = {
@@ -2173,7 +2173,7 @@ async function main() {
         await bridge.flush(bridge.relays.get('kbpw'));
 
         assert.strictEqual(posted.length, 1);
-        assert.strictEqual(posted[0].content, '```ansi\n\x1b[96m<Alex>\x1b[0m hi there\n```');
+        assert.strictEqual(posted[0].content, '```ansi\n<Alex> hi there\n```');
         assert.deepStrictEqual(posted[0].allowedMentions, { parse: [] });
 
         // System chat, tellraw and command output are relayed with their colour.
@@ -2247,7 +2247,7 @@ async function main() {
 
         assert.strictEqual(
             toAnsi({ ...component, color: 'gray' }, lang),
-            '\x1b[37mCommand set: whois 9Pon4Inkr7Kn\x1b[0m'
+            '\x1b[38;2;170;170;170mCommand set: whois 9Pon4Inkr7Kn\x1b[0m'
         );
 
         // The real en_us table that ships with minecraft-data resolves the key
@@ -2262,7 +2262,7 @@ async function main() {
         // Legacy § colours become ANSI so they survive into Discord.
         assert.strictEqual(
             toAnsi({ text: '\u00a76Gold \u00a7rwhite' }),
-            '\x1b[33mGold \x1b[0mwhite\x1b[0m'
+            '\x1b[38;2;255;170;0mGold \x1b[0mwhite\x1b[0m'
         );
 
         // Some servers send the format itself as the translate key.
@@ -2296,7 +2296,11 @@ async function main() {
         });
 
         assert.strictEqual(event.line, '<VojtaV12> hello there');
-        assert.strictEqual(event.ansi, '\x1b[96m<VojtaV12>\x1b[0m \x1b[93mhello there\x1b[0m');
+        // The server's own grey prefix and yellow body, not a colour of ours.
+        assert.strictEqual(
+            event.ansi,
+            '\x1b[38;2;170;170;170m[OP] VojtaV12\x1b[0m \x1b[38;2;255;255;85mhello there\x1b[0m'
+        );
 
         const plain = chatEventFromPacket('player_chat', {
             senderName: { text: 'VojtaV12' },
@@ -2304,7 +2308,15 @@ async function main() {
             message: { text: '[OP] VojtaV12', color: 'gray' }
         });
 
-        assert.strictEqual(plain.ansi, '\x1b[96m<VojtaV12>\x1b[0m hi');
+        assert.strictEqual(plain.ansi, '\x1b[38;2;170;170;170m[OP] VojtaV12\x1b[0m hi');
+
+        // Any colour the server picks survives, including a hex one it invented.
+        const hexed = chatEventFromPacket('player_chat', {
+            senderName: { text: 'VojtaV12' },
+            networkName: { text: '[VIP] VojtaV12', color: '#55aaff' },
+            plainMessage: 'yo'
+        });
+        assert.match(hexed.ansi, /\x1b\[38;2;85;170;255m\[VIP\] VojtaV12/);
     });
 
     await check('discord /auth never escalates', () => {
