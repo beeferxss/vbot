@@ -89,10 +89,13 @@ function blockState(packet) {
 }
 
 class FillItem {
-    constructor({ bot, logger, data = null, config = {} }) {
+    constructor({ bot, logger, data = null, config = {}, avoid = null }) {
         this.bot = bot;
         this.log = logger;
         this.data = data;
+        // Cells this block should stay out of when another side will do: the
+        // core's own area, whose fill would replace it on every refill.
+        this.avoid = typeof avoid === 'function' ? avoid : null;
         this.block = String(config.itemBlock || BLOCK);
         this.mode = blockMode(this.block);
         this.holdMs = Number(config.holdMs ?? config.breakDelayMs) > 0
@@ -269,7 +272,8 @@ class FillItem {
     }
 
     // The next free cell for the block: the ground beside the bot, never the
-    // block it is standing in. Sides that answered with air are skipped.
+    // block it is standing in. Sides that answered with air are skipped, and a
+    // side outside the core's area is preferred so a refill does not replace it.
     nextSpot() {
         const at = this.feet();
         if (!at) return null;
@@ -280,14 +284,23 @@ class FillItem {
             { x: at.x - 1, y: at.y, z: at.z },
             { x: at.x, y: at.y, z: at.z - 1 }
         ];
+        const open = [];
         for (let step = 0; step < SIDES; step++) {
             const index = (this.side + step) % SIDES;
             if (this.blocked.has(cellKey(spots[index]))) continue;
-            this.side = index;
-            return spots[index];
+            open.push(index);
         }
-        this.blocked.clear();
-        return spots[this.side % SIDES];
+        if (!open.length) this.blocked.clear();
+        if (!open.length) {
+            return spots[this.side % SIDES];
+        }
+
+        const outside = open.find(index => {
+            const cell = spots[index];
+            return !this.avoid || !this.avoid(cell);
+        });
+        this.side = outside === undefined ? open[0] : outside;
+        return spots[this.side];
     }
 
     // Places the item against the top of the block under that cell, so the block

@@ -630,6 +630,10 @@ async function main() {
         const retried = fillItem.run(command);
         assert.deepStrictEqual(retried, { x: 40, y: 64, z: -3 }, 'the next side');
 
+        // A side the core's fill would overwrite is skipped when another is free.
+        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 }, avoid: cell => cell.x === 40 });
+        assert.deepStrictEqual(avoiding.run(command), { x: 41, y: 64, z: -4 }, 'outside the core area');
+
         // A block update at its cell (mined, or a fill replaced it) means the
         // next command places a new one; updates elsewhere are not its business.
         fillItem.noteBlockChange({ location: { ...retried }, type: 14823 });

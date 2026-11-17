@@ -90,7 +90,14 @@ class Core {
         // edited into it and it runs against the main core.
         this.fillItem = this.config.refill?.item === false
             ? null
-            : new FillItem({ bot, logger, config: this.config.refill });
+            : new FillItem({
+                bot,
+                logger,
+                config: this.config.refill,
+                // Its own fill would replace the bot's block, so keep it out of
+                // the area whenever a side of the bot is free.
+                avoid: (cell) => Boolean(this.origin) && this.origin.x !== null && this.inside(cell.x, cell.y, cell.z)
+            });
         this.itemFills = 0;
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
