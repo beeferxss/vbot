@@ -14,7 +14,7 @@
       },
       {
         "id": "blackbox",
-        "enabled": false,
+        "enabled": true,
         "host": "91.99.119.210",
         "port": 25565,
         "channelId": "1571143032689131631",
@@ -34,7 +34,7 @@
       },
       {
         "id": "qwertyad",
-        "enabled": false,
+        "enabled": true,
         "host": "qwertyad.one",
         "port": 25565,
         "channelId": "1571143294719631380",
@@ -64,7 +64,7 @@
       },
       {
         "id": "chipmunk",
-        "enabled": false,
+        "enabled": true,
         "host": "chipmunk.land",
         "port": 17891,
         "channelId": "1450456420343480370",
@@ -109,7 +109,7 @@
     "vanish": false,
     "unmute": true,
     "nick": true,
-    "nickName": "&2V&aB&2O&aT",
+    "nickName": "&2§lV&aB&2§lO&aT",
     "username": true,
     "usernameName": "vbot"
   },
@@ -159,13 +159,13 @@
   },
   "core": {
     "enabled": true,
-    "name": "{\"text\":\"vbot\",\"color\":\"green\"}",
+    "name": "{\"text\":\"§lᴠʙᴏᴛ\",\"color\":\"dark_green\"}",
     "area": {
-      "size": 9,
-      "y": 64
+      "size": 16,
+      "y": 0
     },
     "joinRtp": {
-      "enabled": true,
+      "enabled": false,
       "range": 10000000,
       "height": 100,
       "waitMs": 6000
