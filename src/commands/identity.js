@@ -4,8 +4,9 @@ const { normalizeUuid } = require('../minecraft/uuid');
 const { levelName } = require('../permissions');
 
 // What the bot knows, then what the server says right now. The live half comes
-// from whois (or seen, if whois does not answer), so this is the command to ask
-// when something about a player looks off.
+// from the detail command (alts.detailCommand, whois by default), which prints
+// more than /seen does, so this is the command to ask when something about a
+// player looks off. Addresses are never taken from it.
 const FIELD_STYLE = [
     ['nick', 'nick', 'white'],
     ['gamemode', 'gamemode', 'light_purple'],
@@ -58,7 +59,7 @@ module.exports = {
 
         let uuidSource = 'unknown';
         if (normalizeUuid(player?.uuid)) uuidSource = 'player list';
-        else if (live?.fields?.uuid) uuidSource = `whois`;
+        else if (live?.fields?.uuid) uuidSource = sourceName(live);
         else if (uuid) uuidSource = 'derived (offline)';
 
         const rank = ctx.permissions.levelFor({ name, uuid });
@@ -86,7 +87,7 @@ module.exports = {
             return;
         }
 
-        parts.push({ text: `\nwhois`, color: 'gold' });
+        parts.push({ text: `\n${sourceName(live)}`, color: 'gold' });
         shown.forEach(([key, label, color], index) => {
             parts.push({ text: index ? '  ' : ' ', color: 'dark_gray' });
             parts.push({ text: `${label}: `, color: 'dark_gray' });
@@ -96,6 +97,12 @@ module.exports = {
         ctx.reply(parts);
     }
 };
+
+// The command the fields came from, as it is shown: "whois {player}" is whois.
+function sourceName(live) {
+    const command = String(live?.source || '').trim().replace(/^\/+/, '').split(/\s+/)[0];
+    return command || 'live';
+}
 
 // A few fields read better when their value decides the colour.
 function valueColour(key, value, fallback) {

@@ -94,8 +94,9 @@
   },
   "alts": {
     "enabled": true,
-    "lookupCommand": "whois {player}",
-    "fallbackCommand": "seen {player}",
+    "lookupCommand": "seen {player}",
+    "fallbackCommand": "",
+    "detailCommand": "whois {player}",
     "cacheMs": 600000,
     "gapMs": 1200,
     "timeoutMs": 3000,

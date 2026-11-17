@@ -65,6 +65,10 @@ async function main() {
         assert.strictEqual(config.storage.path, 'data/vbot.sqlite');
         assert.deepStrictEqual(config.permissions.keys, { owner: '', admin: '', trusted: '' });
         assert.strictEqual(config.core.area.size, 9, 'the core is 9x9x9');
+        // Addresses come from /seen only; whois is kept for the identity fields.
+        assert.match(config.alts.lookupCommand, /^seen /, 'seen is the lookup command');
+        assert.doesNotMatch(config.alts.fallbackCommand, /whois/i);
+        assert.match(config.alts.detailCommand, /^whois /, 'whois is only the detail command');
     });
 
     await check('config rejects a server without a host', () => {

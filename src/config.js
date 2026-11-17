@@ -49,11 +49,15 @@ function defaults() {
         alts: {
             enabled: true,
             // The bot cannot see addresses; it reads them back from a server
-            // command whose output carries the address. Empty means /alts only
-            // reports what is already stored.
-            lookupCommand: 'whois {player}',
-            // Tried when the first command gives back no address.
-            fallbackCommand: 'seen {player}',
+            // command whose output carries the address, and /seen is the one
+            // every server has. Empty means /alts only reports what is already
+            // stored.
+            lookupCommand: 'seen {player}',
+            // Tried when the lookup command gives back no address.
+            fallbackCommand: '',
+            // Only /identity reads this one: whois prints the fields /seen does
+            // not (uuid, gamemode, money...). Addresses never come from it.
+            detailCommand: 'whois {player}',
             cacheMs: 600000,
             gapMs: 1200,
             timeoutMs: 3000,

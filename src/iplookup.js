@@ -3,10 +3,13 @@
 // Looked-up IPs, cached.
 //
 // The bot cannot see where a player connects from, so the only source is a
-// server command that prints it (Essentials' /seen, a whois plugin, whatever
-// the server offers). That command is run through a core block with
-// runTracked, its output is parsed, and the addresses are stored so /alts and
-// /list keep working after the fact.
+// server command that prints it. Addresses come from the lookup command only,
+// which is /seen by default because every server has it. That command is run
+// through a core block with runTracked, its output is parsed, and the addresses
+// are stored so /alts and /list keep working after the fact.
+//
+// whois is kept for the one place that needs it: the identity command shows the
+// fields it prints (uuid, gamemode, money...) that /seen does not.
 
 const { parseIps, parseUuid, parseWhois, lookupCommand } = require('./ip');
 
@@ -23,9 +26,12 @@ class IpLookup {
 
         this.enabled = config.enabled !== false;
         // Off by default: an unknown command costs a core round trip per player.
+        // This is the only command that ever gives back an address.
         this.template = typeof config.lookupCommand === 'string' ? config.lookupCommand : '';
-        // Used only when the first command gives back no address.
+        // Used only when the lookup command gives back no address.
         this.fallback = typeof config.fallbackCommand === 'string' ? config.fallbackCommand : '';
+        // Read by the identity command alone, for its extra fields.
+        this.detailTemplate = typeof config.detailCommand === 'string' ? config.detailCommand : '';
         this.cacheMs = positive(config.cacheMs, DEFAULT_CACHE_MS);
         this.gapMs = positive(config.gapMs, DEFAULT_GAP_MS);
         this.timeoutMs = positive(config.timeoutMs, 3000);
@@ -109,8 +115,8 @@ class IpLookup {
         }
     }
 
-    // Asks the configured command, falls back to the other one when the first
-    // gives back no address, and parses whatever fields came with it.
+    // Asks the lookup command, falls back to the other one when it gives back no
+    // address, and parses whatever fields came with it.
     async query(name) {
         let source = this.template;
         let output = await this.runLookup(this.template, name);
@@ -156,13 +162,22 @@ class IpLookup {
         return ips;
     }
 
-    // Same query, but kept for display: the whois fields a command wants to show.
+    // The fields a command wants to show, from the detail command. No address is
+    // taken from here: whois is not a lookup source any more, only a field list.
     async details(name) {
         const key = this.keyFor(name);
+        if (!key) return { output: null, ips: [], fields: {}, source: '', at: Date.now() };
+
         const cached = this.detailsCache.get(key);
         if (cached && Date.now() - cached.at < this.cacheMs) return cached;
 
-        const result = await this.query(name);
+        const template = this.detailTemplate || this.template;
+        const output = this.enabled && template ? await this.runLookup(template, name) : null;
+        const fields = parseWhois(output || '');
+        // The uuid is worth keeping; an address from here is not, /seen is.
+        this.record(name, { ips: [], fields });
+
+        const result = { output, ips: [], fields, source: template, at: Date.now() };
         this.detailsCache.set(key, result);
         return result;
     }
