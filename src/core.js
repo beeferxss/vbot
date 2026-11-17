@@ -43,6 +43,14 @@ const DEFAULT_SPAM_MS = 150;
 // generous. Without them one slow update looped refills forever.
 const REFILL_GRACE_MS = 3000;
 const REFILL_MIN_INTERVAL_MS = 1500;
+// A command spends the block it ran in, so the area is filled again straight
+// after it: long enough for the block to have run, short enough that the next
+// command does not find a dead core.
+const REFILL_AFTER_RUN_MS = 500;
+// The refill after a command is the one worth doing promptly, so it is not held
+// back by the full interval a damage refill is: two commands a second still get
+// a fresh area without a fill for every keystroke.
+const AFTER_RUN_MIN_MS = 750;
 
 class Core {
     constructor({ bot, config, logger }) {
@@ -263,14 +271,14 @@ class Core {
     // The fill always goes through the bot's own command blocks: nothing is sent
     // as chat. A surviving core block is the second choice, and when neither can
     // run it the watchdog retries instead of talking to the server.
-    refill(reason = 'manual', { force = false } = {}) {
+    refill(reason = 'manual', { force = false, minIntervalMs = REFILL_MIN_INTERVAL_MS } = {}) {
         if (!this.enabled || !this.refillEnabled) return false;
         if (this.origin.x === null && !this.reset()) return false;
 
         // Never refill on top of a refill: the block updates from the last fill
         // look like damage, and reacting to them loops forever.
         if (!force && this.refilling) return false;
-        if (!force && Date.now() - this.lastRefillAt < REFILL_MIN_INTERVAL_MS) {
+        if (!force && Date.now() - this.lastRefillAt < minIntervalMs) {
             this.log.debug(`core refill (${reason}) skipped, last one was too recent`);
             return false;
         }
@@ -464,6 +472,22 @@ class Core {
         };
     }
 
+    // A command has just run in a core block, and the server may well have taken
+    // the command back out of it, so the mini core fills the area again right
+    // away instead of waiting for the damage to be noticed. Only ever one of
+    // these is pending: a burst of commands needs one refill, not one each.
+    refillAfterRun(delay = REFILL_AFTER_RUN_MS) {
+        if (!this.enabled || !this.refillEnabled) return null;
+        if (this.afterRunTimer) return this.afterRunTimer;
+        const timer = setTimeout(() => {
+            this.afterRunTimer = null;
+            this.refill('after-run', { minIntervalMs: AFTER_RUN_MIN_MS });
+        }, Math.max(Number(delay) || 0, 0));
+        timer.unref?.();
+        this.afterRunTimer = timer;
+        return timer;
+    }
+
     // Spreads commands over the cube instead of hammering one block, so a
     // command never lands in the block that is currently executing. Destroyed
     // blocks are skipped, so a command is never written into nothing.
@@ -505,6 +529,7 @@ class Core {
                     this.blocks.set(keyOf(cell), true);
                     this.lastLocation = cell;
                     this.lastViaItem = true;
+                    this.refillAfterRun();
                     return cell;
                 }
             }
@@ -524,6 +549,7 @@ class Core {
                 if (!this.blocks.has(keyOf(cell))) this.blocks.set(keyOf(cell), true);
                 else this.blocks.set(keyOf(cell), true);
                 this.lastLocation = cell;
+                this.refillAfterRun();
                 return cell;
             }
 
@@ -580,6 +606,13 @@ class Core {
         const cell = this.run(command);
         if (!cell) return Promise.resolve(null);
 
+        // The refill run() has just queued waits for the output to be read: it
+        // would put a fresh command in the block before the query could answer.
+        if (this.afterRunTimer) {
+            clearTimeout(this.afterRunTimer);
+            this.afterRunTimer = null;
+        }
+
         // Through the mini core the core block is created by the wrapper it runs,
         // and a fresh mini block has to be placed before any of that can happen.
         const wait = delay ?? (this.lastViaItem
@@ -588,13 +621,19 @@ class Core {
 
         const transactionId = this.queryId++;
         return new Promise(resolve => {
+            // Whatever happens, the area is filled again once the block has been
+            // read: the command in it has run by then.
+            const settle = output => {
+                this.refillAfterRun(0);
+                resolve(output);
+            };
             // Both timers are ref'd on purpose: a caller awaiting the result must
             // keep the process alive until it arrives or times out.
             const timer = setTimeout(() => {
                 this.queries.delete(transactionId);
-                resolve(null);
+                settle(null);
             }, timeout);
-            this.queries.set(transactionId, { resolve, timer });
+            this.queries.set(transactionId, { resolve: settle, timer });
 
             const ask = setTimeout(() => {
                 const sent = this.bot.write
@@ -604,7 +643,7 @@ class Core {
 
                 if (!this.queries.delete(transactionId)) return;
                 clearTimeout(timer);
-                resolve(null);
+                settle(null);
             }, wait);
         });
     }
@@ -915,6 +954,10 @@ class Core {
 
     destroy() {
         this.fillItem?.destroy();
+        if (this.afterRunTimer) {
+            clearTimeout(this.afterRunTimer);
+            this.afterRunTimer = null;
+        }
         if (this.verifyTimer) {
             clearTimeout(this.verifyTimer);
             this.verifyTimer = null;

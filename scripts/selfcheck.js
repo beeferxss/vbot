@@ -427,6 +427,61 @@ async function main() {
         core.destroy();
     });
 
+    await check('a command refills the core through the mini core once it has run', async () => {
+        const handed = [];
+        const sent = [];
+        const refillBot = {
+            position: { x: 35, y: 70, z: -3 },
+            chat: command => (sent.push(command), true),
+            write: () => true,
+            log: logger
+        };
+        const core = new Core({
+            bot: refillBot,
+            config: { enabled: true, area: { size: 16, y: 64 }, refill: { enabled: true } },
+            logger
+        });
+        // The mini core has its own check; what it is handed is what matters here.
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (handed.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
+        const fills = () => handed.filter(text => text.startsWith('fill ')).length;
+        assert.strictEqual(core.reset(), true);
+        core.refill('test');
+        assert.strictEqual(fills(), 1);
+        const at = handed.length;
+        // Let that fill settle, then as if it had been a while ago: the refill
+        // after a command is not the one the damage interval holds back.
+        await new Promise(resolve => setTimeout(resolve, 300));
+        core.lastRefillAt = 0;
+
+        assert.ok(core.run('say hello'), 'the command went in');
+        assert.strictEqual(fills(), 1, 'the block has to run before the area is filled again');
+        core.run('say again');
+        await new Promise(resolve => setTimeout(resolve, 1200));
+
+        assert.strictEqual(fills(), 2, 'one refill for both commands');
+        assert.strictEqual(core.afterRunTimer, null, 'nothing left pending');
+        const fill = handed.slice(at).filter(text => text.startsWith('fill '))[0];
+        assert.ok(fill.startsWith('fill '), 'the refill itself goes through the mini core');
+        assert.deepStrictEqual(sent, [], 'a refill never goes out as chat');
+
+        // A command whose output is read waits for that output before the refill,
+        // or the fresh command would be in the block before the query could answer.
+        core.lastRefillAt = 0;
+        const before = fills();
+        const tracked = core.runTracked('list', { delay: 10, timeout: 80 });
+        assert.strictEqual(core.afterRunTimer, null, 'the timed refill is held back for the query');
+        await tracked;
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.strictEqual(fills(), before + 1, 'refilled once the output was read');
+
+        core.destroy();
+        assert.strictEqual(core.afterRunTimer, null, 'a stopped core refills nothing');
+    });
+
     await check('refill spam refills through the blocks and stops itself', async () => {
         const sent = [];
         const writes = [];
