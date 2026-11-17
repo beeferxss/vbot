@@ -840,8 +840,8 @@ async function main() {
         assert.ok(spots.every(at => at.y === 64), 'the first layer is the ground it stands on');
         assert.ok(spots.some(at => at.x < 10) && spots.some(at => at.x > 10), 'on both sides along x');
         assert.ok(spots.some(at => at.z < -4) && spots.some(at => at.z > -4), 'on both sides along z');
-        assert.ok(spots.every(at => Math.max(Math.abs(at.x - 10), Math.abs(at.z + 4)) <= 3),
-            'close enough to place from');
+        assert.ok(spots.every(at => Math.max(Math.abs(at.x - 10), Math.abs(at.z + 4)) <= 5),
+            'never further than five blocks from the bot');
         assert.ok(!spots.some(at => at.x === 10 && at.z === -4), 'never the cell the bot stands in');
 
         // Moving further than five blocks: the set it leaves behind is dug up and
@@ -1030,7 +1030,17 @@ async function main() {
         const five = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 5 } });
         assert.strictEqual(five.spots({ x: 0, y: 64, z: 0 }).length, 5, 'five blocks');
         const capped = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 999 } });
-        assert.strictEqual(capped.count, 96, 'a silly count is capped');
+        assert.strictEqual(capped.count, 240, 'a silly count is capped');
+
+        // A level holds 120 blocks within five of the bot; the next one goes a
+        // block higher instead of further out.
+        const layered = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 121 } });
+        const level = layered.spots({ x: 0, y: 64, z: 0 });
+        assert.strictEqual(level.length, 121);
+        assert.ok(level.slice(0, 120).every(at => at.y === 64), 'a whole level at the feet');
+        assert.ok(level.slice(0, 120).every(at => Math.max(Math.abs(at.x), Math.abs(at.z)) <= 5),
+            'never further than five blocks out');
+        assert.deepStrictEqual(level[120], { x: -1, y: 65, z: -1 }, 'the next block one level up');
 
         // One block is still a mini core, and it is reused instead of placed again.
         const single = new FillItem({ bot: cubeBot, logger, config: { holdMs: 40, itemCount: 1 } });
@@ -1042,6 +1052,7 @@ async function main() {
             'no second block for a one-block core');
 
         single.destroy();
+        layered.destroy();
         mini.destroy();
         five.destroy();
         capped.destroy();

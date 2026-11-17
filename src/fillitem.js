@@ -16,8 +16,11 @@
 // The mini core is `itemCount` blocks (27 by default) standing around the bot on
 // every side of it: they are taken ring by ring outwards from its feet, instead
 // of piling up in one square beside it, and none of them is ever in the cells
-// the bot stands in, where a block cannot be placed. Each layer goes in before
-// the one above it, so every block has the one under it to be placed against.
+// the bot stands in, where a block cannot be placed. They never go further than
+// five blocks from the bot: once that level is taken, the next blocks go one
+// block higher, on the same rings, rather than reaching further out. Each level
+// goes in before the one above it, so every block has the one under it to be
+// placed against.
 // Commands are spread over them in turn: a block that is still running the
 // command before is not overwritten by the next one, which is what makes
 // back-to-back commands safe.
@@ -53,9 +56,9 @@ const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
 const BLOCK = 'repeating_command_block';
 const COUNT = 27;                // how many of its own blocks the mini core has
-const MAX_COUNT = 96;
-const RADIUS = 3;                // they stand up to this far out from the bot
-const LAYERS = 4;                // and up to this many blocks above its feet
+const MAX_COUNT = 240;           // a level holds 120 blocks, so this is two of them
+const RADIUS = 5;                // they stand no further than this from the bot
+const LAYERS = 4;                // and then go this many blocks above its feet
 const MOVE_LIMIT = 5;            // place a new set once the bot has moved this far
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
 const SETTLE_MS = 800;           // how long a placement has to be answered
@@ -270,7 +273,8 @@ class FillItem {
     }
 
     // The cells around the bot, in the order they are taken: ring by ring
-    // outwards, a layer at a time, every layer's cells on every side of it.
+    // outwards up to RADIUS blocks away, then the same rings one block higher,
+    // every level's cells on every side of it.
     ring(at) {
         const key = `${at.x}:${at.y}:${at.z}`;
         if (this.ringKey === key) return this.ringCells;
