@@ -716,33 +716,78 @@ class DiscordBridge {
         };
     }
 
-    replyHelp(interaction, reply) {
+    // Every reply is an embed, so command output reads as a card instead of a
+    // wall of one-off text: a title naming the command and server, the body in
+    // a code block when it is a list, and red for anything that failed.
+    resultEmbed({ label, bot = null, text = '', ok = true, by = null, color = null }) {
+        const { EmbedBuilder } = this.discord;
+        const body = String(text ?? '').trim() || 'No output.';
+        const fenced = body.includes('\n') ? `\`\`\`\n${body}\n\`\`\`` : body;
+
+        const embed = new EmbedBuilder()
+            .setColor(color ?? (ok ? 0x57f287 : 0xed4245))
+            .setTitle(`${label}${bot ? ` · ${bot.id}` : ''}`)
+            .setDescription(fenced.slice(0, 4000))
+            .setTimestamp();
+
+        if (by) embed.setFooter({ text: `by ${by}` });
+        return embed;
+    }
+
+    replyHelp(interaction) {
         const registry = this.registry;
-        if (!registry) return reply('Commands are not loaded.');
+        const ephemeral = this.discord.MessageFlags?.Ephemeral ?? 64;
+        const fail = text => interaction.reply({
+            embeds: [this.resultEmbed({ label: 'help', text, ok: false, by: interaction.user?.username })],
+            flags: ephemeral
+        });
+
+        if (!registry) return fail('Commands are not loaded.');
 
         const rank = this.rankFor(interaction.member);
         const name = String(interaction.options.getString('command') || '').trim().toLowerCase();
 
         if (name) {
             const command = registry.find(name);
-            if (!command) return reply(`No command "${name}".`);
+            if (!command) return fail(`No command "${name}".`);
             if (command.level > rank) {
-                return reply(`${command.name} needs ${levelName(command.level)}; your Discord rank is ${levelName(rank)}.`);
+                return fail(`${command.name} needs ${levelName(command.level)}; your Discord rank is ${levelName(rank)}.`);
             }
-            return reply([
-                `**${command.usage || command.name}**`,
-                command.description || 'no description',
-                `rank: ${levelName(command.level)}`
-            ].join('\n'));
+
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: command.name,
+                    text: `${command.usage || command.name}\n${command.description || 'no description'}\nrank: ${levelName(command.level)}`,
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
         }
 
         const available = registry.listFor(rank);
-        if (!available.length) return reply('No commands for your rank.');
+        if (!available.length) return fail('No commands for your rank.');
 
-        const lines = available.map(command =>
-            `**${command.name}**${command.description ? ` — ${command.description}` : ''}`);
+        const { EmbedBuilder } = this.discord;
+        const embed = new EmbedBuilder()
+            .setTitle('Commands')
+            .setDescription(`${available.length} command(s) you can run as ${levelName(rank)}.`)
+            .setColor(0x5865f2)
+            .setTimestamp();
 
-        return reply(`${available.length} command(s) for ${levelName(rank)}:\n${lines.join('\n')}`.slice(0, 1900));
+        for (const level of [LEVEL.PUBLIC, LEVEL.TRUSTED, LEVEL.ADMIN, LEVEL.OWNER]) {
+            const group = available.filter(command => command.level === level);
+            if (!group.length) continue;
+
+            embed.addFields({
+                name: levelName(level),
+                value: group
+                    .map(command => `**${command.name}** — ${command.description || 'no description'}`)
+                    .join('\n')
+                    .slice(0, 1024)
+            });
+        }
+
+        return interaction.reply({ embeds: [embed], flags: ephemeral });
     }
 
     // Discord ranks map straight onto vbot's: the Trusted role is trusted, the
@@ -865,11 +910,30 @@ class DiscordBridge {
                 ? this.bots().find(candidate => candidate.id.toLowerCase() === wanted.toLowerCase())
                 : linked;
 
-            if (!bot) return reply(`No server "${wanted || 'linked to this channel'}".`);
+            if (!bot) {
+                return interaction.reply({
+                    embeds: [this.resultEmbed({
+                        label: 'players',
+                        text: this.missingBot(interaction, wanted),
+                        ok: false,
+                        by: interaction.user?.username
+                    })],
+                    flags: ephemeral
+                });
+            }
+
             const names = onlineNames(bot);
-            return reply(names.length
-                ? `${bot.id} (${names.length}): ${names.slice(0, 50).join(', ')}`
-                : `${bot.id}: no players online.`);
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: 'players',
+                    bot,
+                    text: names.length
+                        ? `${names.length} online\n${names.slice(0, 50).join(', ')}`
+                        : 'No players online.',
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
         }
 
         if (interaction.commandName === 'auth') {
@@ -879,7 +943,15 @@ class DiscordBridge {
                 interaction.options.getString('rank')
             );
             if (result.ok) this.log?.info?.(`discord: ${interaction.user?.tag || interaction.user?.id} ${result.text}`);
-            return reply(result.text);
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: 'auth',
+                    text: result.text,
+                    ok: result.ok,
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
         }
 
         if (interaction.commandName === 'filter' || interaction.commandName === 'whitelist' || interaction.commandName === 'alts') {
@@ -895,18 +967,30 @@ class DiscordBridge {
                 .join(' ');
 
             const result = await this.executeCommand(bot, interaction.member, text);
-            return reply(result.text.slice(0, 1900));
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: interaction.commandName,
+                    bot,
+                    text: result.text,
+                    ok: result.ok,
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
         }
 
         if (interaction.commandName === 'help') {
-            return this.replyHelp(interaction, reply);
+            return this.replyHelp(interaction);
         }
 
         if (interaction.commandName === 'mc') {
             // /mc is a staff tool: a public-level command such as `cb` would
             // otherwise hand raw server commands to every member.
             if (this.rankFor(interaction.member) < LEVEL.TRUSTED) {
-                return reply('The Trusted role is required for /mc.');
+                return interaction.reply({
+                    embeds: [this.resultEmbed({ label: 'mc', text: 'The Trusted role is required for /mc.', ok: false })],
+                    flags: ephemeral
+                });
             }
 
             const text = interaction.options.getString('command') || '';
@@ -917,13 +1001,23 @@ class DiscordBridge {
                 : linked;
 
             if (!bot) {
-                return reply(wanted
-                    ? `No server "${wanted}". Available: ${this.bots().map(candidate => candidate.id).join(', ')}`
-                    : 'This channel is not linked to a server; pass the server option.');
+                return interaction.reply({
+                    embeds: [this.resultEmbed({ label: 'mc', text: this.missingBot(interaction, wanted), ok: false })],
+                    flags: ephemeral
+                });
             }
 
             const result = await this.executeCommand(bot, interaction.member, text);
-            return reply(result.text.slice(0, 1900));
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: 'mc',
+                    bot,
+                    text: result.text,
+                    ok: result.ok,
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
         }
     }
 
