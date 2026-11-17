@@ -38,7 +38,7 @@
 const HOTBAR_SLOT = 36;          // first hotbar slot, window slot numbering
 const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
-const BLOCK = 'command_block';
+const BLOCK = 'repeating_command_block';
 const MOVE_LIMIT = 5;            // place new blocks once the bot has moved this far
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
 const SETTLE_MS = 800;           // how long a placement has to be answered
