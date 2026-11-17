@@ -1,12 +1,21 @@
 'use strict';
 
-// The bot's own command block: a one-block mini core.
+// The bot's own command blocks: a small mini core that stands beside it.
 //
-// It is placed from a creative slot packet that holds nothing but a command
-// block, and then every command is written into it with `update_command_block`,
-// exactly how the main core's blocks are written; the block runs the command
-// against the main core itself. The core's blocks are therefore never edited
-// directly while this block stands.
+// They are placed from a creative slot packet that holds nothing but a command
+// block, and then every command is written into one of them with
+// `update_command_block`, exactly how the main core's blocks are written. The
+// blocks are normal (impulse) command blocks: a command runs once, there is no
+// repeating block left running in the world.
+//
+// The mini core never holds a command meant for the main core. What is written
+// into it is always a block write - `setblock <cell> command_block{Command:...,
+// auto:1b}` - so the command ends up in a real core block, with `auto` set, and
+// that block is the one that runs it.
+//
+// Four blocks are placed, one on each side of the bot, and commands are spread
+// over them in turn: a command that is still being worked on in one block is not
+// overwritten by the next one, which is what makes back-to-back commands safe.
 //
 // Nothing but the item id goes into the slot packet. A `block_entity_data`
 // component on it is not portable: Paper 26.1.2 fails to decode
@@ -15,24 +24,25 @@
 // servers. The command and "always active" are set afterwards over the command
 // block packet instead, which every version and every server understands.
 //
-// The block is placed on the ground next to the bot, never at its feet: a solid
+// The blocks are placed on the ground next to the bot, never at its feet: a solid
 // block cannot be placed inside the player, and the server silently ignores the
-// attempt. Which side accepted it is learned from the server's own block update;
-// a side that answered with air is not tried again.
+// attempt. Which side accepted a block is learned from the server's own block
+// update; a side that answered with air is not tried again.
 //
-// The block is placed again when the bot has moved more than five blocks away
-// from it, and a block update at its cell (mined, or replaced by a fill) means
-// the next command places a fresh one.
+// The blocks are placed again when the bot has moved more than five blocks away
+// from them, and a block update at one of their cells (mined, or replaced by a
+// fill) means the next command places a fresh one.
 //
 // Everything goes through packets: no chat, no /give, no /item.
 
 const HOTBAR_SLOT = 36;          // first hotbar slot, window slot numbering
 const HOLD_MS = 250;             // how long the given item stays in the hand
 const FACE_UP = 1;
-const BLOCK = 'repeating_command_block';
-const MOVE_LIMIT = 5;            // place a new block once the bot has moved this far
+const BLOCK = 'command_block';
+const MOVE_LIMIT = 5;            // place new blocks once the bot has moved this far
 const PLACE_ECHO_MS = 2000;      // the placement and the command edit arrive in here
 const SETTLE_MS = 800;           // how long a placement has to be answered
+const STEP_MS = 120;             // gap between the commands of one command
 const PENDING_MS = 2000;         // a placement echo older than this is not ours
 const AIR = 0;                   // air's block state number in every version
 const SIDES = 4;
@@ -94,25 +104,41 @@ class FillItem {
         this.bot = bot;
         this.log = logger;
         this.data = data;
-        // Cells this block should stay out of when another side will do: the
-        // core's own area, whose fill would replace it on every refill.
+        // Cells these blocks should stay out of when another side will do: the
+        // core's own area, whose fill would replace them on every refill.
         this.avoid = typeof avoid === 'function' ? avoid : null;
         this.block = String(config.itemBlock || BLOCK);
         this.mode = blockMode(this.block);
         this.holdMs = Number(config.holdMs ?? config.breakDelayMs) > 0
             ? Number(config.holdMs ?? config.breakDelayMs)
             : HOLD_MS;
-        this.carrier = null;      // where the bot's own command block stands
-        this.origin = null;       // where the bot stood when it was placed
+        // Commands that belong together (clear the cell, then create the block)
+        // are written a tick apart, so the second one always sees the first one's
+        // result instead of landing in the same moment.
+        this.stepMs = Number(config.stepMs) > 0 ? Number(config.stepMs) : STEP_MS;
+        // One block per side, so consecutive commands do not overwrite a block
+        // that is still running the command before.
+        this.slots = new Array(SIDES).fill(null);
+        this.turn = 0;            // which side the next command goes to
+        this.origin = null;       // where the bot stood when the set was placed
         this.placedAt = 0;
-        this.state = null;        // the block state the placement settled on
         this.pending = null;      // a placement waiting for the server's answer
-        this.blocked = new Set(); // sides that refused a block
+        this.blocked = new Set(); // cells that refused a block
         this.side = 0;
         this.sequence = 0;
         this.clearTimer = null;
         this.broken = false;
         this.lastSendAt = 0;
+    }
+
+    // Any block of the set is enough: the mini core is up.
+    get standing() {
+        return this.slots.some(slot => Boolean(slot));
+    }
+
+    // Cells the mini core currently stands on; the core keeps them out of refills.
+    cells() {
+        return this.slots.filter(Boolean).map(slot => ({ ...slot.cell }));
     }
 
     // A kick right after the slot packet is that packet's fault. One is enough:
@@ -173,10 +199,6 @@ class FillItem {
         return this.itemId() !== undefined;
     }
 
-    get standing() {
-        return Boolean(this.carrier && !this.broken);
-    }
-
     // Command blocks can only be placed in creative.
     get creative() {
         const mode = this.bot?.selfCare?.gamemode;
@@ -193,7 +215,7 @@ class FillItem {
         };
     }
 
-    // The block only has to be re-placed when the bot has actually left it.
+    // The blocks only have to be re-placed when the bot has actually left them.
     moved(at) {
         if (!this.origin) return true;
         return Math.hypot(
@@ -208,27 +230,57 @@ class FillItem {
         return this.sequence;
     }
 
-    // Runs a command through the bot's own block: it is placed if there is none
-    // (or it is too far away), and edited in place otherwise. Returns the block
-    // the command went into, like Core.run returns the cell it wrote.
-    run(command) {
+    // Writes commands into the mini core, one block at a time, taken in turn.
+    // A block that is not standing yet is placed, and the commands follow it as
+    // soon as the server says where it landed. Returns the cell the commands were
+    // written to (the placement's guessed cell until it settles).
+    run(...commands) {
+        const list = commands
+            .flat()
+            .map(command => String(command || '').trim())
+            .filter(Boolean);
+        if (!list.length) return null;
         if (!this.usable) return null;
 
         const at = this.feet();
         if (!at) return null;
 
-        if (!this.carrier || this.moved(at)) return this.placeCarrier(command);
+        if (this.moved(at)) this.reposition();
+        if (!this.origin) this.origin = { ...at };
+
         // While a placement is still being confirmed the block is not known yet;
-        // the command waits with it instead of being written into air.
+        // the commands wait with it instead of being written into air.
         if (this.pending) {
-            this.pending.queue.push(String(command || ''));
+            this.pending.queue.push(...list);
             return this.pending.cell;
         }
-        return this.write(this.carrier, command);
+
+        const index = this.turn % SIDES;
+        this.turn = (this.turn + 1) % SIDES;
+
+        const slot = this.slots[index];
+        if (slot) {
+            if (!this.writeAll(slot.cell, list)) return null;
+            return slot.cell;
+        }
+        return this.placeSlot(index, list);
     }
 
-    // Writes the command into the block: the same packet the core uses for its
-    // own blocks, with `auto` so the block keeps running it without redstone.
+    // Writes the commands of one operation into the block, one step at a time.
+    writeAll(cell, commands) {
+        const list = [...commands];
+        if (!list.length) return true;
+        if (!this.write(cell, list.shift())) return false;
+        list.forEach((command, index) => {
+            const timer = setTimeout(() => this.write(cell, command), this.stepMs * (index + 1));
+            timer.unref?.();
+        });
+        return true;
+    }
+
+    // Writes one command into the block: the same packet the core uses for its
+    // own blocks. The block is normal (impulse), so a command runs once instead
+    // of every tick.
     write(cell, command) {
         const sent = this.bot.write('update_command_block', {
             location: cell,
@@ -236,10 +288,22 @@ class FillItem {
             mode: this.mode,
             flags: 0b101
         });
-        return sent === false ? null : cell;
+        return sent !== false;
     }
 
-    placeCarrier(command) {
+    // The bot moved away: the blocks are too far to be worth keeping, so they are
+    // removed and a new set is placed where it stands now.
+    reposition() {
+        for (const slot of this.slots) {
+            if (slot) this.breakAt(slot.cell);
+        }
+        this.slots = new Array(SIDES).fill(null);
+        this.blocked.clear();
+        this.pending = null;
+        this.origin = this.feet();
+    }
+
+    placeSlot(index, commands) {
         if (!this.creative) {
             this.log.warn(
                 `refill items need creative mode (the bot is in gamemode ${this.bot?.selfCare?.gamemode}); ` +
@@ -249,35 +313,30 @@ class FillItem {
             return null;
         }
 
-        const old = this.carrier;
         this.lastSendAt = Date.now();
         if (!this.give()) return null;
 
-        const cell = this.nextSpot();
+        const cell = this.spot(index);
         if (!cell || !this.place(cell)) {
             this.clear();
             return null;
         }
 
-        // One block at a time: the old one is only removed when it is replaced.
-        if (old && !sameCell(old, cell)) this.breakAt(old);
-        this.carrier = { ...cell };
-        this.origin = { ...cell };
+        this.origin = this.feet();
         this.placedAt = Date.now();
-        this.state = null;
         this.scheduleClear();
 
         // Where the block lands is the server's answer, not the client's: a
         // server that reads the packet as "the cell that was clicked" puts it in
         // the ground under the target instead of above it, and a command written
         // to the guessed cell lands in air and is lost. The update that arrives
-        // next says which cell it is; the command follows there.
+        // next says which cell it is; the commands follow there.
         this.pending = {
+            index,
             cell: { ...cell },
             support: { x: cell.x, y: cell.y - 1, z: cell.z },
             at: Date.now(),
-            command: String(command || ''),
-            queue: [],
+            queue: [...commands],
             landed: null,
             state: null,
             refused: false,
@@ -289,8 +348,8 @@ class FillItem {
         return cell;
     }
 
-    // The placement is over: write the command into the block that is really
-    // there, or give up on this side when nothing was placed.
+    // The placement is over: write the queued commands into the block that is
+    // really there, or give up on this side when nothing was placed.
     settle(placement) {
         if (this.pending !== placement) return;
         this.pending = null;
@@ -299,24 +358,21 @@ class FillItem {
 
         if (!placement.landed) {
             // Nothing was placed, or the server never said where it went: the
-            // command is lost either way, so the cell is not used again and the
+            // commands are lost either way, so the cell is not used again and the
             // next one tries another side.
             this.blocked.add(cellKey(placement.cell));
-            this.side = (this.side + 1) % SIDES;
-            this.carrier = null;
-            this.origin = null;
-            this.state = null;
+            this.side = (placement.index + 1) % SIDES;
             this.log.debug(`nothing could be placed at ${placement.cell.x} ${placement.cell.y} ${placement.cell.z}; trying another side`);
             return;
         }
 
-        const at = placement.landed;
-        this.carrier = { ...at };
-        this.origin = { ...at };
-        this.state = placement.state;
-        this.placedAt = Date.now();
-        this.write(at, placement.command);
-        for (const queued of placement.queue) this.write(at, queued);
+        const at = { ...placement.landed };
+        this.slots[placement.index] = {
+            cell: at,
+            state: placement.state,
+            placedAt: Date.now()
+        };
+        this.writeAll(at, placement.queue);
     }
 
     // The item goes into the hotbar slot the bot is holding, by packet only.
@@ -329,10 +385,10 @@ class FillItem {
         return this.bot.write('held_item_slot', { slotId: 0 }) !== false;
     }
 
-    // The next free cell for the block: the ground beside the bot, never the
+    // The cell for one block of the set: the ground beside the bot, never the
     // block it is standing in. Sides that answered with air are skipped, and a
     // side outside the core's area is preferred so a refill does not replace it.
-    nextSpot() {
+    spot(index) {
         const at = this.feet();
         if (!at) return null;
 
@@ -342,23 +398,21 @@ class FillItem {
             { x: at.x - 1, y: at.y, z: at.z },
             { x: at.x, y: at.y, z: at.z - 1 }
         ];
+        const taken = new Set(this.cells().map(cellKey));
         const open = [];
         for (let step = 0; step < SIDES; step++) {
-            const index = (this.side + step) % SIDES;
-            if (this.blocked.has(cellKey(spots[index]))) continue;
-            open.push(index);
+            const side = (index + step) % SIDES;
+            const cell = spots[side];
+            if (taken.has(cellKey(cell)) || this.blocked.has(cellKey(cell))) continue;
+            open.push(cell);
         }
-        if (!open.length) this.blocked.clear();
         if (!open.length) {
-            return spots[this.side % SIDES];
+            this.blocked.clear();
+            return spots[index % SIDES];
         }
 
-        const outside = open.find(index => {
-            const cell = spots[index];
-            return !this.avoid || !this.avoid(cell);
-        });
-        this.side = outside === undefined ? open[0] : outside;
-        return spots[this.side];
+        const outside = open.find(cell => !this.avoid || !this.avoid(cell));
+        return outside || open[0];
     }
 
     // Places the item against the top of the block under that cell, so the block
@@ -378,7 +432,7 @@ class FillItem {
         return sent !== false;
     }
 
-    // Only ever this block: the core is not touched.
+    // Only ever the bot's own blocks: the core is not touched.
     breakAt(location) {
         this.bot.write('block_dig', {
             status: 0,
@@ -407,10 +461,11 @@ class FillItem {
         this.clearTimer.unref?.();
     }
 
-    // A block update at the block's own cell is the server's answer about it.
+    // A block update at one of the set's own cells is the server's answer about
+    // it.
     //
     // While a placement is waiting, a non-air update at the cell that was clicked
-    // or at the cell above it says where the block really is, and the command is
+    // or at the cell above it says where the block really is, and the commands are
     // written there. Air at the target alone means the side refused, and another
     // one is tried next time.
     //
@@ -433,33 +488,35 @@ class FillItem {
             if (state === AIR && sameCell(location, placement.cell)) placement.refused = true;
         }
 
-        if (!this.carrier || !sameCell(location, this.carrier)) return false;
+        for (let index = 0; index < SIDES; index++) {
+            const slot = this.slots[index];
+            if (!slot || !sameCell(location, slot.cell)) continue;
 
-        // The command edit changes the block's state too, and it can arrive a
-        // little after the placement.
-        if (Date.now() - this.placedAt < PLACE_ECHO_MS) {
-            if (state !== AIR) this.state = state;
-            return false;
+            // The command edit changes the block's state too, and it can arrive a
+            // little after the placement.
+            if (Date.now() - slot.placedAt < PLACE_ECHO_MS) {
+                if (state !== AIR) slot.state = state;
+                return false;
+            }
+
+            if (state !== AIR && (slot.state === null || state === slot.state)) {
+                slot.state = state;
+                return false;
+            }
+
+            this.slots[index] = null;
+            return true;
         }
 
-        if (state !== AIR && (this.state === null || state === this.state)) {
-            this.state = state;
-            return false;
-        }
-
-        this.carrier = null;
-        this.origin = null;
-        this.state = null;
-        return true;
+        return false;
     }
 
     destroy() {
         if (this.clearTimer) clearTimeout(this.clearTimer);
         this.clearTimer = null;
-        this.carrier = null;
+        this.slots = new Array(SIDES).fill(null);
         this.origin = null;
         this.pending = null;
-        this.state = null;
     }
 }
 

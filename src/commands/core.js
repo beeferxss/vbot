@@ -21,7 +21,7 @@ module.exports = {
             const parts = core.statusParts();
             const token = core.origin.x !== null
                 ? ctx.clickToken('core-refill', async clicker => {
-                    core.refill('button', { viaChat: true });
+                    core.refill('button');
                     ctx.bot.registry.reply(ctx.bot, clicker.name, 'Refilling the core.');
                 })
                 : null;
@@ -49,9 +49,9 @@ module.exports = {
         }
 
         if (first === 'refill') {
-            // Explicit refills go out as chat, so this still works when the core
-            // itself is the thing that needs fixing.
-            const started = core.refill('command', { viaChat: true });
+            // Forced, so it goes out even while another refill is settling. It
+            // still goes through the bot's own command blocks, never chat.
+            const started = core.refill('command');
             ctx.reply(started ? 'Refilling the core.' : 'Core refill is disabled or the area is not placed.');
             return;
         }

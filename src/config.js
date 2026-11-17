@@ -131,10 +131,14 @@ function defaults() {
                 spamMs: 150,
                 // Start the spam refill by itself once the core is placed.
                 auto: false,
-                // Refill through a command block of the bot's own, placed from a
-                // creative slot packet and edited in place: the fill runs in it
-                // and the core is never written to.
+                // Refill and run commands through the bot's own command blocks,
+                // placed from a creative slot packet: they only ever receive
+                // block writes (setblock/fill) that put the command into a real
+                // core block, so the core is never edited directly.
                 item: true,
+                // The blocks the bot places for itself: normal (impulse) blocks,
+                // so a command runs once instead of every tick.
+                itemBlock: 'minecraft:command_block',
                 // How long the given item stays in the hotbar before it is cleared.
                 breakDelayMs: 250
             }

@@ -53,7 +53,9 @@ class Core {
 
         this.size = positive(this.config.area?.size, 9);
         this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
+        // Normal (impulse) command blocks: a command runs once when the block is
+        // created with it, instead of every tick forever.
+        this.block = String(this.config.refill?.block || 'minecraft:command_block');
         // Optional display name, as raw SNBT component text, for example
         // {"text":"vbot","color":"green"} -> block{CustomName:'...'}.
         this.name = this.config.name ? String(this.config.name) : null;
@@ -103,6 +105,9 @@ class Core {
                 avoid: (cell) => Boolean(this.origin) && this.origin.x !== null && this.inside(cell.x, cell.y, cell.z)
             });
         this.itemFills = 0;
+        // Whether the last command went in through the mini core, which adds a
+        // round trip before the core block exists.
+        this.lastViaItem = false;
         // Result the server reported for the last fill it ran for us.
         this.lastFill = null;
         this.fillFailures = 0;
@@ -255,9 +260,10 @@ class Core {
         return true;
     }
 
-    // viaChat forces the fill out as a chat command instead of a block write.
-    // Automatic refills prefer a block; the explicit command asks for chat.
-    refill(reason = 'manual', { viaChat = false, force = false } = {}) {
+    // The fill always goes through the bot's own command blocks: nothing is sent
+    // as chat. A surviving core block is the second choice, and when neither can
+    // run it the watchdog retries instead of talking to the server.
+    refill(reason = 'manual', { force = false } = {}) {
         if (!this.enabled || !this.refillEnabled) return false;
         if (this.origin.x === null && !this.reset()) return false;
 
@@ -279,15 +285,14 @@ class Core {
         let usedSurvivor = null;
         // Forced refills are allowed on top of a fill still in flight: the bot's
         // block only has its command replaced, so nothing is placed twice.
-        if (!viaChat && this.everReady && this.origin.x !== null) {
+        if (this.origin.x !== null) {
             viaItem = Boolean(this.placeFill(command));
             viaCore = viaItem;
         }
 
         // Whatever is left of the main core refills it when there is no block of
-        // the bot's own: writing the fill into a surviving block needs no item
-        // and no chat. Explicit refill commands (viaChat) skip this.
-        if (!viaChat && !viaCore && !this.refilling && this.everReady && this.origin.x !== null) {
+        // the bot's own: writing the fill into a surviving block needs no item.
+        if (!viaCore && !this.refilling && this.everReady && this.origin.x !== null) {
             for (const [id, alive] of this.blocks) {
                 if (!alive) continue;
                 const [sx, sy, sz] = id.split(':').map(Number);
@@ -309,17 +314,19 @@ class Core {
             }
         }
 
-        // Chat is the last resort, never a second attempt on top of a block: a
-        // server that silences command block output would otherwise get every
-        // fill twice. Explicit refill commands request chat directly.
-        if (!viaCore) this.sendFill(command);
+        if (!viaCore) {
+            // Nothing can run the fill right now (no mini core, no survivor). The
+            // watchdog retries; chat is never used.
+            this.logEvery('refill-unavailable', 10000, 'warn',
+                `core refill (${reason}) has no block to run in; retrying shortly`);
+        }
 
         this.refilling = true;
         // Keep the core usable across rebuilds once it has worked at least once.
         if (!this.everReady) this.ready = false;
         // The fill itself produces a block change per cell; those are ours.
         this.graceUntil = Date.now() + REFILL_GRACE_MS;
-        let place = 'chat';
+        let place = 'nothing';
         if (viaItem) place = 'its own command block';
         else if (viaCore && usedSurvivor) place = `block ${usedSurvivor.x} ${usedSurvivor.y} ${usedSurvivor.z}`;
         if (reason === 'startup' || reason === 'manual' || reason === 'command') {
@@ -344,21 +351,6 @@ class Core {
         return true;
     }
 
-    // Plain chat, never routed back into the core: a fill has to reach the
-    // server even when the core itself is the thing that is broken.
-    sendFill(command) {
-        const text = String(command || '').trim();
-        if (!text) return false;
-        const withSlash = text.startsWith('/') ? text : `/${text}`;
-        if (typeof this.bot.sendChat === 'function') return this.bot.sendChat(withSlash) !== false;
-        if (typeof this.bot.client?.chat === 'function') {
-            this.bot.client.chat(withSlash);
-            return true;
-        }
-        if (typeof this.bot.chat === 'function') return this.bot.chat(withSlash) !== false;
-        return false;
-    }
-
     verifyItemFill(command) {
         if (this.verifyTimer) clearTimeout(this.verifyTimer);
         const startedAt = Date.now();
@@ -375,8 +367,7 @@ class Core {
             if (this.lastFillStateAt >= startedAt) return;
             this.fillFailures += 1;
             this.logEvery('item-fill-unconfirmed', 10000, 'warn',
-                "the bot's command block did not fill the core (placement refused?); sending the fill as chat");
-            this.sendFill(command);
+                "the bot's command block did not fill the core (placement refused?); retrying through the core");
         }, wait);
         this.verifyTimer.unref?.();
     }
@@ -397,6 +388,18 @@ class Core {
         const { origin, bounds } = this;
         return `fill ${origin.x} ${origin.y} ${origin.z} ` +
             `${bounds.x} ${bounds.y} ${bounds.z} ${this.blockSpec()} ${this.mode}`;
+    }
+
+    // What the mini core is told to do with one core cell: clear it, then create
+    // it holding the command and `auto`. A block created fresh like that runs its
+    // command once; writing into a block that is already standing does not run it
+    // on a stock server, which is why the cell is cleared first.
+    cellCommands(cell, command) {
+        const at = `${cell.x} ${cell.y} ${cell.z}`;
+        return [
+            `setblock ${at} minecraft:air`,
+            `setblock ${at} ${this.block}{Command:"${snbtQuote(command)}",auto:1b,TrackOutput:1b} replace`
+        ];
     }
 
     // A burst of refills through the blocks. Nothing goes out as chat, so the
@@ -468,14 +471,6 @@ class Core {
         const text = String(command || '').trim().replace(/^\//, '');
         if (!text) return null;
 
-        // The bot's own block is the mini core: the command is edited into it and
-        // it runs against the main core, so no core block is written directly.
-        const own = this.fillItem?.run(text.slice(0, 32000));
-        if (own) {
-            this.lastLocation = own;
-            return own;
-        }
-
         if (this.origin.x === null && !this.reset()) return null;
 
         if (!this.areaLoaded()) {
@@ -499,6 +494,21 @@ class Core {
             if (this.blocks.get(keyOf(cell)) === false) continue;
 
             this.markOwn(cell);
+
+            // The mini core does not run the command itself: it writes the core
+            // block, with the command and `auto` already in it, so the block that
+            // executes is a real core block.
+            if (this.fillItem?.usable) {
+                const own = this.fillItem.run(this.cellCommands(cell, text));
+                if (own) {
+                    this.blocks.set(keyOf(cell), true);
+                    this.lastLocation = cell;
+                    this.lastViaItem = true;
+                    return cell;
+                }
+            }
+            this.lastViaItem = false;
+
             const sent = this.bot.write
                 ? this.bot.write('update_command_block', {
                     location: cell,
@@ -564,10 +574,16 @@ class Core {
     // Runs a command in a core block and returns what the block printed, or null
     // if nothing answered. The block's output is only readable by asking the
     // server for the block's NBT, so a query follows the write.
-    runTracked(command, { delay = 150, timeout = 3000 } = {}) {
+    runTracked(command, { delay = null, timeout = 3000 } = {}) {
         this.lastLocation = null;
         const cell = this.run(command);
         if (!cell) return Promise.resolve(null);
+
+        // Through the mini core the core block is created by the wrapper it runs,
+        // and a fresh mini block has to be placed before any of that can happen.
+        const wait = delay ?? (this.lastViaItem
+            ? (this.fillItem?.pending ? 1500 : 600)
+            : 150);
 
         const transactionId = this.queryId++;
         return new Promise(resolve => {
@@ -588,7 +604,7 @@ class Core {
                 if (!this.queries.delete(transactionId)) return;
                 clearTimeout(timer);
                 resolve(null);
-            }, delay);
+            }, wait);
         });
     }
 
@@ -840,7 +856,7 @@ class Core {
                 `core missing or incomplete (${standing} block(s) standing); rebuilding`);
             // Reuse a survivor when one is standing; with nothing left the fill
             // has to go through chat.
-            this.refill('watchdog', { force: standing === 0, viaChat: standing === 0 });
+            this.refill('watchdog', { force: standing === 0 });
         }, this.watchdogMs);
         this.watchdog.unref?.();
     }
@@ -858,7 +874,7 @@ class Core {
     onBlockChange(packet) {
         // The bot's own block lives outside the area; if something changes it, the
         // next command places a new one.
-        this.fillItem?.noteBlockChange(packet);
+        this.fillItem?.noteBlockChange?.(packet);
         if (!this.enabled || !this.refillEnabled) return false;
         const location = packet?.location;
         if (!location || this.origin.x === null) return false;
@@ -1003,6 +1019,17 @@ function parseLastOutput(nbt) {
     }
 
     return flattenComponent(raw) || null;
+}
+
+// A command as an SNBT string: the quotes and backslashes a command may contain
+// are escaped, and it stays one line. Long commands are cut before escaping so a
+// half-written escape never reaches the server.
+function snbtQuote(command) {
+    return String(command ?? '')
+        .slice(0, 15000)
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"');
 }
 
 function keyOf(loc) {

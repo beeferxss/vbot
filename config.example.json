@@ -166,7 +166,7 @@
     },
     "refill": {
       "enabled": true,
-      "block": "minecraft:repeating_command_block",
+      "block": "minecraft:command_block",
       "mode": "replace",
       "intervalMs": 1000,
       "spamMs": 150,

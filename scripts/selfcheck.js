@@ -377,27 +377,40 @@ async function main() {
         };
         const coreConfig = { enabled: true, area: { size: 16, y: 64 }, refill: { enabled: true } };
         const core = new Core({ bot: coreBot, config: coreConfig, logger });
+        // The mini core has its own check; what it is handed is what matters here.
+        const handed = [];
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (handed.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
 
         assert.strictEqual(core.reset(), true);
         assert.deepStrictEqual(core.origin, { x: 32, y: 64, z: -16 });
         assert.deepStrictEqual(core.bounds, { x: 47, y: 79, z: -1 });
 
         core.refill('test');
-        assert.strictEqual(
-            sent[0],
-            '/fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace'
-        );
+        assert.strictEqual(handed[0], 'fill 32 64 -16 47 79 -1 minecraft:command_block replace');
+        assert.deepStrictEqual(sent, [], 'a fill never goes out as chat');
 
         const first = core.run('say hello');
         const second = core.run('/gamemode creative');
         assert.deepStrictEqual(first, { x: 32, y: 64, z: -16 });
         assert.notDeepStrictEqual(second, first, 'commands must use different blocks');
-        assert.strictEqual(writes[0].name, 'update_command_block');
-        assert.strictEqual(writes[0].payload.command, 'say hello');
-        // The block is repeating, and the packet has to say so.
-        assert.strictEqual(writes[0].payload.mode, 1, 'a repeating block is written as repeating');
-        assert.strictEqual(writes[0].payload.flags, 0b101, 'always active, tracking output');
-        assert.strictEqual(writes[1].payload.command, 'gamemode creative');
+        // The command is not run in the mini core: the core block is written and
+        // created holding the command, so it runs once, in the core.
+        assert.strictEqual(handed[1], 'setblock 32 64 -16 minecraft:air');
+        assert.strictEqual(
+            handed[2],
+            'setblock 32 64 -16 minecraft:command_block{Command:"say hello",auto:1b,TrackOutput:1b} replace'
+        );
+        assert.strictEqual(handed[3], `setblock ${second.x} ${second.y} ${second.z} minecraft:air`);
+        assert.strictEqual(
+            handed[4],
+            `setblock ${second.x} ${second.y} ${second.z} ` +
+            'minecraft:command_block{Command:"gamemode creative",auto:1b,TrackOutput:1b} replace'
+        );
+        assert.deepStrictEqual(writes, [], 'no packet reaches the core directly');
 
         // Our own writes must not look like damage, and neither may the fill.
         assert.strictEqual(core.onBlockChange({ location: first }), false);
@@ -509,19 +522,17 @@ async function main() {
         // 1.21.5+ stores the name as an inline component, not a quoted JSON string.
         const modern = new Core({ bot: fake('1.21.5'), config: nameConfig, logger });
         modern.reset();
-        modern.refill('test');
         assert.strictEqual(
-            named[0],
-            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:{text:\'vbot\',color:\'green\'}} replace'
+            modern.fillCommand(),
+            "fill 0 64 0 8 72 8 minecraft:command_block{CustomName:{text:'vbot',color:'green'}} replace"
         );
         assert.match(modern.status(), /name \{"text"/);
 
         const legacy = new Core({ bot: fake('1.20.4'), config: nameConfig, logger });
         legacy.reset();
-        legacy.refill('test');
         assert.strictEqual(
-            named[1],
-            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
+            legacy.fillCommand(),
+            'fill 0 64 0 8 72 8 minecraft:command_block{CustomName:\'{"text":"vbot","color":"green"}\'} replace'
         );
 
         // Without a name the fill stays plain.
@@ -531,20 +542,17 @@ async function main() {
             logger
         });
         plainCore.reset();
-        plainCore.refill('test');
-        assert.strictEqual(
-            named[2],
-            '/fill 0 64 0 8 72 8 minecraft:repeating_command_block replace'
-        );
+        assert.strictEqual(plainCore.fillCommand(), 'fill 0 64 0 8 72 8 minecraft:command_block replace');
+        assert.deepStrictEqual(named, [], 'fills never go out as chat');
 
         modern.destroy();
         legacy.destroy();
         plainCore.destroy();
     });
 
-    await check('the bot places its own command block from a slot packet and edits that instead of the core', async () => {
+    await check('the bot places its own command blocks from a slot packet and edits those instead of the core', async () => {
         const { FillItem, commandBlockItem, HOTBAR_SLOT, MOVE_LIMIT } = require('../src/fillitem');
-        const command = 'fill 1 2 3 4 5 6 minecraft:command_block replace';
+        const command = 'setblock 1 2 3 minecraft:air';
 
         // The item is nothing but the block: a block_entity_data component makes
         // Paper 26.1.2 fail to decode set_creative_mode_slot and drop the
@@ -558,23 +566,26 @@ async function main() {
         assert.deepStrictEqual(item.removeComponents, []);
 
         const writes = [];
-        // The real state number of a repeating command block on that version:
-        // the bot only accepts a placement echo that names a command block.
+        // The real state number of a command block on that version: the bot only
+        // accepts a placement echo that names a command block.
         const CMD_STATE = require('minecraft-data')('1.21.4')
-            .blocksByName.repeating_command_block.defaultState;
+            .blocksByName.command_block.defaultState;
         const itemBot = {
             client: { version: '1.21.4' },
             position: { x: 10.7, y: 64, z: -3.2 },
             selfCare: { gamemode: 1 },
-            registries: { item: new Map([['repeating_command_block', 1234]]) },
+            registries: { item: new Map([['command_block', 1234]]) },
             write: (name, payload) => (writes.push({ name, payload }), true)
         };
         const fillItem = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 } });
 
         assert.strictEqual(fillItem.usable, true);
         assert.strictEqual(fillItem.standing, false);
+        // Normal blocks, not repeating ones: a command runs once.
+        assert.strictEqual(fillItem.block, 'command_block');
+        assert.strictEqual(fillItem.mode, 2, 'a normal block is written as normal');
 
-        // First run: the item, then a block on the ground beside the bot. The
+        // First command: the item, then a block on the ground beside the bot. The
         // command waits: where the block lands is the server's answer.
         const cell = fillItem.run(command);
         assert.deepStrictEqual(cell, { x: 11, y: 64, z: -4 });
@@ -587,80 +598,101 @@ async function main() {
         assert.deepStrictEqual(writes[2].payload.location, { x: 11, y: 63, z: -4 }, 'the ground beside the bot');
         assert.strictEqual(writes[2].payload.direction, 1, 'placed on top of it, beside the bot');
         assert.strictEqual(writes[2].payload.cursorY, 0.5);
-        assert.strictEqual(fillItem.standing, true);
 
         // A command asked for while the placement is unanswered waits with it
         // instead of being written into air.
         assert.deepStrictEqual(fillItem.run('say queued'), cell);
         assert.strictEqual(writes.length, 3, 'nothing goes out before the block is known');
 
-        // The server answers: the block is there, so the command goes in.
+        // The server answers: the block is there, so the commands go in.
         assert.strictEqual(fillItem.noteBlockChange({ location: { ...cell }, type: CMD_STATE }), false);
         assert.strictEqual(fillItem.pending, null, 'the placement was answered');
-        assert.strictEqual(fillItem.state, CMD_STATE);
-        assert.deepStrictEqual(writes.slice(3), [
-            { name: 'update_command_block', payload: { location: cell, command, mode: 1, flags: 0b101 } },
-            { name: 'update_command_block', payload: { location: cell, command: 'say queued', mode: 1, flags: 0b101 } }
-        ]);
-
-        await new Promise(resolve => setTimeout(resolve, 90));
-        // The slot is emptied again, and the block stays where it is.
-        assert.deepStrictEqual(writes[5], {
-            name: 'set_creative_slot',
-            payload: { slot: HOTBAR_SLOT, item: { itemCount: 0, components: [], removeComponents: [] } }
+        assert.strictEqual(fillItem.standing, true);
+        assert.deepStrictEqual(writes[3], {
+            name: 'update_command_block',
+            payload: { location: cell, command, mode: 2, flags: 0b101 }
         });
-        assert.strictEqual(fillItem.carrier.y, 64);
+
+        // The commands of one operation go a tick apart, so a block created after
+        // a clear really sees the cleared cell.
+        await new Promise(resolve => setTimeout(resolve, 200));
+        assert.deepStrictEqual(
+            writes
+                .filter(write => write.name === 'update_command_block')
+                .map(write => write.payload.command),
+            [command, 'say queued']
+        );
+        // The slot is emptied again, and the block stays where it is.
+        assert.ok(writes.some(write => write.name === 'set_creative_slot'
+            && write.payload.item?.itemCount === 0), 'the slot is emptied again');
         assert.ok(!writes.some(write => write.name === 'block_dig'), 'the block is not broken');
 
-        // Every later change is written into that block, like a core block.
-        assert.deepStrictEqual(fillItem.run('say hi'), cell);
-        assert.deepStrictEqual(writes[6], {
-            name: 'update_command_block',
-            payload: { location: cell, command: 'say hi', mode: 1, flags: 0b101 }
-        });
-        assert.strictEqual(writes.length, 7, 'no second item, no second placement');
+        // The next command goes to another side, so the two blocks can run at
+        // once instead of overwriting each other.
+        const second = fillItem.run('say two');
+        assert.deepStrictEqual(second, { x: 10, y: 64, z: -3 }, 'the next side');
+        assert.strictEqual(writes[6].name, 'set_creative_slot', 'a second block of its own');
+        fillItem.noteBlockChange({ location: second, type: CMD_STATE });
+        assert.strictEqual(fillItem.cells().length, 2);
 
-        // Standing still keeps editing the same block.
-        fillItem.run(command);
-        assert.strictEqual(writes[7].name, 'update_command_block');
-        assert.deepStrictEqual(writes[7].payload.location, cell);
+        const third = fillItem.run('say three');
+        assert.deepStrictEqual(third, { x: 9, y: 64, z: -4 });
+        fillItem.noteBlockChange({ location: third, type: CMD_STATE });
+        const fourth = fillItem.run('say four');
+        assert.deepStrictEqual(fourth, { x: 10, y: 64, z: -5 });
+        fillItem.noteBlockChange({ location: fourth, type: CMD_STATE });
+        assert.strictEqual(fillItem.cells().length, 4, 'one block on each side');
 
-        // Moving further than five blocks: a new block next to the bot, the old
-        // one removed, and the command once the block is confirmed.
+        // With all four standing the set is used in turn, not placed again.
+        const before = writes.length;
+        assert.deepStrictEqual(fillItem.run('say five'), cell, 'back to the first block');
+        assert.strictEqual(writes.length, before + 1, 'no item, no placement');
+        assert.strictEqual(writes[before].name, 'update_command_block');
+        assert.deepStrictEqual(writes[before].payload.location, cell);
+
+        // Moving further than five blocks: the set it leaves behind is dug up and
+        // a new one is placed next to the bot.
         itemBot.position = { x: 10.7 + MOVE_LIMIT + 2, y: 64, z: -3.2 };
         const moved = fillItem.run(command);
-        assert.deepStrictEqual(moved, { x: 18, y: 64, z: -4 });
-        assert.deepStrictEqual(writes.map(write => write.name).slice(-4), [
-            'set_creative_slot', 'held_item_slot', 'block_place', 'block_dig'
-        ]);
-        assert.deepStrictEqual(writes[writes.length - 1].payload.location, cell, 'only the block it left behind');
+        const tail = writes.slice(-7);
+        assert.deepStrictEqual(
+            tail.map(write => write.name),
+            ['block_dig', 'block_dig', 'block_dig', 'block_dig', 'set_creative_slot', 'held_item_slot', 'block_place']
+        );
+        const old = [cell, second, third, fourth];
+        assert.ok(tail.slice(0, 4).every(write => old.some(
+            where => where.x === write.payload.location.x
+                && where.y === write.payload.location.y
+                && where.z === write.payload.location.z
+        )), 'only the blocks it left behind');
+        assert.strictEqual(fillItem.cells().length, 0, 'nothing standing until the new block answers');
         assert.strictEqual(fillItem.noteBlockChange({ location: moved, type: CMD_STATE }), false);
-        assert.deepStrictEqual(fillItem.carrier, moved);
+        assert.strictEqual(fillItem.cells().length, 1);
         assert.deepStrictEqual(writes[writes.length - 1], {
             name: 'update_command_block',
-            payload: { location: moved, command, mode: 1, flags: 0b101 }
+            payload: { location: moved, command, mode: 2, flags: 0b101 }
         });
 
-        // A side that answers with air refused the block: the next placement
-        // uses another side, and no command is written into thin air again.
+        // A side that answers with air refused the block: the command is not
+        // written into thin air, and another side is tried next time.
         itemBot.position = { x: 40.7, y: 64, z: -3.2 };
         const refused = fillItem.run(command);
-        assert.deepStrictEqual(refused, { x: 41, y: 64, z: -4 });
         fillItem.noteBlockChange({ location: refused, type: 0 });
         await new Promise(resolve => setTimeout(resolve, 900));
         assert.strictEqual(fillItem.standing, false, 'air means nothing was placed');
         const retried = fillItem.run(command);
-        assert.deepStrictEqual(retried, { x: 40, y: 64, z: -3 }, 'the next side');
+        assert.notDeepStrictEqual(retried, refused, 'the next side');
 
         // A side the core's fill would overwrite is skipped when another is free.
-        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 }, avoid: cell => cell.x === 40 });
+        const avoiding = new FillItem({ bot: itemBot, logger, config: { holdMs: 40 }, avoid: cellAt => cellAt.x === 40 });
         assert.deepStrictEqual(avoiding.run(command), { x: 41, y: 64, z: -4 }, 'outside the core area');
 
-        // A block update at its cell (mined, or a fill replaced it) means the
-        // next command places a new one; updates elsewhere are not its business.
+        // A block update at one of its cells (mined, or a fill replaced it) means
+        // the next command places a new one; updates elsewhere are not its
+        // business.
         fillItem.noteBlockChange({ location: { ...retried }, type: CMD_STATE });
         assert.strictEqual(fillItem.noteBlockChange({ location: { x: 0, y: 0, z: 0 } }), false);
-        fillItem.placedAt = 0;
+        fillItem.slots = fillItem.slots.map(slot => (slot ? { ...slot, placedAt: 0 } : slot));
         assert.strictEqual(fillItem.noteBlockChange({ location: retried, type: 0 }), true);
         assert.strictEqual(fillItem.standing, false);
         fillItem.run(command);
@@ -674,7 +706,7 @@ async function main() {
         for (const version of ['1.20.5', '1.21', '1.21.4', '1.21.5', '1.21.9', '26.1']) {
             const serializer = mc.createSerializer({ state: 'play', isServer: false, version });
             const registry = data(version);
-            const itemId = registry.itemsByName.repeating_command_block.id;
+            const itemId = registry.itemsByName.command_block.id;
             const positiveItem = commandBlockItem(itemId);
             const packet = serializer.createPacketBuffer({
                 name: 'set_creative_slot',
@@ -685,7 +717,7 @@ async function main() {
             assert.strictEqual(packet[2], HOTBAR_SLOT, 'the hotbar slot number');
             assert.ok(serializer.createPacketBuffer({
                 name: 'update_command_block',
-                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 1, flags: 0b101 }
+                params: { location: { x: 1, y: 2, z: 3 }, command: 'say hi', mode: 2, flags: 0b101 }
             }).length > 0, `${version} should encode the command edit`);
             assert.ok(serializer.createPacketBuffer({
                 name: 'held_item_slot',
@@ -734,37 +766,41 @@ async function main() {
         registryBot.destroy();
     });
 
-    await check('refills and commands go through the bot\'s own command block first', async () => {
+    await check('refills and commands go through the bot\'s own command blocks first', async () => {
         const used = [];
+        const sent = [];
         const core = new Core({
-            bot: { position: { x: 0, y: 70, z: 0 }, chat: () => true, write: () => true, log: logger },
+            bot: { position: { x: 0, y: 70, z: 0 }, chat: command => sent.push(command), write: () => true, log: logger },
             config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
             logger
         });
         core.reset();
-        // Only a core that has worked before rebuilds through an item: the first
-        // build has no fallback if the placement is refused, so it goes as chat.
-        core.everReady = true;
         core.fillItem = {
             usable: true,
-            run: command => (used.push(command), { x: 0, y: 63, z: 0 }),
+            run: (...commands) => (used.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
             destroy: () => {}
         };
 
+        // The very first build goes through the bot's blocks too: chat is never
+        // the way a fill leaves the bot.
         assert.strictEqual(core.refill('damaged', { force: true }), true);
         assert.strictEqual(used.length, 1);
-        assert.match(used[0], /^fill 0 64 0 8 72 8 /, 'the item carries the fill');
+        assert.match(used[0], /^fill 0 64 0 8 72 8 /, 'the mini core carries the fill');
+        assert.deepStrictEqual(sent, [], 'nothing goes out as chat');
 
-        // No chat fill went out: the block was used instead.
         core.refill('damaged', { force: true });
         assert.strictEqual(used.length, 2);
         assert.strictEqual(core.itemFills, 2);
 
-        // Commands are edited into that same block, not into core blocks: the
-        // core is only changed by the block running them.
+        // A command is not run in the mini core either: it is told to write the
+        // core block, with the command and `auto` inside it.
         const cell = core.run('say hi');
-        assert.deepStrictEqual(cell, { x: 0, y: 63, z: 0 });
-        assert.strictEqual(used[2], 'say hi');
+        assert.deepStrictEqual(cell, { x: 0, y: 64, z: 0 });
+        assert.strictEqual(used[2], 'setblock 0 64 0 minecraft:air');
+        assert.strictEqual(
+            used[3],
+            'setblock 0 64 0 minecraft:command_block{Command:"say hi",auto:1b,TrackOutput:1b} replace'
+        );
         assert.strictEqual(core.lastLocation, cell);
         core.destroy();
     });
@@ -782,22 +818,31 @@ async function main() {
             logger
         });
 
+        const fills = [];
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (fills.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
+
+        // A join rebuilds the core at once, through the bot's own blocks.
         core.onReady();
-        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+        assert.match(fills[0], /^fill 0 64 0 1 65 1 /);
         await new Promise(resolve => setTimeout(resolve, 450));
         assert.strictEqual(core.ready, true);
 
-        // Nothing standing: the watchdog has to fall back to chat, repeatedly.
+        // Nothing standing: the watchdog rebuilds it the same way, repeatedly.
         for (const key of core.blocks.keys()) core.blocks.set(key, false);
-        sent.length = 0;
-        await new Promise(resolve => setTimeout(resolve, 120));
-        assert.ok(sent.length >= 1, 'the watchdog should rebuild the core through chat');
-        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+        fills.length = 0;
+        await new Promise(resolve => setTimeout(resolve, 150));
+        assert.ok(fills.length >= 1, 'the watchdog should rebuild the core through its own blocks');
+        assert.match(fills[0], /^fill 0 64 0 1 65 1 /);
+        assert.deepStrictEqual(sent, [], 'nothing goes out as chat');
 
         core.destroy();
-        const after = sent.length;
+        const after = fills.length;
         await new Promise(resolve => setTimeout(resolve, 120));
-        assert.strictEqual(sent.length, after, 'destroy stops the watchdog');
+        assert.strictEqual(fills.length, after, 'destroy stops the watchdog');
     });
 
     await check('selfcare unmutes and keeps command spy on', async () => {
@@ -931,10 +976,16 @@ async function main() {
             config: { enabled: true, area: { size: 4, y: 64 }, refill: { enabled: true } },
             logger
         });
+        const fills = [];
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (fills.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
         core.reset();
         core.refill('startup');
         await new Promise(resolve => setTimeout(resolve, 300));
-        sent.length = 0;
+        fills.length = 0;
         core.refilling = false;
         core.graceUntil = 0;
         core.lastRefillAt = 0;
@@ -943,12 +994,13 @@ async function main() {
 
         core.onBlockChange({ location: { x: 1, y: 64, z: 1 } });
         await new Promise(resolve => setTimeout(resolve, 400));
-        assert.ok(sent.length >= 1, 'damage should trigger a refill');
-        assert.match(sent[sent.length - 1], /^\/fill 0 64 0 3 67 3 /);
+        assert.ok(fills.length >= 1, 'damage should trigger a refill');
+        assert.match(fills[fills.length - 1], /^fill 0 64 0 3 67 3 /);
+        assert.deepStrictEqual(sent, [], 'a refill never goes out as chat');
         core.destroy();
     });
 
-    await check('an automatic refill reuses a surviving block, but an explicit one chats', async () => {
+    await check('an automatic refill reuses a surviving block, and nothing ever chats', async () => {
         const sent = [];
         const writes = [];
         const coreBot = {
@@ -963,34 +1015,32 @@ async function main() {
             logger
         });
         core.reset();
+        core.markAllAlive();
+        core.everReady = true;
 
-        core.refill('startup');
-        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
-        await new Promise(resolve => setTimeout(resolve, 450));
-        assert.strictEqual(core.ready, true);
-        assert.strictEqual(core.blocks.size, 8, 'every cell is recorded once the fill lands');
-
-        // One survivor left: an automatic refill writes into it, quietly.
+        // One survivor left: the refill writes into it, quietly.
         for (const key of core.blocks.keys()) {
             if (key !== '1:65:1') core.blocks.set(key, false);
         }
-        sent.length = 0;
-        writes.length = 0;
         core.lastRefillAt = 0; // pretend the last refill is old enough
         core.refill('damaged');
         assert.deepStrictEqual(sent, [], 'a surviving block carries the fill');
         assert.strictEqual(writes.length, 1);
         assert.deepStrictEqual(writes[0].payload.location, { x: 1, y: 65, z: 1 });
         assert.match(writes[0].payload.command, /^fill 0 64 0 1 65 1 /);
+        assert.strictEqual(writes[0].payload.mode, 2, 'the core blocks are normal ones');
 
-        // v\core refill asks for chat even though a block is available.
+        // An explicit refill takes the same route: there is no chat path at all.
         await new Promise(resolve => setTimeout(resolve, 450));
         sent.length = 0;
         writes.length = 0;
         core.lastRefillAt = 0;
-        core.refill('command', { viaChat: true });
-        assert.strictEqual(writes.length, 0, 'an explicit refill never writes into a block');
-        assert.match(sent[0], /^\/fill 0 64 0 1 65 1 /);
+        core.refilling = false;
+        core.refill('command', { force: true });
+        assert.deepStrictEqual(sent, [], 'nothing is ever sent as chat');
+        assert.strictEqual(writes.length, 1);
+        assert.strictEqual(writes[0].name, 'update_command_block');
+        assert.match(writes[0].payload.command, /^fill 0 64 0 1 65 1 /);
         core.destroy();
     });
 
@@ -1349,12 +1399,11 @@ async function main() {
         assert.strictEqual(packets[0].name, 'update_command_block');
         assert.strictEqual(packets[0].payload.command, 'gamemode creative vbot');
 
-        // No fill has landed yet, so there is no block to reuse: the fill is the
-        // one command allowed to use chat, and it must not go back through the
-        // core.
+        // No fill has landed yet and no mini core can be placed: there is nothing
+        // to run the fill in, and chat is not a fallback for it either.
         packets.length = 0;
         core.refill('damaged');
-        assert.deepStrictEqual(spoken, ['/fill 0 64 0 1 65 1 minecraft:repeating_command_block replace']);
+        assert.deepStrictEqual(spoken, [], 'a fill never goes out as chat');
         assert.strictEqual(packets.length, 0, 'a refill is never routed back through the core');
         core.destroy();
     });
@@ -1529,6 +1578,12 @@ async function main() {
             logger
         });
         core.reset({ x: 0, y: 70, z: 0 });
+        const filled = [];
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (filled.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
 
         const statusBot = { ...fakeBot, core, clickTokens: clicks };
         sent.length = 0;
@@ -1550,7 +1605,8 @@ async function main() {
         named.length = 0;
         assert.strictEqual(clicks.handle(`VojtaV12 issued server command: ${button.clickEvent.value}`), true);
         await new Promise(resolve => setTimeout(resolve, 10));
-        assert.ok(named.some(command => command.startsWith('/fill 0 64 0 1 65 1 ')), 'the click refilled the core');
+        assert.ok(filled.some(command => /^fill 0 64 0 1 65 1 /.test(command)), 'the click refilled the core');
+        assert.deepStrictEqual(named, [], 'the click does not talk to the server');
 
         core.destroy();
         clicks.destroy();
