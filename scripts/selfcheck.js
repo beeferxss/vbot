@@ -2146,11 +2146,12 @@ async function main() {
         assert.strictEqual(ansiBlock('a\nb'), '```ansi\na\nb\n```');
         assert.strictEqual(toDiscordAnsi('\x1b[38;2;255;255;85mx'), '\x1b[93mx');
 
-        const event = chatEventFromPacket('system_chat', {
-            content: { text: 'oDpPuqfKKNGT6g left the game', color: 'yellow' }
+        const event = chatEventFromPacket('player_chat', {
+            senderName: { text: 'Alex' },
+            plainMessage: 'hi there'
         });
-        assert.strictEqual(event.line, 'oDpPuqfKKNGT6g left the game');
-        assert.strictEqual(event.ansi, '\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m');
+        assert.strictEqual(event.line, '<Alex> hi there');
+        assert.strictEqual(event.ansi, '\x1b[96m<Alex>\x1b[0m hi there');
 
         const posted = [];
         const bot = {
@@ -2176,22 +2177,30 @@ async function main() {
         bridge.started = true;
         bridge.buildRelays();
 
-        bridge.handleMinecraftChat(bot, { line: event.line, ansi: event.ansi, parsed: null, verified: false });
+        assert.strictEqual(event.username, 'Alex');
+        bridge.handleMinecraftChat(bot, {
+            ...event,
+            parsed: { username: event.username, message: event.message }
+        });
         await bridge.flush(bridge.relays.get('kbpw'));
 
         assert.strictEqual(posted.length, 1);
-        assert.strictEqual(posted[0].content, '```ansi\n\x1b[93moDpPuqfKKNGT6g left the game\x1b[0m\n```');
+        assert.strictEqual(
+            posted[0].content,
+            '```ansi\n\x1b[90m[kbpw]\x1b[0m \x1b[96m<Alex>\x1b[0m hi there\n```'
+        );
         assert.deepStrictEqual(posted[0].allowedMentions, { parse: [] });
 
-        // The core's own command-block confirmations never reach the channel.
-        bridge.handleMinecraftChat(bot, {
-            line: 'Command set: whois 9Pon4Inkr7Kn',
-            ansi: 'Command set: whois 9Pon4Inkr7Kn',
-            parsed: null,
-            verified: false
-        });
+        // System output, including every command-block confirmation, stays in
+        // game: only player chat is relayed.
+        bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
+            content: { text: 'Command set: whois 9Pon4Inkr7Kn', color: 'gray' }
+        }));
+        bridge.handleMinecraftChat(bot, chatEventFromPacket('system_chat', {
+            content: { text: 'oDpPuqfKKNGT6g left the game', color: 'yellow' }
+        }));
         await bridge.flush(bridge.relays.get('kbpw'));
-        assert.strictEqual(posted.length, 1, 'command-set confirmations are not relayed');
+        assert.strictEqual(posted.length, 1, 'system lines are not relayed');
 
         bridge.destroy();
     });

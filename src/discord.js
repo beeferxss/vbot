@@ -2,9 +2,9 @@
 
 // Two-way Discord bridge.
 //
-//   Minecraft -> Discord: the server's chat feed - player chat plus joins,
-//   leaves and other system lines - is posted to that server's channel as an
-//   ANSI code block, one message per burst.
+//   Minecraft -> Discord: player chat is posted to that server's channel as an
+//   ANSI code block, one message per burst. System output stays in game, so the
+//   core's command-block bookkeeping never reaches a channel.
 //
 //   Discord -> Minecraft: messages in that channel are shown in game with a
 //   tellraw, through the core when it is ready and as chat when it is not.
@@ -54,14 +54,6 @@ function discordComponent({ author, message }) {
         { text: ': ', color: 'gray' },
         { text: oneLine(message, MC_LIMIT), color: 'white' }
     ];
-}
-
-// Command-block bookkeeping the core produces for its own writes. It is useful
-// in game while debugging, never in a channel.
-const CORE_NOISE = /^(?:Command set\b|advMode\.setCommand|commands\.(?:setblock|fill)\.[a-z]+|Changed the block at |Successfully filled |No blocks were filled)/i;
-
-function stripAnsi(text) {
-    return String(text ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 }
 
 // Discord's ansi code block only renders the sixteen terminal colours, so any
@@ -243,20 +235,19 @@ class DiscordBridge {
         const relay = this.relays.get(bot.id);
         if (!relay) return;
 
+        // Only player chat is relayed. System output carries the core's own
+        // command-block confirmations and server plugin chatter, which does not
+        // belong in a channel.
         const parsed = event?.parsed;
-        // The styled line is what the server actually showed, so system
-        // messages (joins, leaves, deaths) are relayed too, not just player chat.
-        const ansi = String(event?.ansi || event?.line || '').trim();
-        if (!ansi) return;
+        if (!parsed?.username || !parsed?.message) return;
+        if (parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
+        if (this.isCommand(parsed.message)) return;
+        if (this.consumeEcho(relay, parsed.message)) return;
 
-        const plain = stripAnsi(ansi).trim();
-        if (!plain) return;
-        if (parsed?.username && parsed.username.toLowerCase() === String(bot.server?.username || '').toLowerCase()) return;
-        if (parsed?.message && this.isCommand(parsed.message)) return;
-        if (CORE_NOISE.test(plain)) return;
-        if (this.consumeEcho(relay, plain)) return;
+        const body = String(event?.ansi || '').trim()
+            || `\x1b[96m<${parsed.username}>\x1b[0m ${parsed.message}`;
 
-        relay.buffer.push(toDiscordAnsi(ansi));
+        relay.buffer.push(toDiscordAnsi(`\x1b[90m[${bot.id}]\x1b[0m ${body}`));
         while (relay.buffer.length > RELAY_MAX_BUFFER) relay.buffer.shift();
 
         if (!relay.timer) {
