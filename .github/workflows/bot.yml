@@ -48,23 +48,36 @@ jobs:
       - name: Run bot with automatic crash recovery
         shell: bash
         env:
-          RUN_WINDOW_SECONDS: ${{ vars.VBOT_RUN_WINDOW_SECONDS || '14100' }}
+          # Six hours per session: the job timeout is 360 minutes, so the window
+          # stops a little short to leave room for persisting the data and
+          # starting the next run.
+          RUN_WINDOW_SECONDS: ${{ vars.VBOT_RUN_WINDOW_SECONDS || '20700' }}
         run: |
           set -euo pipefail
 
           RESTART_DELAY=10
           deadline=$((SECONDS + RUN_WINDOW_SECONDS))
+          LOG=/tmp/vbot.log
 
           while (( SECONDS < deadline )); do
             remaining=$((deadline - SECONDS))
+            started=$SECONDS
 
+            # The bot's output never reaches the workflow log: it carries server
+            # chat, player names and addresses, and this log is public. Only how
+            # the session ended is printed, and the file is emptied for the next
+            # session so nothing piles up on the runner.
             set +e
             timeout \
               --signal=INT \
               --kill-after=15s \
               "${remaining}s" \
-              node src/index.js 2>&1
+              node src/index.js > "$LOG" 2>&1
+            status=$?
             set -e
+
+            : > "$LOG"
+            echo "session ended after $((SECONDS - started))s (exit ${status})"
 
             if (( SECONDS >= deadline )); then
               break

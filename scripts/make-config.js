@@ -42,6 +42,11 @@ if (discordToken) {
     config.discord.enabled = true;
 }
 
+// Nothing this run prints may carry server chat: the workflow log is public, and
+// chat lines hold player names and addresses. The bot's output is kept off the
+// log as well; this makes sure nothing chatty is even produced.
+config.logging = { ...(config.logging || {}), chat: false, level: 'error' };
+
 fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
 
 console.log(`config.json written: ${enabled.length} server(s) enabled`);
