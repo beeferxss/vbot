@@ -89,6 +89,9 @@ function defaults() {
         },
         selfCare: {
             enabled: true,
+            // A bot teleported into the end (or the nether) is brought back to
+            // where it last stood in the overworld; nothing else can leave it.
+            recoverWorld: true,
             // Ask for op when we have none, then stay in creative.
             creative: true,
             commandSpy: true,
@@ -138,6 +141,25 @@ function defaults() {
             // "auto" trusts unsigned chat until the server proves it signs
             // player chat; true always trusts it; false never does.
             trustUnsigned: 'auto'
+        },
+        // A server that filters bots deops them in a loop instead of kicking
+        // them. That many deops in a minute is the filter: the bot leaves, the
+        // WARP address is changed, and it comes back. After the last change it
+        // stays in game - a whitelist is what keeps it online by then.
+        filterGuard: {
+            enabled: true,
+            deopsPerMinute: 40,
+            rotations: 3,
+            // A new address belongs to the whole runner, so every other bot is
+            // reconnected on it too. Off by default: it interrupts all of them.
+            allServers: false
+        },
+        // Cloudflare WARP, for the address changes above. Without warp-cli every
+        // call fails softly and the bot stays in game.
+        warp: {
+            enabled: false,
+            binary: 'warp-cli',
+            timeoutMs: 20000
         },
         core: {
             enabled: true,

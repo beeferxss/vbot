@@ -42,6 +42,13 @@ if (discordToken) {
     config.discord.enabled = true;
 }
 
+// WARP is installed by the workflow only when the repository asks for it; the
+// flag here keeps the bot from trying to call a client that is not there.
+config.warp = {
+    ...(config.warp || {}),
+    enabled: String(process.env.VBOT_WARP || '').toLowerCase() === 'true'
+};
+
 // Nothing this run prints may carry server chat: the workflow log is public, and
 // chat lines hold player names and addresses. The bot's output is kept off the
 // log as well; this makes sure nothing chatty is even produced.

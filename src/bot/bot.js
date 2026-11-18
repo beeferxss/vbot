@@ -9,6 +9,8 @@ const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
 const { BotCSpy } = require('../botcspy');
+const { Warp } = require('../warp');
+const { FilterGuard } = require('../filterguard');
 const { IpLookup } = require('../iplookup');
 const path = require('node:path');
 const { Filter } = require('../filter');
@@ -46,6 +48,15 @@ class Bot extends EventEmitter {
         // Reads the commands other bots run, out of the command blocks that hold
         // them: `botcspy` drives it.
         this.cspy = new BotCSpy({ bot: this, logger: this.log });
+        // A server that deops the bot over and over is filtering it; a different
+        // address is the way out, and Cloudflare WARP is what changes it.
+        this.warp = new Warp({ config: config.warp || {}, logger: this.log });
+        this.filterGuard = new FilterGuard({
+            bot: this,
+            config: config.filterGuard || {},
+            warp: this.warp,
+            logger: this.log
+        });
         this.ipLookup = new IpLookup({
             bot: this,
             store,
@@ -158,6 +169,7 @@ class Bot extends EventEmitter {
                 `(protocol ${client.version ?? 'unknown'}, gamemode ${packet.gameMode ?? '?'})`
             );
             this.selfCare?.onLoginPacket(packet);
+            this.filterGuard?.onReady();
             this.loadedSent = false;
             this.supportsPlayerLoaded = this.supportsPacket('player_loaded');
             this.emit('ready');
@@ -187,6 +199,9 @@ class Bot extends EventEmitter {
                     if (this.core && this.state === 'ready' && !this.core.started && !this.core.joining) {
                         this.core.onReady();
                     }
+                    // Where the bot last stood in the overworld: the way back if
+                    // something teleports it into the end.
+                    this.selfCare?.notePosition(this.position);
                 }
                 // A teleport is only accepted once it is confirmed, and the world
                 // only counts as loaded once the client says so. Until both have
@@ -201,6 +216,7 @@ class Bot extends EventEmitter {
         client.on('registry_data', packet => this.noteRegistry(packet));
         client.on('block_change', packet => this.core?.onBlockChange(packet));
         client.on('entity_status', packet => this.selfCare?.onEntityStatus(packet));
+        client.on('entity_status', packet => this.filterGuard?.onEntityStatus(packet));
         client.on('game_state_change', packet => this.selfCare?.onGameStateChange(packet));
         client.on('respawn', packet => this.selfCare?.onRespawn(packet));
 
@@ -667,6 +683,7 @@ class Bot extends EventEmitter {
         this.clickTokens?.destroy();
         this.selfCare?.destroy();
         this.cspy?.destroy();
+        this.filterGuard?.destroy();
         this.ipLookup?.destroy();
         this.removeAllListeners();
     }

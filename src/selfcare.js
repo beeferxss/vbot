@@ -27,6 +27,21 @@ const UNMUTED_LINES = [
 // The gamemode is a number up to 1.21, a name in the world state from 26.1 on.
 const GAMEMODES = { survival: 0, creative: 1, adventure: 2, spectator: 3 };
 
+// The world the bot is in, from a login or respawn packet. Modern versions put it
+// in the world state; older ones carry the name beside it.
+const ELSEWHERE = /minecraft:(the_end|the_nether)$/;
+const DEFAULT_WORLD = { x: 0, y: 100, z: 0 };
+
+function dimensionOf(packet) {
+    if (!packet) return null;
+    const state = packet.worldState && typeof packet.worldState === 'object'
+        ? packet.worldState
+        : packet;
+    const named = state.name ?? state.dimensionName ?? state.dimension;
+    if (typeof named !== 'string' || !named) return null;
+    return named.includes(':') ? named : `minecraft:${named}`;
+}
+
 // The gamemode a login or game-state packet carries, as the number the rest of
 // the bot compares against, or null when the packet says nothing about it.
 function gamemodeOf(packet) {
@@ -63,6 +78,12 @@ class SelfCare {
         this.spyOn = false;
         this.vanished = false;
         this.ready = false;
+        // Where the bot is and where it last stood in the overworld: a teleport
+        // into the end leaves it with no way back on its own.
+        this.dimension = null;
+        this.lastOverworld = null;
+        this.rescueTries = 0;
+        this.recoverWorld = config.recoverWorld !== false;
 
         this.opRequested = false;
         this.creativeRequested = false;
@@ -325,6 +346,7 @@ class SelfCare {
         this.nickSent = false;
         this.usernameSent = false;
         this.lastCreativeAt = 0;
+        this.rescueTries = 0;
         this.ready = true;
 
         if (!this.enabled) return;
@@ -351,10 +373,62 @@ class SelfCare {
     // put in a world state that names the mode, `creative` rather than 1, and a
     // login packet that only looks for the old field leaves the gamemode unknown.
     onLoginPacket(packet) {
+        this.noteDimension(dimensionOf(packet));
         const mode = gamemodeOf(packet);
         if (mode === null) return;
         this.gamemode = mode;
         this.creativeRequested = false;
+    }
+
+    // The position is worth keeping only while the bot is in the overworld: a
+    // teleport to the end gives end coordinates, which are not where it belongs.
+    notePosition(position) {
+        if (!position || !Number.isFinite(position.x)) return;
+        if (this.dimension && ELSEWHERE.test(this.dimension)) return;
+        this.lastOverworld = { x: position.x, y: position.y, z: position.z };
+    }
+
+    // A teleport into the end (or the nether) is not a place the bot can leave on
+    // its own, and its core does not exist there: it is brought back to the
+    // overworld, where it last stood.
+    noteDimension(name) {
+        if (!name) return;
+        const changed = name !== this.dimension;
+        this.dimension = name;
+        if (!changed) return;
+
+        if (!ELSEWHERE.test(name)) {
+            if (this.rescueTries) this.log?.info?.('back in the overworld');
+            this.rescueTries = 0;
+            return;
+        }
+
+        this.log?.info?.(`the bot is in ${name}; asking to be brought back to the overworld`);
+        this.later(() => this.rescue(), 1500);
+    }
+
+    // `execute in the overworld` is the only way back from inside the end: a plain
+    // tp would land at the same coordinates in the world the bot is already in.
+    rescue() {
+        if (!this.ready || !this.recoverWorld) return false;
+        if (!this.dimension || !ELSEWHERE.test(this.dimension)) return false;
+
+        const name = this.name;
+        if (!name) return false;
+
+        if (this.rescueTries >= 4) {
+            this.log?.warn?.(`could not leave ${this.dimension}; the next join starts in the overworld`);
+            return false;
+        }
+
+        this.rescueTries += 1;
+        const at = this.lastOverworld || DEFAULT_WORLD;
+        const x = Math.round(at.x);
+        const y = Math.round(at.y);
+        const z = Math.round(at.z);
+        this.runChat(`execute in minecraft:overworld run tp ${name} ${x} ${y} ${z}`);
+        this.later(() => this.rescue(), 3000);
+        return true;
     }
 
     // The player list carries a gamemode per player, which is how newer servers
@@ -377,6 +451,7 @@ class SelfCare {
     }
 
     onRespawn(packet) {
+        this.noteDimension(dimensionOf(packet));
         const mode = gamemodeOf(packet);
         if (mode === null) return;
         this.gamemode = mode;

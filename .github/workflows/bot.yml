@@ -31,6 +31,23 @@ jobs:
       - name: Install dependencies
         run: npm ci --silent
 
+      # Only when the repository asks for it: Cloudflare WARP is what changes the
+      # bot's address when a server filters it, and it needs its own daemon.
+      - name: Install Cloudflare WARP
+        if: vars.VBOT_WARP == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update -qq
+          sudo apt-get install -y cloudflare-warp
+          sudo systemctl enable --now warp-svc
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos connect
+
       - name: Generate configuration
         id: config
         env:
@@ -38,6 +55,7 @@ jobs:
           BOT_ADMIN_KEY: ${{ secrets.BOT_ADMIN_KEY }}
           BOT_TRUSTED_KEY: ${{ secrets.BOT_TRUSTED_KEY }}
           BOT_PREFIXES: ${{ vars.VBOT_PREFIXES }}
+          VBOT_WARP: ${{ vars.VBOT_WARP }}
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         shell: bash
         run: |

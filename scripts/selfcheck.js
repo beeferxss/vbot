@@ -1229,6 +1229,167 @@ async function main() {
         assert.match(JSON.stringify(quietReplies[0]), /opped/, 'unanswered queries are a permission problem');
     });
 
+    await check('a deop loop makes the filter guard leave and change the address', async () => {
+        const EventEmitter = require('node:events');
+        const { FilterGuard } = require('../src/filterguard');
+
+        const steps = [];
+        const guardBot = new EventEmitter();
+        guardBot.client = { entityId: 5 };
+        guardBot.destroyed = false;
+        guardBot.registry = null;
+        guardBot.stop = reason => steps.push(`stop:${reason}`);
+        guardBot.start = () => steps.push('start');
+
+        const warp = {
+            enabled: true,
+            rotate: async () => {
+                steps.push('rotate');
+                return true;
+            }
+        };
+        const guard = new FilterGuard({ bot: guardBot, config: { settleMs: 0 }, warp, logger });
+        guard.onReady();
+
+        const deop = () => guard.onEntityStatus({ entityId: 5, entityStatus: 24 });
+
+        // Another player being deopped is not this bot's business.
+        for (let i = 0; i < 60; i++) guard.onEntityStatus({ entityId: 99, entityStatus: 24 });
+        assert.strictEqual(guard.deops.length, 0, 'only the bot itself counts');
+        assert.strictEqual(guard.rotations, 0);
+
+        // 39 deops in a minute is not a filter yet.
+        for (let i = 0; i < 39; i++) {
+            guard.opLevel = 4;
+            deop();
+        }
+        assert.strictEqual(guard.deops.length, 39);
+        assert.strictEqual(guard.rotations, 0, 'below the limit nothing happens');
+
+        // The fortieth is: leave, change the address, come back.
+        guard.opLevel = 4;
+        deop();
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.strictEqual(guard.rotations, 1, 'one address change');
+        assert.ok(steps.includes('rotate'), 'the address is changed');
+        assert.ok(steps.some(step => step.startsWith('stop:')), 'the bot leaves the server first');
+        assert.strictEqual(steps[steps.length - 1], 'start', 'and comes back on the new one');
+
+        // Three changes are the most it gets; after that it stays in game.
+        for (let round = 0; round < 5; round++) {
+            for (let i = 0; i < 40; i++) {
+                guard.opLevel = 4;
+                deop();
+            }
+            await new Promise(resolve => setTimeout(resolve, 30));
+        }
+        assert.strictEqual(guard.rotations, 3, 'no more than three address changes');
+        assert.strictEqual(guard.staying, true, 'then it stays in game');
+
+        // With WARP off there is no address to change: it stays straight away.
+        const offBot = new EventEmitter();
+        offBot.client = { entityId: 6 };
+        offBot.stop = () => {};
+        offBot.start = () => {};
+        const offGuard = new FilterGuard({
+            bot: offBot,
+            config: { settleMs: 0 },
+            warp: { enabled: false, rotate: async () => false },
+            logger
+        });
+        offGuard.onReady();
+        for (let i = 0; i < 40; i++) {
+            offGuard.opLevel = 4;
+            offGuard.onEntityStatus({ entityId: 6, entityStatus: 24 });
+        }
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.strictEqual(offGuard.rotations, 0, 'no rotation without WARP');
+        assert.strictEqual(offGuard.staying, true, 'it stays in game instead');
+        guard.destroy();
+        offGuard.destroy();
+    });
+
+    await check('warp changes the address through its own client', async () => {
+        const { Warp } = require('../src/warp');
+
+        const calls = [];
+        const warp = new Warp({
+            config: { enabled: true },
+            logger,
+            run: async (binary, args) => {
+                calls.push([binary, ...args]);
+                return { ok: true, stdout: 'Connected', stderr: '' };
+            }
+        });
+        assert.strictEqual(await warp.rotate(), true);
+        assert.deepStrictEqual(calls.map(call => call.slice(1)), [
+            ['--accept-tos', 'disconnect'],
+            ['--accept-tos', 'registration', 'delete'],
+            ['--accept-tos', 'registration', 'new'],
+            ['--accept-tos', 'connect']
+        ], 'a new identity, then a connection');
+        assert.strictEqual(calls[0][0], 'warp-cli');
+
+        // A registration that fails means no new address, and the caller is told.
+        const failing = new Warp({
+            config: { enabled: true },
+            logger,
+            run: async (binary, args) => (args.includes('new')
+                ? { ok: false, stdout: '', stderr: 'no network' }
+                : { ok: true, stdout: '', stderr: '' })
+        });
+        assert.strictEqual(await failing.rotate(), false);
+
+        // Turned off, warp-cli is never called at all.
+        let touched = 0;
+        const off = new Warp({
+            config: {},
+            logger,
+            run: async () => {
+                touched += 1;
+                return { ok: true, stdout: '', stderr: '' };
+            }
+        });
+        assert.strictEqual(await off.rotate(), false);
+        assert.strictEqual(touched, 0, 'nothing runs when WARP is off');
+    });
+
+    await check('a bot teleported into the end is brought back to the overworld', async () => {
+        const EventEmitter = require('node:events');
+        const { SelfCare } = require('../src/selfcare');
+
+        const sent = [];
+        const lostBot = new EventEmitter();
+        lostBot.server = { username: 'vbot' };
+        lostBot.client = { uuid: '00000000-0000-0000-0000-000000000003', entityId: 9, chat: () => {} };
+        lostBot.sendChat = command => (sent.push(command), true);
+        lostBot.core = null;
+
+        const care = new SelfCare({
+            bot: lostBot,
+            config: { creative: false, commandSpy: false, vanish: false, unmute: false },
+            logger
+        });
+        care.onReady();
+        // It stood here before the teleport; the end's coordinates are not this.
+        care.notePosition({ x: 10.4, y: 64, z: -20.6 });
+        care.noteDimension('minecraft:the_end');
+        care.notePosition({ x: 0, y: 100, z: 0 });
+
+        await new Promise(resolve => setTimeout(resolve, 1750));
+        assert.ok(
+            sent.includes('/execute in minecraft:overworld run tp vbot 10 64 -21'),
+            `come back to where it last stood: ${JSON.stringify(sent)}`
+        );
+
+        // Once it is back, nothing more is asked for.
+        sent.length = 0;
+        care.noteDimension('minecraft:overworld');
+        await new Promise(resolve => setTimeout(resolve, 1800));
+        assert.strictEqual(sent.length, 0, 'nothing is sent from the overworld');
+        care.destroy();
+    });
+
     await check('item numbers come from the server registries', async () => {
         // A registry packet is a list; the position in it is the id.
         const registryBot = new Bot({
