@@ -21,6 +21,7 @@
         "uuids": [],
         "ips": [],
         "regex": null,
-        "mutes": []
+        "mutes": [],
+        "reasons": {}
     }
 }
