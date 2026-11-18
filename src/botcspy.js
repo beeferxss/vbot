@@ -1,9 +1,13 @@
 'use strict';
 
-// Spies on other bots' cores: a command block holding a command is a core block,
-// and its own NBT is the only place the command can be read from. One block
-// query per cell - the same packet the core uses to check its own blocks - spread
-// over a box, and whatever comes back as a command is reported.
+// A command block holding a command is a core block, and its own NBT is the only
+// place the command can be read from. One block query per cell - the same packet
+// the core uses to check its own blocks - spread over a box, and whatever comes
+// back as a command is reported.
+//
+// Repeating, chain and impulse command blocks all carry the same `Command` field,
+// so a block is never skipped for its type: the type is read from the block
+// entity and shown beside the command.
 //
 // This is the idea of ChomeNS' CoreSpyBot: it walks a box the size of a core and
 // asks the server about every block in it. Here the sweep is paced instead of
@@ -50,6 +54,29 @@ function readCommand(nbt) {
     const command = field.trim().replace(/^\/+/, '');
     if (!command) return null;
     return command.length > MAX_COMMAND ? `${command.slice(0, MAX_COMMAND)}…` : command;
+}
+
+// Which command block it is, from the block entity id. All three types hold their
+// command the same way, so this only labels the answer - it never decides whether
+// a block counts.
+const TYPES = new Map([
+    ['minecraft:command_block', 'impulse'],
+    ['minecraft:repeating_command_block', 'repeating'],
+    ['minecraft:chain_command_block', 'chain']
+]);
+
+function readType(nbt) {
+    const id = findField(nbt, 'id');
+    if (typeof id === 'string') {
+        return TYPES.get(id) || (id.endsWith('command_block') ? 'command' : null);
+    }
+    // An answer that came back without an id still tells chain blocks apart: a
+    // chain command block carries `conditionMet`, which the other two do not.
+    if (findField(nbt, 'conditionMet') !== undefined) return 'chain';
+    // A block that runs by itself is a repeating one, the type a core uses for
+    // the command it was handed.
+    if (readAuto(nbt)) return 'repeating';
+    return null;
 }
 
 // A core block runs itself; a block someone placed by hand usually does not.
@@ -116,9 +143,11 @@ class BotCSpy {
         const command = readCommand(packet.nbt);
         if (!command) return true;
 
+        const type = readType(packet.nbt);
         const known = sweep.found.get(command);
         if (known) {
             known.count += 1;
+            if (!known.type) known.type = type;
             if (known.cells.length < 4) known.cells.push(cell);
             return true;
         }
@@ -127,6 +156,7 @@ class BotCSpy {
             cell,
             cells: [cell],
             count: 1,
+            type,
             auto: readAuto(packet.nbt)
         });
         return true;
@@ -311,4 +341,4 @@ class BotCSpy {
     }
 }
 
-module.exports = { BotCSpy, readCommand, readAuto, MAX_CELLS };
+module.exports = { BotCSpy, readCommand, readAuto, readType, MAX_CELLS };

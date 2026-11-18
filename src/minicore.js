@@ -1,8 +1,13 @@
 'use strict';
 
 // The bot's own command blocks, in a small cube of its own: `miniSize` blocks on
-// a side, four by default - size x size x size, 64 blocks - standing above the
+// a side, two by default - size x size x size, eight blocks - standing above the
 // bot's head, each one named green.
+//
+// The cube has one job: it is somewhere to run the `/fill` that rebuilds the main
+// area when no core block is left to run it. Commands themselves never go into
+// it; they are written straight into the main core with `update_command_block`,
+// which the server accepts whatever the distance to the block.
 //
 // Nothing is taken out of the inventory and no block is ever placed by hand: the
 // whole cube is one `/fill`, run through a core block that is still standing or,
@@ -22,8 +27,8 @@
 // removes it.
 
 const BLOCK = 'repeating_command_block';
-const SIDE = 4;                 // blocks on a side: 4 x 4 x 4
-const MAX_SIDE = 8;             // a cube this big is 512 blocks, which is plenty
+const SIDE = 2;                 // blocks on a side: 2 x 2 x 2, enough to hold a refill
+const MAX_SIDE = 16;            // a cube this big is 4096 blocks; anything wider is a mistake
 const MOVE_LIMIT = 64;          // the cube is only rebuilt once the bot is this far
 const MINI_RETRY_MS = 60000;    // a cube that did not land is not asked for again for a while
 const MINI_FILL_MS = 2000;      // one fill on its way at a time

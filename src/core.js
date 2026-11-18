@@ -33,6 +33,22 @@ function gradientParts(text) {
     });
 }
 
+// A name as components, one per character, so it reads as a single word instead
+// of a flat block of colour.
+function namePartsFor(name) {
+    if (!name) return [{ text: 'none', color: 'dark_gray' }];
+
+    let component = name;
+    try {
+        component = JSON.parse(name);
+    } catch {
+        // A plain string name is perfectly valid.
+    }
+
+    const text = flatten(component);
+    return text ? gradientParts(text) : [{ text: name, color: 'white' }];
+}
+
 const OWN_CHANGE_MS = 5000;
 const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
@@ -146,8 +162,9 @@ class Core {
         this.joinTimer = null;
         this.joinStartedAt = 0;
         this.positionTries = 0;
-        // The bot's own command blocks: a cube above its head, laid down with one
-        // /fill and then written into like any other core block.
+        // The bot's own command blocks: a small cube above its head that runs
+        // the `/fill` rebuilding the main area when no core block is left to run
+        // it. Commands never go into it.
         this.fillItem = this.config.refill?.item === false
             ? null
             : new MiniCore({
@@ -155,9 +172,6 @@ class Core {
                 logger,
                 config: { ...this.config.refill, block: this.block, name: this.config.refill?.miniName }
             });
-        // Whether the last command went in through the mini core, which adds a
-        // round trip before the core block exists.
-        this.lastViaItem = false;
         // A server that drops the fill - or one the bot cannot get a block into -
         // leaves nothing to write into. The last path is plain chat, rate-limited
         // so an ignored command cannot become a flood.
@@ -209,17 +223,28 @@ class Core {
     // The configured name as components, one per character, so it shows up with
     // a gradient in chat.
     nameParts() {
-        if (!this.name) return [{ text: 'none', color: 'dark_gray' }];
+        return namePartsFor(this.name);
+    }
 
-        let component = this.name;
-        try {
-            component = JSON.parse(this.name);
-        } catch {
-            // A plain string name is perfectly valid.
-        }
+    // The mini core is what runs the ordinary commands (`get ip`, `seen`), so the
+    // status `cb` and `core` print is its: the name it is filled with and where
+    // the cube is. The main area is only refilled, never described here.
+    miniStatusParts() {
+        const mini = this.fillItem;
+        if (!mini) return [{ text: 'the mini core is off in config', color: 'gray' }];
 
-        const text = flatten(component);
-        return text ? gradientParts(text) : [{ text: this.name, color: 'white' }];
+        const box = mini.current?.() || mini.box || null;
+        if (!box) return [{ text: 'the mini core is not placed yet (no position seen)', color: 'gray' }];
+
+        const standing = typeof mini.cells === 'function' ? mini.cells().length : 0;
+        return [
+            { text: 'mini core ', color: 'gray' },
+            { text: `${mini.side}^3`, color: 'aqua' },
+            { text: ` at ${box.min.x} ${box.min.y} ${box.min.z}..${box.max.x} ${box.max.y} ${box.max.z}, `, color: 'gray' },
+            { text: `${standing}/${mini.count} standing`, color: standing ? 'green' : 'yellow' },
+            { text: ', name ', color: 'dark_gray' },
+            ...namePartsFor(mini.name)
+        ];
     }
 
     // The server reports how many blocks a fill changed, and that is the only
@@ -497,18 +522,6 @@ class Core {
             `${bounds.x} ${bounds.y} ${bounds.z} ${this.blockSpec()} ${this.mode}`;
     }
 
-    // What the mini core is told to do with one core cell: clear it, then create
-    // it holding the command and `auto`, so a repeating core block starts running
-    // the command without redstone. The cell is cleared first so the block is
-    // always created fresh instead of written into whatever stands there.
-    cellCommands(cell, command) {
-        const at = `${cell.x} ${cell.y} ${cell.z}`;
-        return [
-            `setblock ${at} minecraft:air`,
-            `setblock ${at} ${this.block}{Command:"${snbtQuote(command)}",auto:1b,TrackOutput:1b} replace`
-        ];
-    }
-
     // A burst of refills through the blocks. Nothing goes out as chat, so the
     // area can be rebuilt several times a second: each write lands in a command
     // block and runs on the next tick, which is as fast as the server goes.
@@ -594,6 +607,10 @@ class Core {
     // Spreads commands over the cube instead of hammering one block, so a
     // command never lands in the block that is currently executing. Destroyed
     // blocks are skipped, so a command is never written into nothing.
+    // Every command goes into a core block with one `update_command_block`: the
+    // packet is taken by the server wherever the bot is, so the block does not
+    // have to be near it, and one write is one command. The mini core is not in
+    // this path at all: it exists only to run the fills that rebuild the area.
     run(command) {
         if (!this.enabled) return null;
         const text = String(command || '').trim().replace(/^\//, '');
@@ -615,18 +632,8 @@ class Core {
         // let real failures/air breaks correct it.
         if (this.blocks.size > 0 && !this.survivor() && this.everReady) this.markAllAlive();
 
-        // The mini core comes first: it is a cube of the bot's own blocks, so a
-        // burst is spread over 27 of them instead of overwriting one. The main
-        // area takes what is left over.
-        if (this.fillItem?.standing) {
-            const own = this.fillItem.run(text);
-            if (own) {
-                this.lastLocation = own;
-                this.lastViaItem = true;
-                this.refillAfterRun();
-                return own;
-            }
-        }
+        // The mini core never takes a command: it is there to run the fills that
+        // rebuild the main area, nothing else.
 
         for (let attempt = 0; attempt < this.volume; attempt++) {
             const cell = this.nextCell();
@@ -636,41 +643,11 @@ class Core {
 
             this.markOwn(cell);
 
-            // A cell that already holds a core block is the normal core, and a
-            // command written into it runs on the next tick: one packet, no
-            // waiting for a block to be placed and created. That is the path a
-            // burst like `filter` needs, and the mini core is not in it.
-            const live = this.blocks.get(keyOf(cell)) === true;
-            if (live && this.bot.write) {
-                const sent = this.bot.write('update_command_block', {
-                    location: cell,
-                    command: text.slice(0, 32000),
-                    mode: this.blockMode(),
-                    flags: 0b101
-                });
-                if (sent !== false) {
-                    this.lastLocation = cell;
-                    this.lastViaItem = false;
-                    this.refillAfterRun();
-                    return cell;
-                }
-            }
-
-            // Nothing stands in this cell yet: the mini core does not run the
-            // command itself, it writes the core block with the command and `auto`
-            // already in it, so the block that executes is a real core block.
-            if (this.fillItem?.usable) {
-                const own = this.fillItem.run(this.cellCommands(cell, text));
-                if (own) {
-                    this.blocks.set(keyOf(cell), true);
-                    this.lastLocation = cell;
-                    this.lastViaItem = true;
-                    this.refillAfterRun();
-                    return cell;
-                }
-            }
-            this.lastViaItem = false;
-
+            // A command written into a core block runs on the next tick: one
+            // packet, no waiting for a block to be placed and created. The
+            // server takes the packet wherever the bot is, so the block does not
+            // have to be near it - which is what lets a burst like `filter` stay
+            // one write per command.
             const sent = this.bot.write
                 ? this.bot.write('update_command_block', {
                     location: cell,
@@ -682,8 +659,7 @@ class Core {
 
             if (sent !== false) {
                 // Treat unknown blocks as alive once a write succeeds.
-                if (!this.blocks.has(keyOf(cell))) this.blocks.set(keyOf(cell), true);
-                else this.blocks.set(keyOf(cell), true);
+                this.blocks.set(keyOf(cell), true);
                 this.lastLocation = cell;
                 this.refillAfterRun();
                 return cell;
@@ -700,7 +676,6 @@ class Core {
         const chatCell = this.chatRun(text);
         if (chatCell) {
             this.lastLocation = null;
-            this.lastViaItem = false;
             this.refillAfterRun();
             return chatCell;
         }
@@ -892,9 +867,9 @@ class Core {
             this.afterRunTimer = null;
         }
 
-        // Through the mini core the core block is created by the wrapper it runs,
-        // which is one step behind the write.
-        const wait = delay ?? (this.lastViaItem ? 600 : 150);
+        // The write is one packet into a core block that already stands, so the
+        // query follows it almost at once; a caller can still ask for longer.
+        const wait = delay ?? 150;
 
         const transactionId = this.queryId++;
         return new Promise(resolve => {
@@ -1581,17 +1556,6 @@ function parseLastOutput(nbt) {
     }
 
     return flattenComponent(raw) || null;
-}
-
-// A command as an SNBT string: the quotes and backslashes a command may contain
-// are escaped, and it stays one line. Long commands are cut before escaping so a
-// half-written escape never reaches the server.
-function snbtQuote(command) {
-    return String(command ?? '')
-        .slice(0, 15000)
-        .replace(/[\r\n]+/g, ' ')
-        .replace(/\\/g, '\\\\')
-        .replace(/"/g, '\\"');
 }
 
 function keyOf(loc) {

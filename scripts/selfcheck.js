@@ -464,20 +464,15 @@ async function main() {
         const second = core.run('/gamemode creative');
         assert.deepStrictEqual(first, { x: 32, y: 64, z: -16 });
         assert.notDeepStrictEqual(second, first, 'commands must use different blocks');
-        // The command is not run in the mini core: the core block is written and
-        // created holding the command, so it runs once, in the core.
-        assert.strictEqual(handed[1], 'setblock 32 64 -16 minecraft:air');
-        assert.strictEqual(
-            handed[2],
-            'setblock 32 64 -16 minecraft:repeating_command_block{Command:"say hello",auto:1b,TrackOutput:1b} replace'
-        );
-        assert.strictEqual(handed[3], `setblock ${second.x} ${second.y} ${second.z} minecraft:air`);
-        assert.strictEqual(
-            handed[4],
-            `setblock ${second.x} ${second.y} ${second.z} ` +
-            'minecraft:repeating_command_block{Command:"gamemode creative",auto:1b,TrackOutput:1b} replace'
-        );
-        assert.deepStrictEqual(writes, [], 'no packet reaches the core directly');
+        // The command is one update_command_block write into a core block that is
+        // already standing: no setblock, and the mini core only ever saw the fill.
+        assert.strictEqual(handed.length, 1, 'the mini core only ran the fill');
+        assert.deepStrictEqual(writes.map(write => write.name),
+            ['update_command_block', 'update_command_block']);
+        assert.deepStrictEqual(writes[0].payload,
+            { location: first, command: 'say hello', mode: 1, flags: 0b101 });
+        assert.deepStrictEqual(writes[1].payload,
+            { location: second, command: 'gamemode creative', mode: 1, flags: 0b101 });
 
         // Our own writes must not look like damage, and neither may the fill.
         assert.strictEqual(core.onBlockChange({ location: first }), false);
@@ -588,7 +583,7 @@ async function main() {
         core.destroy();
     });
 
-    await check('commands go into the mini core before the main area', () => {
+    await check('commands go into a core block, never into the mini core', () => {
         const writes = [];
         const miniBot = {
             position: { x: 35, y: 70, z: -3 },
@@ -615,11 +610,12 @@ async function main() {
         core.everReady = true;
         core.markAllAlive();
 
-        assert.deepStrictEqual(core.run('say hi'), { x: 36, y: 73, z: -2 },
-            'the cube of the bot\'s own blocks takes the command');
-        assert.deepStrictEqual(handed, ['say hi'], 'the command is written into it as it is');
-        assert.strictEqual(writes.filter(write => write.name === 'update_command_block').length, 0,
-            'no block of the main area is touched while the cube stands');
+        const cell = core.run('say hi');
+        assert.ok(cell, 'a block of the area takes the command');
+        assert.deepStrictEqual(handed, [], 'the mini core is never handed a command');
+        assert.strictEqual(writes.length, 1, 'one packet, no placement');
+        assert.strictEqual(writes[0].name, 'update_command_block');
+        assert.deepStrictEqual(writes[0].payload, { location: cell, command: 'say hi', mode: 1, flags: 0b101 });
 
         core.destroy();
     });
@@ -966,10 +962,10 @@ async function main() {
         };
 
         const mini = new MiniCore({ bot: miniBot, logger, config: {} });
-        assert.strictEqual(mini.side, 4, 'four on a side');
-        assert.strictEqual(mini.count, 64, 'four by four by four');
+        assert.strictEqual(mini.side, 2, 'two on a side');
+        assert.strictEqual(mini.count, 8, 'two by two by two, just enough to hold a refill');
         // One fill, over the bot's head: no item, no slot packet, no placement.
-        assert.strictEqual(mini.fillCommand(), 'fill 8 66 -6 11 69 -3 repeating_command_block');
+        assert.strictEqual(mini.fillCommand(), 'fill 9 66 -5 10 67 -4 repeating_command_block');
         assert.deepStrictEqual(writes, [], 'the cube is never a packet of its own');
         assert.strictEqual(mini.standing, false, 'nothing counts until the server shows a block');
         assert.strictEqual(mini.run('say hi'), null, 'nothing is written into a cube that is not there');
@@ -979,7 +975,7 @@ async function main() {
         assert.strictEqual(new MiniCore({ bot: miniBot, logger, config: { miniSize: 5 } }).count, 125);
         const legacy = new MiniCore({ bot: miniBot, logger, config: { itemCount: 64 } });
         assert.strictEqual(legacy.side, 4, '64 blocks is a cube on a side of four');
-        assert.strictEqual(new MiniCore({ bot: miniBot, logger, config: { miniSize: 99 } }).side, 8,
+        assert.strictEqual(new MiniCore({ bot: miniBot, logger, config: { miniSize: 99 } }).side, 16,
             'a silly size is capped');
 
         mini.destroy();
@@ -1025,7 +1021,7 @@ async function main() {
         refused.destroy();
     });
 
-    await check('a burst is spread over the mini core instead of one block', () => {
+    await check('the mini core holds refills, one block at a time', () => {
         const { MiniCore } = require('../src/minicore');
         const writes = [];
         const miniBot = {
@@ -1039,18 +1035,18 @@ async function main() {
 
         // The fill lands in one go: every cell is shown at once.
         for (const cell of box.cells) mini.noteBlockChange({ location: cell, type: CMD_STATE });
-        assert.strictEqual(mini.cells().length, 64, 'the whole cube stands');
-        assert.strictEqual(mini.ready, 64);
+        assert.strictEqual(mini.cells().length, 8, 'the whole cube stands');
+        assert.strictEqual(mini.ready, 8);
 
-        // One command per block, in turn: 64 commands take 64 different cells, and
+        // One command per block, in turn: 8 commands take 8 different cells, and
         // not one of them is a placement.
         const used = new Set();
-        for (let i = 0; i < 64; i++) {
+        for (let i = 0; i < 8; i++) {
             const cell = mini.run(`say ${i}`);
             assert.ok(cell, 'a block took the command');
             used.add(`${cell.x}:${cell.y}:${cell.z}`);
         }
-        assert.strictEqual(used.size, 64, 'every block of the cube is used once');
+        assert.strictEqual(used.size, 8, 'every block of the cube is used once');
         assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 0,
             'nothing is placed by hand');
 
@@ -1082,24 +1078,24 @@ async function main() {
         // instead of a command being written into nothing.
         const first = mini.cells()[0];
         assert.strictEqual(mini.noteBlockChange({ location: first, type: 0 }), true, 'the block is gone');
-        assert.strictEqual(mini.cells().length, 63);
-        assert.strictEqual(mini.fillCommand(), 'fill 8 66 -6 11 69 -3 repeating_command_block');
+        assert.strictEqual(mini.cells().length, 7);
+        assert.strictEqual(mini.fillCommand(), 'fill 9 66 -5 10 67 -4 repeating_command_block');
 
         // A block replaced by something else is gone too.
         const second = mini.cells()[0];
         const floor = require('minecraft-data')('1.21.4').blocksByName.stone.defaultState;
         assert.strictEqual(mini.noteBlockChange({ location: second, type: floor }), true);
-        assert.strictEqual(mini.cells().length, 62);
+        assert.strictEqual(mini.cells().length, 6);
 
         // A bulk edit takes all of them with no block update at all.
-        assert.strictEqual(mini.goneAll(), 62, 'the whole set is dropped');
+        assert.strictEqual(mini.goneAll(), 6, 'the whole set is dropped');
         assert.strictEqual(mini.standing, false);
 
         // A bot that walks away leaves the cube behind and gets a new one.
         miniBot.position = { x: 10.7 + 200, y: 64, z: -3.2 };
         const moved = mini.fillCommand();
         assert.match(moved, /^fill /);
-        assert.notStrictEqual(moved, 'fill 8 66 -6 11 69 -3 repeating_command_block');
+        assert.notStrictEqual(moved, 'fill 9 66 -5 10 67 -4 repeating_command_block');
 
         mini.destroy();
     });
@@ -1114,18 +1110,18 @@ async function main() {
         };
         const named = new MiniCore({ bot: miniBot, logger, config: { name } });
         assert.strictEqual(named.fillCommand(),
-            "fill 8 66 -6 11 69 -3 repeating_command_block{CustomName:{text:'mini core™',color:'green'}}");
+            "fill 9 66 -5 10 67 -4 repeating_command_block{CustomName:{text:'mini core™',color:'green'}}");
         assert.strictEqual(named.name, name);
 
         // Before 1.21.5 the name is a JSON string, and it goes in quoted.
         const oldBot = { ...miniBot, client: { version: '1.21.4' } };
         const old = new MiniCore({ bot: oldBot, logger, config: { name } });
         assert.strictEqual(old.fillCommand(),
-            `fill 8 66 -6 11 69 -3 repeating_command_block{CustomName:'${name}'}`);
+            `fill 9 66 -5 10 67 -4 repeating_command_block{CustomName:'${name}'}`);
 
         // A cube with no name is filled as the plain block.
         const plain = new MiniCore({ bot: miniBot, logger, config: {} });
-        assert.strictEqual(plain.fillCommand(), 'fill 8 66 -6 11 69 -3 repeating_command_block');
+        assert.strictEqual(plain.fillCommand(), 'fill 9 66 -5 10 67 -4 repeating_command_block');
 
         named.destroy();
         old.destroy();
@@ -1174,7 +1170,7 @@ async function main() {
         core.lastRefillAt = 0;
         assert.strictEqual(core.refill('test'), true);
         assert.ok(writes.some(write => write.name === 'update_command_block'
-            && /^fill 8 66 -6 11 69 -3 .*mini core/.test(write.payload.command)),
+            && /^fill 9 66 -5 10 67 -4 .*mini core/.test(write.payload.command)),
         'the cube is filled again, with its name, from a block that still stands');
         assert.strictEqual(writes.filter(write => write.name === 'block_place').length, 0,
             'nothing is placed by hand');
@@ -1257,7 +1253,7 @@ async function main() {
 
     await check('the bot core spy reads the commands of command blocks', async () => {
         const EventEmitter = require('node:events');
-        const { BotCSpy, readCommand, MAX_CELLS } = require('../src/botcspy');
+        const { BotCSpy, readCommand, readType, MAX_CELLS } = require('../src/botcspy');
 
         const client = new EventEmitter();
         const sent = [];
@@ -1295,6 +1291,7 @@ async function main() {
         assert.strictEqual(result.found.length, 1, 'the one command block is found');
         assert.strictEqual(result.found[0].command, 'say hello', 'the leading slash is dropped');
         assert.strictEqual(result.found[0].auto, true, 'an auto block is marked');
+        assert.strictEqual(result.found[0].type, 'impulse', 'and its type is shown');
         assert.ok(sent.every(name => name === 'query_block_nbt'), 'only block queries go out');
 
         // Corners in either order are the same box, as in fill.
@@ -1325,6 +1322,52 @@ async function main() {
         assert.strictEqual(readCommand({ Command: ' op vbot', auto: 1 }), 'op vbot');
         assert.strictEqual(readCommand({ Command: '   ' }), null);
         assert.strictEqual(readCommand(null), null);
+
+        // All three types carry the same Command; the type is only a label, and
+        // each shape - impulse, repeating, chain - is read the same way.
+        const shape = (id, extra = {}) => ({
+            type: 'compound',
+            value: {
+                id: { type: 'string', value: id },
+                Command: { type: 'string', value: '/say hi' },
+                ...extra
+            }
+        });
+        const repeating = shape('minecraft:repeating_command_block', {
+            auto: { type: 'byte', value: 1 },
+            powered: { type: 'byte', value: 0 }
+        });
+        const chain = shape('minecraft:chain_command_block', {
+            auto: { type: 'byte', value: 1 },
+            conditionMet: { type: 'byte', value: 0 },
+            facing: { type: 'string', value: 'north' }
+        });
+        const impulse = shape('minecraft:command_block', {
+            auto: { type: 'byte', value: 0 },
+            powered: { type: 'byte', value: 0 }
+        });
+        assert.strictEqual(readCommand(repeating), 'say hi', 'a repeating block is read');
+        assert.strictEqual(readCommand(chain), 'say hi', 'a chain block is read');
+        assert.strictEqual(readCommand(impulse), 'say hi', 'an impulse block is read');
+        assert.strictEqual(readType(repeating), 'repeating');
+        assert.strictEqual(readType(chain), 'chain');
+        assert.strictEqual(readType(impulse), 'impulse');
+        assert.strictEqual(readType(shape('minecraft:command_block')), 'impulse');
+
+        // An answer without an id is still told apart by its fields: only a chain
+        // block carries `conditionMet`, and a block that runs itself repeats.
+        assert.strictEqual(readType({
+            type: 'compound',
+            value: { Command: { type: 'string', value: '/say hi' }, conditionMet: { type: 'byte', value: 0 } }
+        }), 'chain');
+        assert.strictEqual(readType({
+            type: 'compound',
+            value: { Command: { type: 'string', value: '/say hi' }, auto: { type: 'byte', value: 1 } }
+        }), 'repeating');
+        assert.strictEqual(readType({
+            type: 'compound',
+            value: { Command: { type: 'string', value: '/say hi' } }
+        }), null, 'a command with no id and no type field is left unlabelled');
 
         // Watch mode sweeps on its own, and stops when told to.
         let passes = 0;
@@ -1705,11 +1748,17 @@ async function main() {
         registryBot.destroy();
     });
 
-    await check('refills and commands go through the bot\'s own command blocks first', async () => {
+    await check('refills go through the bot\'s own command blocks, commands go into the area', async () => {
         const used = [];
         const sent = [];
+        const writes = [];
         const core = new Core({
-            bot: { position: { x: 0, y: 70, z: 0 }, chat: command => sent.push(command), write: () => true, log: logger },
+            bot: {
+                position: { x: 0, y: 70, z: 0 },
+                chat: command => sent.push(command),
+                write: (name, payload) => (writes.push({ name, payload }), true),
+                log: logger
+            },
             config: { enabled: true, area: { size: 9, y: 64 }, refill: { enabled: true } },
             logger
         });
@@ -1730,15 +1779,16 @@ async function main() {
         core.refill('damaged', { force: true });
         assert.strictEqual(used.length, 2);
 
-        // A command is not run in the mini core either: it is told to write the
-        // core block, with the command and `auto` inside it.
+        // A command is not run in the mini core: it is one write into a block of
+        // the area that is already standing.
         const cell = core.run('say hi');
         assert.deepStrictEqual(cell, { x: 0, y: 64, z: 0 });
-        assert.strictEqual(used[2], 'setblock 0 64 0 minecraft:air');
-        assert.strictEqual(
-            used[3],
-            'setblock 0 64 0 minecraft:repeating_command_block{Command:"say hi",auto:1b,TrackOutput:1b} replace'
-        );
+        assert.strictEqual(used.length, 2, 'the mini core is not handed the command');
+        assert.strictEqual(writes.length, 1);
+        assert.deepStrictEqual(writes[0], {
+            name: 'update_command_block',
+            payload: { location: { x: 0, y: 64, z: 0 }, command: 'say hi', mode: 1, flags: 0b101 }
+        });
         assert.strictEqual(core.lastLocation, cell);
         core.destroy();
     });
@@ -1810,16 +1860,17 @@ async function main() {
 
         // The teleport is the first command out and nothing is filled at spawn:
         // the bot is about to leave, and a core built here would be left behind.
-        const teleport = handed.find(text => text.includes('Command:"tp '));
-        assert.ok(teleport, 'the join teleports first');
-        const target = /Command:"tp vbot (-?\d+) (-?\d+) (-?\d+)"/.exec(teleport);
-        assert.ok(target, teleport);
+        const tp = writes.find(write => write.payload?.command?.startsWith('tp vbot '));
+        assert.ok(tp, 'the join teleports first');
+        const target = /^tp vbot (-?\d+) (-?\d+) (-?\d+)$/.exec(tp.payload.command);
+        assert.ok(target, tp.payload.command);
         assert.strictEqual(target[2], '100', 'the rtp height');
-        assert.deepStrictEqual(handed.filter(text => text.startsWith('fill ')), []);
+        assert.deepStrictEqual(handed.filter(text => text.startsWith('fill ')), [],
+            'nothing is filled at spawn before the teleport');
         assert.strictEqual(core.joining, true);
 
         // The server answers the teleport: the core is filled where the bot
-        // landed, and the block that ran the teleport is cleared from there.
+        // landed, and the blocks the join wrote at the old spot are cleared.
         joinBot.position = { x: Number(target[1]), y: 100, z: Number(target[3]) };
         await new Promise(resolve => setTimeout(resolve, 600));
 
@@ -1832,22 +1883,12 @@ async function main() {
             `fill ${x} 64 ${z} ${x + 1} 65 ${z + 1} minecraft:repeating_command_block replace`);
         assert.deepStrictEqual(core.origin, { x, y: 64, z });
 
-        const commands = [...handed, ...writes.map(write => write.payload?.command || '')];
-        assert.ok(
-            commands.some(text => text.includes('Command:"setblock 1 63 0 minecraft:air"')),
-            'the mini core block at the old spot is cleared first'
-        );
-        assert.ok(
-            commands.some(text => text.includes('Command:"setblock 0 64 0 minecraft:air"')),
-            'the core block that ran the teleport is cleared'
-        );
-        assert.ok(
-            commands.findIndex(text => text.includes('setblock 1 63 0 minecraft:air')
-                && text.includes('Command:'))
-                < commands.findIndex(text => text.includes('setblock 0 64 0 minecraft:air')
-                    && text.includes('Command:')),
-            'the mini core is cleared before the cell it creates'
-        );
+        const commands = writes.map(write => write.payload?.command || '');
+        const clearMini = commands.indexOf('setblock 1 63 0 minecraft:air');
+        const clearCell = commands.indexOf('setblock 0 64 0 minecraft:air');
+        assert.ok(clearMini >= 0, 'the mini core block at the old spot is cleared');
+        assert.ok(clearCell >= 0, 'the core block that ran the teleport is cleared');
+        assert.ok(clearMini < clearCell, 'the mini core is cleared before the cell it creates');
 
         core.destroy();
     });
@@ -2635,7 +2676,7 @@ async function main() {
         // owner is still the owner when they click.
         const statusBot = {
             ...clickBot,
-            core: { origin: { x: null }, statusParts: () => [{ text: 'core ready', color: 'green' }] }
+            core: { miniStatusParts: () => [{ text: 'mini core ready', color: 'green' }] }
         };
         const statusToken = clicks.register('core', clicker => registry.dispatch({
             bot: statusBot,
@@ -2647,65 +2688,54 @@ async function main() {
         sent.length = 0;
         clicks.handle(`VojtaV12 issued server command: ${statusToken}`);
         await new Promise(resolve => setTimeout(resolve, 20));
-        assert.match(decodeReply(sent[0]), /core ready/);
+        assert.match(decodeReply(sent[0]), /mini core ready/);
         assert.ok(!/token/.test(decodeReply(sent[0])), 'an owner click is not asked for a token');
 
         clicks.destroy();
     });
 
-    await check('core status colours its name and offers a refill button', async () => {
-        const { ClickTokens } = require('../src/clicktokens');
-        const clicks = new ClickTokens({ logger });
-        const named = [];
+    await check('core status, core and cb describe the mini core, not the main area', async () => {
         const core = new Core({
             bot: {
                 client: { version: '1.20.4' },
                 position: { x: 0, y: 70, z: 0 },
-                chat: command => named.push(command),
                 write: () => true,
+                chat: () => true,
                 log: logger
             },
             config: {
                 enabled: true,
                 name: '{"text":"vbot","color":"green"}',
                 area: { size: 2, y: 64 },
-                refill: { enabled: true }
+                refill: { enabled: true, miniSize: 3, miniName: '{"text":"minicore","color":"green"}' }
             },
             logger
         });
         core.reset({ x: 0, y: 70, z: 0 });
-        const filled = [];
-        core.fillItem = {
-            usable: true,
-            run: (...commands) => (filled.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
-            destroy: () => {}
-        };
+        assert.strictEqual(core.fillItem.side, 3, 'the cube is the size the config asks for');
 
-        const statusBot = { ...fakeBot, core, clickTokens: clicks };
-        sent.length = 0;
-        await registry.dispatch({ bot: statusBot, parsed: parseChatLine('<VojtaV12> v:core status') });
+        // One cell of the cube is shown by the server, so the status says so.
+        const CMD_STATE = require('minecraft-data')('1.20.4').blocksByName.command_block.defaultState;
+        core.fillItem.noteBlockChange({ location: { x: -1, y: 72, z: -1 }, type: CMD_STATE });
 
+        const statusBot = { ...fakeBot, core };
+        for (const text of ['v:core status', 'v:core', 'v:cb']) {
+            sent.length = 0;
+            await registry.dispatch({ bot: statusBot, parsed: parseChatLine(`<VojtaV12> ${text}`) });
+            const line = decodeReply(sent[0]);
+            assert.match(line, /mini core 3\^3/, `${text} says it is the mini core`);
+            assert.match(line, /at -1 72 -1\.\.1 74 1/, `${text} says where the cube is`);
+            assert.match(line, /1\/27 standing/, `${text} says how much of it stands`);
+            assert.doesNotMatch(line, /2\^3 at 0 64 0/, `${text} does not describe the main area`);
+        }
+
+        // The name is the one the cube is filled with, with the gradient the
+        // status line has always used.
         const parts = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
-        const name = parts.filter(part => part.color?.startsWith('#') && 'vbot'.includes(part.text));
-        assert.strictEqual(name.map(part => part.text).join(''), 'vbot', 'the configured name is shown');
-        assert.strictEqual(name.length, 4, 'the name is split so it can carry a gradient');
-        assert.strictEqual(name[0].color, '#55ffff', 'the name starts at aqua');
-        assert.strictEqual(name[3].color, '#ff55ff', 'and ends at light purple');
-        assert.notStrictEqual(name[1].color, name[2].color, 'every step of the gradient differs');
-
-        const button = parts.find(part => part.clickEvent?.action === 'run_command');
-        assert.ok(button, 'the refill button runs a command');
-        assert.match(button.clickEvent.value, /^\/random value \d+\.\.\d+$/);
-
-        // Clicking it as an owner refills the core for real.
-        named.length = 0;
-        assert.strictEqual(clicks.handle(`VojtaV12 issued server command: ${button.clickEvent.value}`), true);
-        await new Promise(resolve => setTimeout(resolve, 10));
-        assert.ok(filled.some(command => /^fill 0 64 0 1 65 1 /.test(command)), 'the click refilled the core');
-        assert.deepStrictEqual(named, [], 'the click does not talk to the server');
+        const name = parts.filter(part => part.color?.startsWith('#'));
+        assert.strictEqual(name.map(part => part.text).join(''), 'minicore', 'the cube\'s own name is shown');
 
         core.destroy();
-        clicks.destroy();
     });
 
     await check('ip parsing only accepts real addresses', () => {
@@ -3243,7 +3273,7 @@ async function main() {
         };
         mini.fillCommand();
         stand();
-        assert.strictEqual(mini.cells().length, 64, 'the mini core stands');
+        assert.strictEqual(mini.cells().length, 8, 'the mini core stands');
 
         // A bulk update that turns one of the cells to air: no block update of its
         // own ever arrives, so the packet is all the bot has.
@@ -3253,7 +3283,7 @@ async function main() {
             chunkCoordinates: { x: first.x >> 4, y: first.y >> 4, z: first.z >> 4 },
             records: [record]
         }), true, 'a mini block that went to air is noticed');
-        assert.strictEqual(mini.cells().length, 63, 'that cell is free again');
+        assert.strictEqual(mini.cells().length, 7, 'that cell is free again');
         // A lost cell fills the cube again where it stands, so the next bulk edit
         // is looked at once that fill has settled.
         assert.strictEqual(core.refilling, true, 'a missing cell is filled again at once');
@@ -3285,7 +3315,7 @@ async function main() {
             && /^fill .*(minecraft:)?repeating_command_block( replace)?$/.test(write.payload.command)),
         'the cube is filled again');
         stand();
-        assert.strictEqual(mini.cells().length, 64);
+        assert.strictEqual(mini.cells().length, 8);
 
         // A deletion that sends nothing at all is only found by asking: the answer
         // says the cell is not a command block, so the cube is dropped.
@@ -3303,7 +3333,7 @@ async function main() {
             transactionId: standing.payload.transactionId,
             nbt: { type: 'compound', value: { id: { type: 'string', value: 'minecraft:command_block' } } }
         });
-        assert.strictEqual(mini.cells().length, 64, 'a standing block is kept');
+        assert.strictEqual(mini.cells().length, 8, 'a standing block is kept');
 
         // The same question covers the main area, and a block that is gone refills it.
         core.refilling = false;

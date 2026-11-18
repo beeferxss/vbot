@@ -11,9 +11,7 @@ module.exports = {
         if (!core) return ctx.reply('Core is not loaded.');
 
         const command = ctx.argString.replace(/^\//, '').trim();
-        if (!command) {
-            return ctx.reply(core.origin?.x === null ? 'Core is not placed yet.' : `Core: ${core.status()}`);
-        }
+        if (!command) return ctx.reply(core.miniStatusParts());
 
         return ctx.reply(core.run(command)
             ? 'Sent through the core.'

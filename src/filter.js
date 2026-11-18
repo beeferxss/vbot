@@ -142,6 +142,8 @@ class Filter {
     run(cmd) {
         const text = String(cmd || '').replace(/^\//, '').trim();
         if (!text || !this.bot.core) return false;
+        // Punishments are a burst of hundreds of commands: each one is a single
+        // write into a core block, spread over the whole area.
         return Boolean(this.bot.core.run(text));
     }
 

@@ -126,7 +126,7 @@
     },
     "refill": {
       "enabled": true,
-      "miniSize": 3,
+      "miniSize": 2,
       "miniName": "{\"text\":\"mini core\u2122\",\"color\":\"green\"}"
     }
   }

@@ -18,27 +18,7 @@ module.exports = {
         const first = String(ctx.args[0] || 'status').toLowerCase();
 
         if (first === 'status' || !ctx.argString) {
-            const parts = core.statusParts();
-            const token = core.origin.x !== null
-                ? ctx.clickToken('core-refill', async clicker => {
-                    core.refill('button');
-                    ctx.bot.registry.reply(ctx.bot, clicker.name, 'Refilling the core.');
-                })
-                : null;
-
-            if (token) {
-                parts.push(
-                    { text: '  [' },
-                    {
-                        text: 'refill',
-                        color: 'aqua',
-                        click: { action: 'run_command', value: token },
-                        hover: { text: 'Rebuild the core now' }
-                    },
-                    { text: ']' }
-                );
-            }
-            ctx.reply(parts);
+            ctx.reply(core.miniStatusParts());
             return;
         }
 

@@ -18,6 +18,14 @@ function boxText(from, to) {
     return `${from.x} ${from.y} ${from.z} to ${to.x} ${to.y} ${to.z}`;
 }
 
+// What the block is: repeating, chain or impulse, and whether it runs by itself.
+function kind(entry) {
+    const bits = [];
+    if (entry.type) bits.push(entry.type);
+    if (entry.auto) bits.push('auto');
+    return bits.length ? `(${bits.join(', ')}) ` : '';
+}
+
 // A corner the way fill takes one: a whole number, or ~ and ~N for an offset
 // from where the bot stands.
 function corner(token, base) {
@@ -39,6 +47,7 @@ function lines(found) {
     for (const entry of found.slice(0, MAX_LINES)) {
         parts.push({ text: '\n' });
         parts.push({ text: `${place(entry)} `, color: 'dark_gray' });
+        if (entry.type) parts.push({ text: `${entry.type} `, color: 'light_purple' });
         if (entry.auto) parts.push({ text: 'auto ', color: 'green' });
         parts.push({ text: entry.command, color: 'white' });
         if (entry.count > 1) parts.push({ text: ` (${entry.count} blocks)`, color: 'gray' });
@@ -122,7 +131,7 @@ module.exports = {
                         if (seen.has(entry.command)) continue;
                         seen.add(entry.command);
                         ctx.logger.info(
-                            `core spy: ${place(entry)} ${entry.auto ? '(auto) ' : ''}runs ${entry.command}`
+                            `core spy: ${place(entry)} ${kind(entry)}runs ${entry.command}`
                         );
                     }
                 }
