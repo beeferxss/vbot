@@ -21,15 +21,18 @@ function voidY(value) {
     return Math.max(MIN_VOID_Y, Math.min(number, MAX_Y));
 }
 
-// `execute in ...` because the player may be in the nether or the end: the void
-// they are sent to is the overworld's. A plain tp would leave them in the world
-// they were already in. `minecraft:` on the command keeps a server's own /tp
-// (Essentials has one, which caps coordinates at 30000000) out of the way.
+// No `execute in ...` on the front: the Kaboom core refuses every one of them
+// (its execute_vanilla_only patch leaves `run` unable to take a command, and it
+// answers nothing at all), so a wrapped teleport is a no-op there. The plain
+// command goes to the source's dimension, and the command blocks are in the
+// bot's world, so the player still lands in the overworld. `minecraft:` keeps a
+// server's own /tp (Essentials has one, which caps coordinates at 30000000) out
+// of the way.
 function voidCommand(name, { y = DEFAULT_VOID_Y, x = 0, z = 0 } = {}) {
     const target = String(name || '').trim();
     if (!target) return null;
     const at = [Math.floor(Number(x) || 0), voidY(y), Math.floor(Number(z) || 0)];
-    return `execute in minecraft:overworld run minecraft:tp ${target} ${at[0]} ${at[1]} ${at[2]}`;
+    return `minecraft:tp ${target} ${at[0]} ${at[1]} ${at[2]}`;
 }
 
 // Where they come back after a death. A teleport alone does not hold: the void
@@ -40,7 +43,7 @@ function voidSpawnCommand(name, { y = DEFAULT_VOID_Y, x = 0, z = 0 } = {}) {
     const target = String(name || '').trim();
     if (!target) return null;
     const at = [Math.floor(Number(x) || 0), voidY(y), Math.floor(Number(z) || 0)];
-    return `execute in minecraft:overworld run minecraft:spawnpoint ${target} ${at[0]} ${at[1]} ${at[2]}`;
+    return `minecraft:spawnpoint ${target} ${at[0]} ${at[1]} ${at[2]}`;
 }
 
 module.exports = { voidCommand, voidSpawnCommand, voidY, DEFAULT_VOID_Y, MIN_VOID_Y };

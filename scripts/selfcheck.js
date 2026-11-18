@@ -661,9 +661,9 @@ async function main() {
             'the rest of the core is jumpscares');
         assert.ok(burst.some(command => command === 'deop steve'), 'and the rest of the punishments');
         assert.ok(burst.some(command => command === 'gamemode spectator steve'));
-        assert.ok(burst.includes('execute in minecraft:overworld run minecraft:tp steve 0 -20000000 0'),
+        assert.ok(burst.includes('minecraft:tp steve 0 -20000000 0'),
             'and the overworld void it is sent to');
-        assert.ok(burst.includes('execute in minecraft:overworld run minecraft:spawnpoint steve 0 -20000000 0'),
+        assert.ok(burst.includes('minecraft:spawnpoint steve 0 -20000000 0'),
             'where it comes back after a death');
 
         // A smaller core sends a smaller burst, never more than it has blocks.
@@ -704,9 +704,9 @@ async function main() {
             'one mute, not one every few seconds');
         assert.strictEqual(sent.filter(command => command === 'mute steve whitelist').length, 1);
         assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
-        assert.ok(sent.includes('execute in minecraft:overworld run minecraft:tp steve 0 -20000000 0'),
+        assert.ok(sent.includes('minecraft:tp steve 0 -20000000 0'),
             'the player is put in the overworld void');
-        assert.ok(sent.includes('execute in minecraft:overworld run minecraft:spawnpoint steve 0 -20000000 0'),
+        assert.ok(sent.includes('minecraft:spawnpoint steve 0 -20000000 0'),
             'and respawns there');
     });
 
@@ -717,18 +717,18 @@ async function main() {
         // even for a spectator, so it is what every server takes.
         assert.strictEqual(DEFAULT_VOID_Y, -20000000);
         assert.strictEqual(voidCommand('steve'),
-            'execute in minecraft:overworld run minecraft:tp steve 0 -20000000 0');
+            'minecraft:tp steve 0 -20000000 0');
 
         // The respawn point has to be the void as well, or a death puts them
         // back at spawn.
         assert.strictEqual(voidSpawnCommand('steve'),
-            'execute in minecraft:overworld run minecraft:spawnpoint steve 0 -20000000 0');
+            'minecraft:spawnpoint steve 0 -20000000 0');
 
         // A server that takes the integer minimum gets the integer minimum.
         assert.strictEqual(voidCommand('steve', { y: -2147483647 }),
-            'execute in minecraft:overworld run minecraft:tp steve 0 -2147483647 0');
+            'minecraft:tp steve 0 -2147483647 0');
         assert.strictEqual(voidSpawnCommand('steve', { y: -2147483647 }),
-            'execute in minecraft:overworld run minecraft:spawnpoint steve 0 -2147483647 0');
+            'minecraft:spawnpoint steve 0 -2147483647 0');
 
         // Nothing outside what a position can hold.
         assert.strictEqual(voidY(-99999999999), -2147483647);
@@ -739,7 +739,7 @@ async function main() {
         assert.strictEqual(voidCommand(''), null, 'no name, no command');
         assert.strictEqual(voidSpawnCommand(''), null);
         assert.strictEqual(voidCommand('  steve  '),
-            'execute in minecraft:overworld run minecraft:tp steve 0 -20000000 0');
+            'minecraft:tp steve 0 -20000000 0');
     });
 
     await check('refill spam refills through the blocks and stops itself', async () => {
