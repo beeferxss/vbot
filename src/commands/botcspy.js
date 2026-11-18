@@ -2,13 +2,36 @@
 
 // `botcspy`: read what other bots are running. It asks the server about every
 // block in a box and prints the command of each command block it finds - which is
-// how another bot's core shows itself. The box defaults to where this bot stands,
-// which is where a core usually is too.
+// how another bot's core shows itself. The box is two corners, as in fill, with ~
+// for an offset from the bot; leaving them out sweeps where this bot stands.
+
+const { MAX_CELLS } = require('../botcspy');
 
 const MAX_LINES = 12;
+const AXES = ['x', 'y', 'z'];
 
 function place(entry) {
     return `${entry.cell.x} ${entry.cell.y} ${entry.cell.z}`;
+}
+
+function boxText(from, to) {
+    return `${from.x} ${from.y} ${from.z} to ${to.x} ${to.y} ${to.z}`;
+}
+
+// A corner the way fill takes one: a whole number, or ~ and ~N for an offset
+// from where the bot stands.
+function corner(token, base) {
+    const text = String(token ?? '').trim();
+    if (!text) return null;
+
+    if (text[0] === '~') {
+        const offset = text.length > 1 ? Number(text.slice(1)) : 0;
+        if (!Number.isFinite(offset) || !Number.isFinite(base)) return null;
+        return Math.floor(base + offset);
+    }
+
+    const value = Number(text);
+    return Number.isFinite(value) ? Math.floor(value) : null;
 }
 
 function lines(found) {
@@ -30,7 +53,7 @@ module.exports = {
     name: 'botcspy',
     aliases: ['cspy'],
     description: 'Scan for command blocks and read the commands other bots run in them',
-    usage: 'botcspy [radius [x y z]] | botcspy watch [radius] | botcspy stop',
+    usage: 'botcspy [x1 y1 z1 x2 y2 z2] | botcspy watch [x1 y1 z1 x2 y2 z2] | botcspy stop',
     level: 'trusted',
 
     async execute(ctx) {
@@ -46,34 +69,54 @@ module.exports = {
             return;
         }
 
-        const watching = first === 'watch';
-        const rest = watching ? ctx.args.slice(1) : ctx.args;
         if (first === 'status') {
             ctx.reply(`Core spy: ${spy.watching ? 'watching' : 'idle'}.`);
             return;
         }
 
-        const radius = rest.length ? Number(rest[0]) : 8;
-        if (!Number.isFinite(radius) || radius < 0 || radius > 64) {
-            ctx.reply('Give a radius between 0 and 64.');
-            return;
-        }
+        const watching = first === 'watch';
+        const rest = watching ? ctx.args.slice(1) : ctx.args;
 
-        let origin = null;
-        if (rest.length >= 4) {
-            const [x, y, z] = rest.slice(1, 4).map(Number);
-            if (![x, y, z].every(Number.isFinite)) {
-                ctx.reply('Give the centre as x y z, or leave it out for where the bot stands.');
+        let from = null;
+        let to = null;
+        if (rest.length) {
+            if (rest.length !== 6) {
+                ctx.reply([
+                    { text: 'Give the box as two corners, like fill: ', color: 'gray' },
+                    { text: 'x1 y1 z1 x2 y2 z2', color: 'white' },
+                    { text: '. Leave it out for a box around the bot.', color: 'gray' }
+                ]);
                 return;
             }
-            origin = { x, y, z };
+
+            const at = ctx.bot.position || {};
+            const base = [at.x, at.y, at.z];
+            const values = rest.map((token, index) => corner(token, base[index % AXES.length]));
+            if (values.some(value => value === null)) {
+                ctx.reply('Give whole numbers, or ~ for where the bot stands: e.g. ~ ~ ~ ~15 ~ ~15.');
+                return;
+            }
+
+            from = { x: values[0], y: values[1], z: values[2] };
+            to = { x: values[3], y: values[4], z: values[5] };
+
+            // Counted here so a mistyped corner is refused before the sweep
+            // starts, and so watch mode does not start on a box it cannot walk.
+            const size = AXES.reduce(
+                (total, axis) => total * (Math.abs(to[axis] - from[axis]) + 1),
+                1
+            );
+            if (size > MAX_CELLS) {
+                ctx.reply(`That box is ${size} blocks; keep it to ${MAX_CELLS} or fewer.`);
+                return;
+            }
         }
 
         if (watching) {
             const seen = new Set();
             const started = spy.watch({
-                origin,
-                radius,
+                from,
+                to,
                 onScan: result => {
                     for (const entry of result.found) {
                         if (seen.has(entry.command)) continue;
@@ -90,7 +133,10 @@ module.exports = {
             }
             ctx.reply([
                 { text: 'core spy ', color: 'gold' },
-                { text: `watching r${radius}`, color: 'white' },
+                {
+                    text: `watching ${from && to ? boxText(from, to) : 'a box around the bot'}`,
+                    color: 'white'
+                },
                 { text: ' - commands run in it go to the console log. ', color: 'gray' },
                 { text: 'botcspy stop', color: 'aqua' },
                 { text: ' ends it.', color: 'gray' }
@@ -98,11 +144,16 @@ module.exports = {
             return;
         }
 
-        const result = await spy.scan({ origin, radius });
+        const result = await spy.scan({ from, to });
         if (!result.ok) {
+            if (result.reason === 'too-big') {
+                ctx.reply(`That box is ${result.cells} blocks; keep it to ${MAX_CELLS} or fewer.`);
+                return;
+            }
             const why = {
                 busy: 'a sweep is already running',
                 'no-position': 'no position seen yet; move the bot first',
+                'bad-box': 'that box is not made of whole numbers',
                 'no-write': 'this bot cannot talk to its server'
             }[result.reason] || result.reason;
             ctx.reply(`Core spy could not run: ${why}.`);
@@ -121,7 +172,7 @@ module.exports = {
         if (!result.found.length) {
             ctx.reply([
                 { text: 'core spy ', color: 'gold' },
-                { text: `no command blocks in r${radius} of ${place({ cell: result.origin })} `, color: 'white' },
+                { text: `no command blocks in ${boxText(result.from, result.to)} `, color: 'white' },
                 { text: `(${result.answered}/${result.cells} answered)`, color: 'gray' }
             ]);
             return;

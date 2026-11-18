@@ -1257,7 +1257,7 @@ async function main() {
 
     await check('the bot core spy reads the commands of command blocks', async () => {
         const EventEmitter = require('node:events');
-        const { BotCSpy, readCommand } = require('../src/botcspy');
+        const { BotCSpy, readCommand, MAX_CELLS } = require('../src/botcspy');
 
         const client = new EventEmitter();
         const sent = [];
@@ -1285,15 +1285,41 @@ async function main() {
         };
 
         const spy = new BotCSpy({ bot: spyBot, logger });
-        const result = await spy.scan({ radius: 1, height: 1 });
+        const result = await spy.scan({ from: { x: -1, y: 64, z: -1 }, to: { x: 1, y: 64, z: 1 } });
 
         assert.strictEqual(result.ok, true);
+        assert.deepStrictEqual(result.from, { x: -1, y: 64, z: -1 }, 'the low corner');
+        assert.deepStrictEqual(result.to, { x: 1, y: 64, z: 1 }, 'and the high one');
         assert.strictEqual(result.cells, 9, 'a 3x1x3 box');
         assert.strictEqual(result.answered, 9, 'every block is answered');
         assert.strictEqual(result.found.length, 1, 'the one command block is found');
         assert.strictEqual(result.found[0].command, 'say hello', 'the leading slash is dropped');
         assert.strictEqual(result.found[0].auto, true, 'an auto block is marked');
         assert.ok(sent.every(name => name === 'query_block_nbt'), 'only block queries go out');
+
+        // Corners in either order are the same box, as in fill.
+        const reversed = await spy.scan({ from: { x: 1, y: 64, z: 1 }, to: { x: -1, y: 64, z: -1 } });
+        assert.strictEqual(reversed.cells, 9, 'the same box the other way round');
+        assert.deepStrictEqual(reversed.from, { x: -1, y: 64, z: -1 });
+        assert.deepStrictEqual(reversed.to, { x: 1, y: 64, z: 1 });
+
+        // Without corners the box is a core-sized one around the bot.
+        const box = spy.boxAt({ x: 10.9, y: 64.2, z: -3.7 });
+        assert.deepStrictEqual(box.from, { x: 2, y: 62, z: -12 });
+        assert.deepStrictEqual(box.to, { x: 18, y: 66, z: 4 });
+        assert.strictEqual(spy.count(box), 17 * 5 * 17);
+
+        // A box no core could fill is refused before a query goes out, and a
+        // corner that is not a number is not walked as NaN.
+        sent.length = 0;
+        const huge = await spy.scan({ from: { x: 0, y: 0, z: 0 }, to: { x: 100, y: 100, z: 100 } });
+        assert.strictEqual(huge.ok, false);
+        assert.strictEqual(huge.reason, 'too-big');
+        assert.ok(huge.cells > MAX_CELLS);
+        assert.deepStrictEqual(sent, [], 'nothing is asked about a box that big');
+
+        const nonsense = await spy.scan({ from: { x: 'a', y: 0, z: 0 }, to: { x: 1, y: 1, z: 1 } });
+        assert.strictEqual(nonsense.reason, 'bad-box');
 
         // Plain, untyped NBT reads the same, and an empty command is not a core.
         assert.strictEqual(readCommand({ Command: ' op vbot', auto: 1 }), 'op vbot');
@@ -1302,7 +1328,7 @@ async function main() {
 
         // Watch mode sweeps on its own, and stops when told to.
         let passes = 0;
-        spy.watch({ radius: 0, height: 1, everyMs: 1000, onScan: () => { passes += 1; } });
+        spy.watch({ from: { x: 0, y: 64, z: 0 }, to: { x: 0, y: 64, z: 0 }, everyMs: 1000, onScan: () => { passes += 1; } });
         await new Promise(resolve => setTimeout(resolve, 400));
         assert.ok(passes >= 1, 'watch mode sweeps by itself');
         assert.strictEqual(spy.watching, true);
@@ -1316,26 +1342,28 @@ async function main() {
         assert.strictEqual(command.name, 'botcspy');
         assert.ok(command.aliases.includes('cspy'));
 
+        const result = () => ({
+            ok: true,
+            cells: 9,
+            answered: 9,
+            misses: 0,
+            from: { x: 0, y: 64, z: 0 },
+            to: { x: 2, y: 64, z: 2 },
+            found: [{
+                command: 'say hello',
+                cell: { x: 0, y: 64, z: 0 },
+                cells: [{ x: 0, y: 64, z: 0 }],
+                count: 1,
+                auto: true
+            }]
+        });
+
         const replies = [];
         const ctx = {
             args: [],
             bot: {
-                cspy: {
-                    scan: async () => ({
-                        ok: true,
-                        cells: 9,
-                        answered: 9,
-                        misses: 0,
-                        origin: { x: 0, y: 64, z: 0 },
-                        found: [{
-                            command: 'say hello',
-                            cell: { x: 0, y: 64, z: 0 },
-                            cells: [{ x: 0, y: 64, z: 0 }],
-                            count: 1,
-                            auto: true
-                        }]
-                    })
-                }
+                position: { x: 0.5, y: 64, z: 0.5 },
+                cspy: { scan: async () => result() }
             },
             reply: parts => replies.push(parts),
             logger
@@ -1346,6 +1374,39 @@ async function main() {
         assert.match(shown, /0 64 0/, 'with where it is');
         assert.match(shown, /auto/, 'and that it runs itself');
 
+        // Two corners go to the sweep as they were given, like fill.
+        let asked = null;
+        await command.execute({
+            ...ctx,
+            args: ['10', '64', '-5', '20', '70', '5'],
+            bot: { position: ctx.bot.position, cspy: { scan: async options => { asked = options; return result(); } } }
+        });
+        assert.deepStrictEqual(asked, { from: { x: 10, y: 64, z: -5 }, to: { x: 20, y: 70, z: 5 } });
+
+        // ~ is an offset from the bot, as in fill.
+        await command.execute({
+            ...ctx,
+            args: ['~', '~', '~', '~2', '~', '~2'],
+            bot: {
+                position: { x: 4.5, y: 64, z: -1.5 },
+                cspy: { scan: async options => { asked = options; return result(); } }
+            }
+        });
+        assert.deepStrictEqual(asked.from, { x: 4, y: 64, z: -2 });
+        assert.deepStrictEqual(asked.to, { x: 6, y: 64, z: 0 });
+
+        // Half a box, a box too big to walk, or a corner that is not a number is
+        // answered instead of swept.
+        const refused = [];
+        const refuse = async args => {
+            refused.length = 0;
+            await command.execute({ ...ctx, args, reply: parts => refused.push(parts) });
+            return JSON.stringify(refused[0]);
+        };
+        assert.match(await refuse(['10', '64', '-5']), /x1 y1 z1 x2 y2 z2/, 'six numbers, two corners');
+        assert.match(await refuse(['0', '0', '0', '40000', '0', '0']), /keep it to 32768 or fewer/);
+        assert.match(await refuse(['0', '0', '0', '1', 'x', '1']), /whole numbers/);
+
         // A server that answers nothing is said plainly: the bot needs op.
         const quietReplies = [];
         await command.execute({
@@ -1353,7 +1414,7 @@ async function main() {
             reply: parts => quietReplies.push(parts),
             bot: {
                 cspy: {
-                    scan: async () => ({ ok: true, cells: 9, answered: 0, misses: 9, origin: { x: 0, y: 64, z: 0 }, found: [] })
+                    scan: async () => ({ ok: true, cells: 9, answered: 0, misses: 9, from: { x: 0, y: 64, z: 0 }, to: { x: 2, y: 64, z: 2 }, found: [] })
                 }
             }
         });

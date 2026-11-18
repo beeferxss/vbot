@@ -14,8 +14,9 @@
 const MAX_IN_FLIGHT = 200;      // queries on their way at once
 const FLUSH_MS = 50;            // how often the next batch goes out
 const SWEEP_TIMEOUT_MS = 15000; // a server that stops answering cannot hang a sweep
-const DEFAULT_RADIUS = 8;       // blocks either side of the centre
-const DEFAULT_HEIGHT = 5;       // blocks of height, centred on the origin
+const MAX_CELLS = 32768;        // a box bigger than this is a typo, not a core
+const DEFAULT_SPAN = 8;         // blocks either side of the bot when no corners are given
+const DEFAULT_HEIGHT = 5;       // blocks of height, centred on the bot
 const WATCH_MS = 5000;          // how often watch mode sweeps again
 const MAX_COMMAND = 300;        // a command block holds at most 32k, but a report does not
 
@@ -131,46 +132,86 @@ class BotCSpy {
         return true;
     }
 
-    // Every cell of the box, centre first, so a core right where the bot looks is
-    // found before the sweep has even finished.
-    cellsFor(origin, radius, height) {
-        const half = Math.max(0, Math.floor(radius));
-        const tall = Math.max(1, Math.floor(height));
-        const low = Math.floor(origin.y) - Math.floor(tall / 2);
+    // A box is two corners, as in fill: whichever way round they were given,
+    // the low one and the high one are what the sweep walks.
+    corners(from, to) {
+        const low = {};
+        const high = {};
+        for (const axis of ['x', 'y', 'z']) {
+            const a = Math.floor(Number(from?.[axis]));
+            const b = Math.floor(Number(to?.[axis]));
+            low[axis] = Math.min(a, b);
+            high[axis] = Math.max(a, b);
+        }
+        return { from: low, to: high };
+    }
+
+    count({ from, to }) {
+        return (to.x - from.x + 1) * (to.y - from.y + 1) * (to.z - from.z + 1);
+    }
+
+    // Every cell of the box, nearest its middle first, so a core right where the
+    // bot looks is found before the sweep has even finished.
+    cellsFor({ from, to }) {
         const cells = [];
-        for (let y = 0; y < tall; y++) {
-            for (let x = -half; x <= half; x++) {
-                for (let z = -half; z <= half; z++) {
-                    cells.push({
-                        x: Math.floor(origin.x) + x,
-                        y: low + y,
-                        z: Math.floor(origin.z) + z
-                    });
+        for (let y = from.y; y <= to.y; y++) {
+            for (let x = from.x; x <= to.x; x++) {
+                for (let z = from.z; z <= to.z; z++) {
+                    cells.push({ x, y, z });
                 }
             }
         }
-        // Closest to the middle first.
-        const centre = { x: Math.floor(origin.x), y: Math.floor(origin.y), z: Math.floor(origin.z) };
-        const distance = cell => Math.abs(cell.x - centre.x)
-            + Math.abs(cell.y - centre.y)
-            + Math.abs(cell.z - centre.z);
+        const middle = {
+            x: (from.x + to.x) / 2,
+            y: (from.y + to.y) / 2,
+            z: (from.z + to.z) / 2
+        };
+        const distance = cell => Math.abs(cell.x - middle.x)
+            + Math.abs(cell.y - middle.y)
+            + Math.abs(cell.z - middle.z);
         return cells.sort((a, b) => distance(a) - distance(b));
+    }
+
+    // Where the bot stands, a box the size of a core around it, for when no
+    // corners are given: the sweep stays useful without a fill line to copy.
+    boxAt(at) {
+        const x = Math.floor(at.x);
+        const y = Math.floor(at.y);
+        const z = Math.floor(at.z);
+        const half = Math.floor(DEFAULT_SPAN);
+        const tall = Math.floor(DEFAULT_HEIGHT / 2);
+        return {
+            from: { x: x - half, y: y - tall, z: z - half },
+            to: { x: x + half, y: y + tall, z: z + half }
+        };
     }
 
     // One pass over the box. Resolves with what answered and what held a command;
     // never rejects, because a server that says nothing is an answer too.
-    scan({ origin = null, radius = DEFAULT_RADIUS, height = DEFAULT_HEIGHT, timeoutMs = SWEEP_TIMEOUT_MS } = {}) {
+    scan({ from = null, to = null, timeoutMs = SWEEP_TIMEOUT_MS } = {}) {
         if (!this.bot?.write) return Promise.resolve({ ok: false, reason: 'no-write' });
         if (this.sweep) return Promise.resolve({ ok: false, reason: 'busy' });
 
-        const at = origin || this.bot.position;
-        if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) {
-            return Promise.resolve({ ok: false, reason: 'no-position' });
+        let box;
+        if (from && to) {
+            box = this.corners(from, to);
+            if (!['x', 'y', 'z'].every(axis => Number.isFinite(box.from[axis]) && Number.isFinite(box.to[axis]))) {
+                return Promise.resolve({ ok: false, reason: 'bad-box' });
+            }
+        } else {
+            const at = this.bot.position;
+            if (!at || !['x', 'y', 'z'].every(axis => Number.isFinite(at[axis]))) {
+                return Promise.resolve({ ok: false, reason: 'no-position' });
+            }
+            box = this.boxAt(at);
         }
+
+        const size = this.count(box);
+        if (size > MAX_CELLS) return Promise.resolve({ ok: false, reason: 'too-big', cells: size });
 
         this.bind(this.bot.client);
 
-        const cells = this.cellsFor(at, radius, height);
+        const cells = this.cellsFor(box);
         const sweep = {
             cells,
             pending: new Map(),
@@ -199,7 +240,8 @@ class BotCSpy {
                 resolve({
                     ok: true,
                     reason,
-                    origin: { x: Math.floor(at.x), y: Math.floor(at.y), z: Math.floor(at.z) },
+                    from: box.from,
+                    to: box.to,
                     cells: sweep.cells.length,
                     answered: sweep.answered,
                     misses,
@@ -230,14 +272,15 @@ class BotCSpy {
         });
     }
 
-    // Sweeps again every few seconds and hands each pass to onScan. The box is
-    // worked out from where the bot stands on every pass unless an origin is
-    // given, so a bot that walks does not spy on where it used to be.
-    watch({ origin = null, radius = DEFAULT_RADIUS, height = DEFAULT_HEIGHT, everyMs = WATCH_MS, onScan = null } = {}) {
+    // Sweeps again every few seconds and hands each pass to onScan. With two
+    // corners the box is that box on every pass; without them it is worked out
+    // from where the bot stands, so a bot that walks does not spy on where it
+    // used to be.
+    watch({ from = null, to = null, everyMs = WATCH_MS, onScan = null } = {}) {
         if (this.watchTimer) return false;
 
         const pass = async () => {
-            const result = await this.scan({ origin, radius, height });
+            const result = await this.scan({ from, to });
             if (!result.ok) return;
             if (onScan) onScan(result);
         };
@@ -268,4 +311,4 @@ class BotCSpy {
     }
 }
 
-module.exports = { BotCSpy, readCommand, readAuto };
+module.exports = { BotCSpy, readCommand, readAuto, MAX_CELLS };
