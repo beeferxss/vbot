@@ -106,11 +106,11 @@
       "y": 0
     },
     "joinRtp": {
-      "enabled": false
+      "enabled": true
     },
     "refill": {
       "enabled": true,
-      "miniSize": 4,
+      "miniSize": 3,
       "miniName": "{\"text\":\"mini core™\",\"color\":\"green\"}"
     }
   }
