@@ -1,0 +1,48 @@
+name: WARP check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Install Cloudflare WARP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+            | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+            | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+
+          for attempt in 1 2 3; do
+            sudo apt-get update -qq && break || sleep 5
+          done
+          sudo apt-get install -y cloudflare-warp
+
+          sudo systemctl enable --now warp-svc || sudo service warp-svc start
+
+          sudo warp-cli --accept-tos registration new || echo "already registered"
+          sudo warp-cli --accept-tos connect
+
+          status=""
+          for attempt in $(seq 1 20); do
+            status="$(sudo warp-cli --accept-tos status 2>&1 || true)"
+            case "$status" in
+              *Connected*) break ;;
+            esac
+            sleep 2
+          done
+          echo "STATUS: $status"
+
+          curl -fsS --max-time 10 https://www.cloudflare.com/cdn-cgi/trace \
+            | grep -E '^(ip|warp)=' || true
+
+          case "$status" in
+            *Connected*) echo "ready=1" >> "$GITHUB_OUTPUT" ;;
+            *) echo "WARP did not come up"; exit 1 ;;
+          esac
