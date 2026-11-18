@@ -136,7 +136,19 @@ class Bot extends EventEmitter {
         if (version) options.version = version;
 
         this.state = 'connecting';
-        this.log.info(`connecting to ${server.host}:${server.port} as ${server.username}`);
+
+        // A server that has filtered the bot once sees a different address from
+        // then on: every connection goes through the WARP proxy, which is what
+        // the filter guard turns over.
+        if (this.warp?.enabled) {
+            options.connect = client => this.warp.attach(client, { host: server.host, port: server.port });
+            this.log.info(
+                `connecting to ${server.host}:${server.port} as ${server.username} ` +
+                `through the WARP proxy at ${this.warp.proxyUrl}`
+            );
+        } else {
+            this.log.info(`connecting to ${server.host}:${server.port} as ${server.username}`);
+        }
 
         let client;
         try {

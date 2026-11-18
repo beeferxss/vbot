@@ -1360,38 +1360,42 @@ async function main() {
         offGuard.destroy();
     });
 
-    await check('warp changes the address through its own client', async () => {
+    await check('warp changes the address by re-registering and restarting its proxy', async () => {
         const { Warp } = require('../src/warp');
 
         const calls = [];
+        let running = false;
         const warp = new Warp({
-            config: { enabled: true },
+            config: { enabled: true, port: 25344 },
             logger,
             run: async (binary, args) => {
                 calls.push([binary, ...args]);
-                return { ok: true, stdout: 'Connected', stderr: '' };
+                if (args[0] === 'start' || args[0] === 'restart') running = true;
+                if (args[0] === 'stop') running = false;
+                return { ok: true, stdout: running ? 'Proxy is running on 127.0.0.1:25344' : 'not running', stderr: '' };
             }
         });
+
         assert.strictEqual(await warp.rotate(), true);
         assert.deepStrictEqual(calls.map(call => call.slice(1)), [
-            ['--accept-tos', 'disconnect'],
-            ['--accept-tos', 'registration', 'delete'],
-            ['--accept-tos', 'registration', 'new'],
-            ['--accept-tos', 'connect']
-        ], 'a new identity, then a connection');
-        assert.strictEqual(calls[0][0], 'warp-cli');
+            ['stop'],
+            ['register', '--force'],
+            ['restart', '--detach', '--no-update-check', '--port', '25344'],
+            ['status']
+        ], 'stop, a new account, then the proxy again on it');
+        assert.ok(/warproxy$/.test(calls[0][0]), `the proxy client, not warp-cli: ${calls[0][0]}`);
 
         // A registration that fails means no new address, and the caller is told.
         const failing = new Warp({
             config: { enabled: true },
             logger,
-            run: async (binary, args) => (args.includes('new')
+            run: async (binary, args) => (args[0] === 'register'
                 ? { ok: false, stdout: '', stderr: 'no network' }
-                : { ok: true, stdout: '', stderr: '' })
+                : { ok: true, stdout: 'Proxy is running', stderr: '' })
         });
         assert.strictEqual(await failing.rotate(), false);
 
-        // Turned off, warp-cli is never called at all.
+        // Turned off, the client is never run at all.
         let touched = 0;
         const off = new Warp({
             config: {},
@@ -1405,31 +1409,67 @@ async function main() {
         assert.strictEqual(touched, 0, 'nothing runs when WARP is off');
     });
 
-    await check('on a runner WARP is called through sudo, without a prompt', async () => {
+    await check('a socks5 tunnel carries the connection and the client uses it', async () => {
+        const net = require('node:net');
+        const EventEmitter = require('node:events');
+        const { socksConnect } = require('../src/socks');
         const { Warp } = require('../src/warp');
-        const calls = [];
-        const warp = new Warp({
-            config: { enabled: true, sudo: true, timeoutMs: 1000 },
-            logger,
-            run: async (binary, args) => {
-                calls.push([binary, ...args]);
-                return { ok: true, stdout: 'Status update: Connected', stderr: '' };
-            }
+
+        // Just enough SOCKS5: greet, take the CONNECT, then say hello down the
+        // tunnel so the bytes have to come back through it.
+        const seen = [];
+        const proxy = net.createServer(socket => {
+            socket.on('error', () => {});
+            socket.once('data', greeting => {
+                seen.push(['greeting', greeting[1]]);
+                socket.write(Buffer.from([0x05, 0x00]));
+                socket.once('data', request => {
+                    const nameLength = request[4];
+                    seen.push(['request', request.subarray(5, 5 + nameLength).toString(), request.readUInt16BE(5 + nameLength)]);
+                    socket.write(Buffer.from([0x05, 0x00, 0x00, 0x03, 0x09, ...Buffer.from('127.0.0.1'), 0x1f, 0x90]));
+                    setTimeout(() => socket.write(Buffer.from('hello from the tunnel')), 10);
+                });
+            });
         });
+        await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+        const proxyPort = proxy.address().port;
 
-        assert.strictEqual(await warp.available(), true);
-        await warp.rotate();
+        const socket = await socksConnect({
+            proxyHost: '127.0.0.1',
+            proxyPort,
+            host: 'play.example.net',
+            port: 25565,
+            timeoutMs: 3000
+        });
+        socket.resume();
+        const payload = await new Promise(resolve => socket.once('data', chunk => resolve(chunk.toString())));
+        socket.destroy();
 
-        // The daemon is root's, so every call goes through `sudo -n` and names
-        // the client by its path: nobody is there to type a password.
-        for (const call of calls) {
-            assert.strictEqual(call[0], 'sudo', `through sudo: ${JSON.stringify(call)}`);
-            assert.strictEqual(call[1], '-n', 'never waits for a password');
-            assert.strictEqual(call[2], 'warp-cli');
-            assert.strictEqual(call[3], '--accept-tos');
-        }
-        assert.ok(calls.some(call => call.includes('registration') && call.includes('new')),
-            'a fresh registration is asked for');
+        assert.deepStrictEqual(seen[0], ['greeting', 0x01], 'no authentication offered');
+        // The name goes to the proxy, so the lookup happens at the far end.
+        assert.deepStrictEqual(seen[1], ['request', 'play.example.net', 25565], 'a socks5h connect');
+        assert.strictEqual(payload, 'hello from the tunnel');
+
+        // The client is handed that socket, and the connect event it waits for.
+        const client = new EventEmitter();
+        client.setSocket = handed => { client.socket = handed; };
+        let connected = 0;
+        client.on('connect', () => { connected += 1; });
+
+        const warp = new Warp({
+            config: { enabled: true, host: '127.0.0.1', port: proxyPort, timeoutMs: 3000 },
+            logger,
+            run: async (binary, args) => ({
+                ok: true,
+                stdout: args[0] === 'status' ? 'Proxy is running on 127.0.0.1:25344' : '',
+                stderr: ''
+            })
+        });
+        assert.strictEqual(await warp.attach(client, { host: 'play.example.net', port: 25565 }), true);
+        assert.strictEqual(connected, 1, 'the connect event the client waits for');
+        assert.ok(client.socket, 'a socket to the server');
+        client.socket.destroy();
+        proxy.close();
     });
 
     await check('a bot teleported into the end is brought back to the overworld', async () => {

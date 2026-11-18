@@ -42,15 +42,12 @@ if (discordToken) {
     config.discord.enabled = true;
 }
 
-// WARP is installed by the workflow on every run and reports whether it came up;
-// the flag here keeps the bot from calling a client that is not there. Its daemon
-// runs as root, so the client is called through sudo on a runner.
-const warpReady = String(process.env.VBOT_WARP || '').toLowerCase();
-const warpEnabled = warpReady === 'true' || warpReady === '1';
+// WARP is warproxy, an npm dependency the bot starts itself: a SOCKS5 proxy on
+// localhost whose tunnel is the address the server sees. The workflow switches it
+// on; without it the bot connects directly.
 config.warp = {
     ...(config.warp || {}),
-    enabled: warpEnabled,
-    sudo: warpEnabled && String(process.env.VBOT_WARP_SUDO || '').toLowerCase() === 'true'
+    enabled: ['true', '1'].includes(String(process.env.VBOT_WARP || '').toLowerCase())
 };
 
 // Nothing this run prints may carry server chat: the workflow log is public, and

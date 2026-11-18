@@ -154,12 +154,15 @@ function defaults() {
             // reconnected on it too. Off by default: it interrupts all of them.
             allServers: false
         },
-        // Cloudflare WARP, for the address changes above. Without warp-cli every
-        // call fails softly and the bot stays in game.
+        // Cloudflare WARP, for the address changes above: warproxy keeps a SOCKS5
+        // proxy on localhost whose tunnel is the address the server sees, and the
+        // bot's connections go through it. Without warproxy every call fails
+        // softly and the bot connects directly.
         warp: {
             enabled: false,
-            binary: 'warp-cli',
-            timeoutMs: 20000
+            host: '127.0.0.1',
+            port: 25344,
+            timeoutMs: 180000
         },
         core: {
             enabled: true,
