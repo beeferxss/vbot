@@ -74,10 +74,10 @@
     "nick": "vbot"
   },
   "selfCare": {
-    "vanish": false,
-    "nick": true,
+    "vanish": true,
+    "nick": false,
     "nickName": "&2§lV&aB&2§lO&aT",
-    "username": true,
+    "username": false,
     "usernameName": "vbot"
   },
   "permissions": {
