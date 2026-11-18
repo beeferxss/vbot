@@ -76,7 +76,7 @@
       {
         "id": "norat",
         "enabled": true,
-        "host": "norat.pw",
+        "host": "play.norat.pw",
         "port": 25565,
         "channelId": "1572692313644335245",
         "randomName": true,
