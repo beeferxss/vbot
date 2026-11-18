@@ -80,8 +80,9 @@ async function main() {
             spamMs: 150,
             auto: false,
             item: true,
-            miniSize: 4,
-            miniName: '{"text":"mini core™","color":"green"}',
+            // The example is tuned by hand, so what it sets wins: the rest of the
+            // refill settings are the defaults.
+            ...example.core.refill,
             chatFallback: true
         });
         // Addresses come from /seen only; whois is kept for the identity fields.
@@ -1138,6 +1139,55 @@ async function main() {
         assert.strictEqual(spy.stop(), true);
         assert.strictEqual(spy.watching, false);
         spy.destroy();
+    });
+
+    await check('botcspy reports what it found, and says when nothing answered', async () => {
+        const command = require('../src/commands/botcspy');
+        assert.strictEqual(command.name, 'botcspy');
+        assert.ok(command.aliases.includes('cspy'));
+
+        const replies = [];
+        const ctx = {
+            args: [],
+            bot: {
+                cspy: {
+                    scan: async () => ({
+                        ok: true,
+                        cells: 9,
+                        answered: 9,
+                        misses: 0,
+                        origin: { x: 0, y: 64, z: 0 },
+                        found: [{
+                            command: 'say hello',
+                            cell: { x: 0, y: 64, z: 0 },
+                            cells: [{ x: 0, y: 64, z: 0 }],
+                            count: 1,
+                            auto: true
+                        }]
+                    })
+                }
+            },
+            reply: parts => replies.push(parts),
+            logger
+        };
+        await command.execute(ctx);
+        const shown = JSON.stringify(replies[0]);
+        assert.match(shown, /say hello/, 'the command is shown');
+        assert.match(shown, /0 64 0/, 'with where it is');
+        assert.match(shown, /auto/, 'and that it runs itself');
+
+        // A server that answers nothing is said plainly: the bot needs op.
+        const quietReplies = [];
+        await command.execute({
+            ...ctx,
+            reply: parts => quietReplies.push(parts),
+            bot: {
+                cspy: {
+                    scan: async () => ({ ok: true, cells: 9, answered: 0, misses: 9, origin: { x: 0, y: 64, z: 0 }, found: [] })
+                }
+            }
+        });
+        assert.match(JSON.stringify(quietReplies[0]), /opped/, 'unanswered queries are a permission problem');
     });
 
     await check('item numbers come from the server registries', async () => {

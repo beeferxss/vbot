@@ -2,6 +2,9 @@
 example/
 
 node_modules/
+
+# Throwaway local Paper server for live checks: never committed.
+.mctest/
 config.json
 .env
 .env.*
