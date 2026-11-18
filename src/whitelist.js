@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { voidCommand } = require('./void');
 
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
@@ -189,7 +190,10 @@ class Whitelist {
             if (!cur || !this.shouldPunish(cur)) { stop(); return; }
 
             const cmds = [
-                `minecraft:tp ${name} 300000 1000 300000`,
+                // Into the overworld void rather than somewhere far away they
+                // could walk back from. `voidY` in this whitelist's data raises it
+                // to the integer minimum on a server that accepts it.
+                voidCommand(name, { y: this.getServerData().voidY }),
                 `deop ${name}`,
                 `minecraft:deop ${name}`,
                 `gamemode spectator ${name}`,
@@ -197,7 +201,7 @@ class Whitelist {
                 `cspy ${name} off`,
                 `execute at ${name} run setblock ~ ~ ~ end_portal`,
                 `jumpscare ${name}`
-            ];
+            ].filter(Boolean);
 
             for (let r = 0; r < 5; r++) {
                 for (const cmd of cmds) this.run(cmd);
