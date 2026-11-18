@@ -46,6 +46,7 @@ fs.writeFileSync(path.join(ROOT, 'config.json'), `${JSON.stringify(config, null,
 
 console.log(`config.json written: ${enabled.length} server(s) enabled`);
 for (const server of enabled) {
-    console.log(`  ${server.id} -> ${server.host}:${server.port} as ${server.username}`);
+    const who = server.username || (server.randomName ? 'a random name' : 'no name');
+    console.log(`  ${server.id} -> ${server.host}:${server.port} as ${who}`);
 }
 console.log(config.discord?.enabled ? 'Discord bridge enabled from DISCORD_TOKEN' : 'Discord bridge disabled: no DISCORD_TOKEN secret');

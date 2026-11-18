@@ -59,6 +59,45 @@ async function main() {
         }
     });
 
+    await check('a server can ask for a random name instead of a fixed one', () => {
+        const { randomName } = require('../src/config');
+
+        // Eight characters of letters and numbers, capital and lower case, with a
+        // digit in it: what a player name looks like and what Minecraft accepts.
+        for (let i = 0; i < 200; i++) {
+            const name = randomName();
+            assert.match(name, /^[A-Za-z0-9]{8}$/, `eight letters or numbers: ${name}`);
+            assert.match(name, /[A-Z]/, 'a capital letter');
+            assert.match(name, /[a-z]/, 'a lower-case letter');
+            assert.match(name, /\d/, 'a number');
+        }
+
+        const file = tmpConfig({
+            minecraft: {
+                servers: [
+                    { id: 'one', host: 'a', randomName: true },
+                    { id: 'two', host: 'b', port: 25566, randomName: true }
+                ]
+            }
+        });
+        const config = loadConfig(file);
+        const [one, two] = config.minecraft.servers;
+        assert.match(one.username, /^[A-Za-z0-9]{8}$/, 'the first name is rolled');
+        assert.strictEqual(one.randomName, true);
+        assert.match(two.username, /^[A-Za-z0-9]{8}$/, 'the second name is rolled');
+        assert.notStrictEqual(one.username, two.username, 'each server gets its own name');
+
+        // A fixed name still wins, and a server with neither is still an error.
+        const fixed = loadConfig(tmpConfig({
+            minecraft: { servers: [{ id: 'f', host: 'h', username: 'vbot' }] }
+        }));
+        assert.strictEqual(fixed.minecraft.servers[0].username, 'vbot');
+        assert.strictEqual(fixed.minecraft.servers[0].randomName, false);
+        assert.throws(() => loadConfig(tmpConfig({
+            minecraft: { servers: [{ id: 'n', host: 'h' }] }
+        })), /username is required/);
+    });
+
     await check('config defaults are merged in', () => {
         const example = JSON.parse(fs.readFileSync(examplePath, 'utf8'));
         const config = loadConfig(examplePath);

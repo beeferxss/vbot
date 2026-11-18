@@ -7,6 +7,30 @@ const ROOT = path.join(__dirname, '..');
 
 class ConfigError extends Error {}
 
+// A name nobody picked: eight characters of letters and numbers, with the mix a
+// player name has (a capital, a lower-case letter and a digit somewhere). It is
+// rolled once per run, so the bot keeps the name it joined with - a reconnect
+// with a new name would lose op, its records and anything else tied to it.
+const RANDOM_NAME_LENGTH = 8;
+
+function randomName(length = RANDOM_NAME_LENGTH) {
+    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const lower = 'abcdefghijklmnopqrstuvwxyz';
+    const digits = '0123456789';
+    const all = upper + lower + digits;
+    const pick = chars => chars[Math.floor(Math.random() * chars.length)];
+
+    // Guaranteed to have a capital, a lower-case letter and a digit; the rest is
+    // anything.
+    const chars = length >= 3 ? [pick(upper), pick(lower), pick(digits)] : [];
+    while (chars.length < length) chars.push(pick(all));
+    for (let i = chars.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [chars[i], chars[j]] = [chars[j], chars[i]];
+    }
+    return chars.join('');
+}
+
 function isObject(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -183,8 +207,13 @@ function normalizeServer(entry, index) {
     const host = String(entry.host || '').trim();
     if (!host) throw new ConfigError(`${where}.host is required`);
 
-    const username = String(entry.username || '').trim();
-    if (!username) throw new ConfigError(`${where}.username is required`);
+    // A random name is rolled here, once, so every part of the bot sees the same
+    // one for the whole run: `randomName: true` is all a server needs then.
+    const wanted = String(entry.username || '').trim();
+    const random = entry.randomName === true;
+    if (!wanted && !random) {
+        throw new ConfigError(`${where}.username is required (or set randomName: true)`);
+    }
 
     const port = Number(entry.port ?? 25565);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -196,7 +225,8 @@ function normalizeServer(entry, index) {
         enabled: entry.enabled !== false,
         host,
         port,
-        username,
+        username: wanted || randomName(),
+        randomName: Boolean(random),
         auth: entry.auth === 'microsoft' ? 'microsoft' : 'offline',
         version: entry.version ?? false,
         channelId: entry.channelId ? String(entry.channelId) : null,
@@ -254,4 +284,4 @@ function enabledServers(config) {
     return config.minecraft.servers.filter(server => server.enabled);
 }
 
-module.exports = { ConfigError, loadConfig, enabledServers, ROOT };
+module.exports = { ConfigError, loadConfig, enabledServers, randomName, ROOT };

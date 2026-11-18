@@ -7,7 +7,7 @@
         "host": "chayapak1.dev",
         "port": 25565,
         "channelId": "1532880964852912360",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       },
       {
@@ -16,7 +16,7 @@
         "host": "91.99.119.210",
         "port": 25565,
         "channelId": "1571143032689131631",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       },
       {
@@ -25,7 +25,7 @@
         "host": "kbpw.de",
         "port": 25565,
         "channelId": "1571546119736135690",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       },
       {
@@ -34,7 +34,7 @@
         "host": "qwertyad.one",
         "port": 25565,
         "channelId": "1571143294719631380",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       },
       {
@@ -43,7 +43,7 @@
         "host": "kaboom.hcesaropz.dev",
         "port": 25565,
         "channelId": "1532881552009203812",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       },
       {
@@ -52,7 +52,7 @@
         "host": "kaboom.pw",
         "port": 25565,
         "channelId": "1450456463871971481",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       },
       {
@@ -61,7 +61,7 @@
         "host": "chipmunk.land",
         "port": 17891,
         "channelId": "1450456420343480370",
-        "username": "vbot",
+        "randomName": true,
         "auth": "offline"
       }
     ],
