@@ -1084,6 +1084,62 @@ async function main() {
         care.destroy();
     });
 
+    await check('the bot core spy reads the commands of command blocks', async () => {
+        const EventEmitter = require('node:events');
+        const { BotCSpy, readCommand } = require('../src/botcspy');
+
+        const client = new EventEmitter();
+        const sent = [];
+        const spyBot = {
+            client,
+            position: { x: 0.5, y: 64, z: 0.5 },
+            write: (name, payload) => {
+                sent.push(name);
+                const nbt = payload.location.x === 0 && payload.location.z === 0
+                    ? {
+                        type: 'compound',
+                        value: {
+                            id: { type: 'string', value: 'minecraft:command_block' },
+                            Command: { type: 'string', value: '/say hello' },
+                            auto: { type: 'byte', value: 1 }
+                        }
+                    }
+                    : null;
+                setImmediate(() => client.emit('nbt_query_response', {
+                    transactionId: payload.transactionId,
+                    nbt
+                }));
+                return true;
+            }
+        };
+
+        const spy = new BotCSpy({ bot: spyBot, logger });
+        const result = await spy.scan({ radius: 1, height: 1 });
+
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.cells, 9, 'a 3x1x3 box');
+        assert.strictEqual(result.answered, 9, 'every block is answered');
+        assert.strictEqual(result.found.length, 1, 'the one command block is found');
+        assert.strictEqual(result.found[0].command, 'say hello', 'the leading slash is dropped');
+        assert.strictEqual(result.found[0].auto, true, 'an auto block is marked');
+        assert.ok(sent.every(name => name === 'query_block_nbt'), 'only block queries go out');
+
+        // Plain, untyped NBT reads the same, and an empty command is not a core.
+        assert.strictEqual(readCommand({ Command: ' op vbot', auto: 1 }), 'op vbot');
+        assert.strictEqual(readCommand({ Command: '   ' }), null);
+        assert.strictEqual(readCommand(null), null);
+
+        // Watch mode sweeps on its own, and stops when told to.
+        let passes = 0;
+        spy.watch({ radius: 0, height: 1, everyMs: 1000, onScan: () => { passes += 1; } });
+        await new Promise(resolve => setTimeout(resolve, 400));
+        assert.ok(passes >= 1, 'watch mode sweeps by itself');
+        assert.strictEqual(spy.watching, true);
+        assert.strictEqual(spy.stop(), true);
+        assert.strictEqual(spy.watching, false);
+        spy.destroy();
+    });
+
     await check('item numbers come from the server registries', async () => {
         // A registry packet is a list; the position in it is the id.
         const registryBot = new Bot({

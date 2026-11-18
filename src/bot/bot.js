@@ -8,6 +8,7 @@ const { playerInfoEntries } = require('../minecraft/players');
 const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
+const { BotCSpy } = require('../botcspy');
 const { IpLookup } = require('../iplookup');
 const path = require('node:path');
 const { Filter } = require('../filter');
@@ -42,6 +43,9 @@ class Bot extends EventEmitter {
             config: config.selfCare || {},
             logger: this.log
         });
+        // Reads the commands other bots run, out of the command blocks that hold
+        // them: `botcspy` drives it.
+        this.cspy = new BotCSpy({ bot: this, logger: this.log });
         this.ipLookup = new IpLookup({
             bot: this,
             store,
@@ -135,6 +139,7 @@ class Bot extends EventEmitter {
         this.client = client;
         this.bind(client);
         this.core?.bindClient(client);
+        this.cspy?.bind(client);
     }
 
     bind(client) {
@@ -661,6 +666,7 @@ class Bot extends EventEmitter {
         this.core?.destroy();
         this.clickTokens?.destroy();
         this.selfCare?.destroy();
+        this.cspy?.destroy();
         this.ipLookup?.destroy();
         this.removeAllListeners();
     }
