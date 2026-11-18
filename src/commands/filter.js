@@ -13,7 +13,7 @@ module.exports = {
     name: 'filter',
     aliases: ['f'],
     description: 'Manage the player filter',
-    usage: 'filter <on|off|status|list|add|remove|clear|player|uuid|ip|regex|mute|rescan> ...',
+    usage: 'filter <on|off|status|list|add|remove|clear|player|uuid|ip|regex|mute|rescan> ... [reason]',
     level: 'admin',
 
     async execute(ctx) {
@@ -74,16 +74,19 @@ module.exports = {
             return ctx.reply('Cleared filter mutes.');
         }
 
+        // `filter add <player|uuid|ip> [reason ...]`: the reason goes on the
+        // title's subtitle and on the mute, so it can be a phrase.
         if (sub === 'add') {
-            const target = ctx.args.slice(1).join(' ').trim();
-            if (!target) return ctx.reply(`Usage: ${ctx.prefix}filter add <player|uuid|ip>`);
+            const target = String(ctx.args[1] || '').trim();
+            const reason = ctx.args.slice(2).join(' ').trim();
+            if (!target) return ctx.reply(`Usage: ${ctx.prefix}filter add <player|uuid|ip> [reason]`);
             if (isUuid(target)) {
-                return ctx.reply(f.addUUID(target) ? `Added filtered UUID ${target}` : `Could not add UUID ${target}.`);
+                return ctx.reply(f.addUUID(target, reason) ? `Added filtered UUID ${target}` : `Could not add UUID ${target}.`);
             }
             if (isIp(target)) {
-                return ctx.reply(f.addIP(target) ? `Added filtered IP ${target}` : `Could not add IP ${target}.`);
+                return ctx.reply(f.addIP(target, reason) ? `Added filtered IP ${target}` : `Could not add IP ${target}.`);
             }
-            return ctx.reply(f.addPlayer(target) ? `Added filtered player ${cleanName(target)}` : `Could not add player ${target}.`);
+            return ctx.reply(f.addPlayer(target, reason) ? `Added filtered player ${cleanName(target)}` : `Could not add player ${target}.`);
         }
 
         if (sub === 'remove' || sub === 'del' || sub === 'delete') {
@@ -102,9 +105,10 @@ module.exports = {
         }
 
         if (sub === 'add-uuid' || sub === 'adduuid') {
-            const v = ctx.args.slice(1).join(' ').trim();
-            if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter add-uuid <uuid>`);
-            return ctx.reply(f.addUUID(v) ? `Added filtered UUID ${v}` : `Could not add UUID ${v}.`);
+            const v = String(ctx.args[1] || '').trim();
+            const reason = ctx.args.slice(2).join(' ').trim();
+            if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter add-uuid <uuid> [reason]`);
+            return ctx.reply(f.addUUID(v, reason) ? `Added filtered UUID ${v}` : `Could not add UUID ${v}.`);
         }
         if (sub === 'remove-uuid' || sub === 'removeuuid') {
             const v = ctx.args.slice(1).join(' ').trim();
@@ -112,9 +116,10 @@ module.exports = {
             return ctx.reply(f.removeUUID(v) ? `Removed filtered UUID ${v}` : `UUID not found.`);
         }
         if (sub === 'add-ip' || sub === 'addip') {
-            const v = ctx.args.slice(1).join(' ').trim();
-            if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter add-ip <ip>`);
-            return ctx.reply(f.addIP(v) ? `Added filtered IP ${v}` : `Could not add IP ${v}.`);
+            const v = String(ctx.args[1] || '').trim();
+            const reason = ctx.args.slice(2).join(' ').trim();
+            if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter add-ip <ip> [reason]`);
+            return ctx.reply(f.addIP(v, reason) ? `Added filtered IP ${v}` : `Could not add IP ${v}.`);
         }
         if (sub === 'remove-ip' || sub === 'removeip') {
             const v = ctx.args.slice(1).join(' ').trim();
@@ -149,9 +154,10 @@ module.exports = {
         if (sub === 'player' || sub === 'players' || sub === 'name' || sub === 'names') {
             const op = String(ctx.args[1] || 'list').toLowerCase();
             if (op === 'add') {
-                const v = ctx.args.slice(2).join(' ').trim();
-                if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter player add <name>`);
-                return ctx.reply(f.addPlayer(v) ? `Added filtered player ${cleanName(v)}` : 'Not added.');
+                const v = String(ctx.args[2] || '').trim();
+                const reason = ctx.args.slice(3).join(' ').trim();
+                if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter player add <name> [reason]`);
+                return ctx.reply(f.addPlayer(v, reason) ? `Added filtered player ${cleanName(v)}` : 'Not added.');
             }
             if (op === 'remove' || op === 'del' || op === 'delete') {
                 const v = ctx.args.slice(2).join(' ').trim();
@@ -168,9 +174,10 @@ module.exports = {
         if (sub === 'uuid' || sub === 'uuids') {
             const op = String(ctx.args[1] || 'list').toLowerCase();
             if (op === 'add') {
-                const v = ctx.args.slice(2).join(' ').trim();
-                if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter uuid add <uuid>`);
-                return ctx.reply(f.addUUID(v) ? `Added filtered UUID ${v}` : 'Not added.');
+                const v = String(ctx.args[2] || '').trim();
+                const reason = ctx.args.slice(3).join(' ').trim();
+                if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter uuid add <uuid> [reason]`);
+                return ctx.reply(f.addUUID(v, reason) ? `Added filtered UUID ${v}` : 'Not added.');
             }
             if (op === 'remove' || op === 'del' || op === 'delete') {
                 const v = ctx.args.slice(2).join(' ').trim();
@@ -187,9 +194,10 @@ module.exports = {
         if (sub === 'ip' || sub === 'ips') {
             const op = String(ctx.args[1] || 'list').toLowerCase();
             if (op === 'add') {
-                const v = ctx.args.slice(2).join(' ').trim();
-                if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter ip add <ip>`);
-                return ctx.reply(f.addIP(v) ? `Added filtered IP ${v}` : 'Not added.');
+                const v = String(ctx.args[2] || '').trim();
+                const reason = ctx.args.slice(3).join(' ').trim();
+                if (!v) return ctx.reply(`Usage: ${ctx.prefix}filter ip add <ip> [reason]`);
+                return ctx.reply(f.addIP(v, reason) ? `Added filtered IP ${v}` : 'Not added.');
             }
             if (op === 'remove' || op === 'del' || op === 'delete') {
                 const v = ctx.args.slice(2).join(' ').trim();

@@ -654,7 +654,7 @@ async function main() {
 
         // One command per block of the core, so every one of them is running
         // something on the next tick instead of a fixed handful in a loop.
-        const burst = sent.filter(command => !command.startsWith('tellraw ') && !command.startsWith('mute '));
+        const burst = sent.filter(command => !/^(tellraw|mute|title) /.test(command));
         assert.strictEqual(burst.length, 729, 'one command per core block');
         assert.strictEqual(new Set(burst).size >= 3, true, 'the whole punishment set is in there');
         assert.ok(burst.filter(command => command === 'jumpscare steve').length >= 600,
@@ -671,7 +671,7 @@ async function main() {
         smallFilter.punish(player);
         smallFilter.destroy();
         assert.strictEqual(
-            small.filter(command => !command.startsWith('tellraw ') && !command.startsWith('mute ')).length,
+            small.filter(command => !/^(tellraw|mute|title) /.test(command)).length,
             27,
             'as wide as the core'
         );
@@ -700,6 +700,57 @@ async function main() {
             'one mute, not one every few seconds');
         assert.strictEqual(sent.filter(command => command === 'mute steve whitelist').length, 1);
         assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
+    });
+
+    await check('a punished player keeps a full screen title saying why', async () => {
+        const { Filter } = require('../src/filter');
+        const { Whitelist } = require('../src/whitelist');
+        const sent = [];
+        const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
+        const bot = {
+            id: 'title-test',
+            server: { username: 'vbot' },
+            online: new Map([['steve', player]]),
+            position: { x: 0, y: 64, z: 0 },
+            core: { volume: 27, run: command => (sent.push(String(command)), { x: 0, y: 64, z: 0 }) },
+            store: { ipsFor: () => [] }
+        };
+        const filter = new Filter({ bot, storePath: 'unused.json', logger });
+        filter.getServerData = () => ({
+            enabled: true,
+            players: ['steve'],
+            uuids: [],
+            ips: [],
+            regex: null,
+            mutes: [],
+            reasons: { steve: 'spam bots' }
+        });
+        assert.strictEqual(filter.reasonFor(player), 'spam bots', 'the reason stored for the name');
+        assert.strictEqual(filter.reasonFor({ name: 'nobody' }), 'filtered', 'and a default for the rest');
+        assert.strictEqual(filter.punish(player), true);
+
+        assert.ok(sent.includes('title steve times 0 2147483647 0'), 'a stay as long as ticks go');
+        assert.ok(sent.includes('title steve title {"text":"filtered"}'), 'the title');
+        assert.ok(sent.includes('title steve subtitle {"text":"reason: spam bots"}'), 'the reason under it');
+        assert.ok(sent.includes('mute steve spam bots'), 'and the mute carries the reason');
+
+        // Off the filter: the title is taken down again.
+        filter.shouldFilter = () => false;
+        await new Promise(resolve => setTimeout(resolve, 160));
+        filter.destroy();
+        assert.ok(sent.includes('title steve clear'), 'cleared when the punishment ends');
+        assert.ok(sent.includes('title steve reset'));
+
+        // The whitelist has its own title, without a reason.
+        const wSent = [];
+        const wBot = { ...bot, core: { volume: 27, run: command => (wSent.push(String(command)), { x: 0, y: 64, z: 0 }) } };
+        const whitelist = new Whitelist({ bot: wBot, storePath: 'unused.json', logger });
+        whitelist.getServerData = () => ({ enabled: true, players: [], uuids: [], ips: [] });
+        whitelist.punish(player);
+        whitelist.destroy();
+        assert.ok(wSent.includes('title steve title {"text":"whitelist enabled"}'), 'the whitelist title');
+        assert.strictEqual(wSent.some(command => command.startsWith('title steve subtitle')), false,
+            'no reason to give');
     });
 
     await check('refill spam refills through the blocks and stops itself', async () => {

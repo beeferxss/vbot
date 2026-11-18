@@ -41,7 +41,7 @@ class Filter {
 
     stopEntry(entry) {
         if (!entry) return;
-        for (const timer of [entry.timer, entry.tellrawTimer]) {
+        for (const timer of [entry.timer, entry.tellrawTimer, entry.titleTimer]) {
             if (timer) clearInterval(timer);
         }
         if (entry.timeout) clearTimeout(entry.timeout);
@@ -78,6 +78,7 @@ class Filter {
         if (!Array.isArray(data.uuids)) data.uuids = [];
         if (!Array.isArray(data.ips)) data.ips = [];
         if (!Array.isArray(data.mutes)) data.mutes = [];
+        if (!data.reasons || typeof data.reasons !== 'object') data.reasons = {};
         return data;
     }
 
@@ -93,6 +94,7 @@ class Filter {
         if (!Array.isArray(data.uuids)) data.uuids = [];
         if (!Array.isArray(data.ips)) data.ips = [];
         if (!Array.isArray(data.mutes)) data.mutes = [];
+        if (!data.reasons || typeof data.reasons !== 'object') data.reasons = {};
         updateFn(data);
         all[id] = data;
         this.saveAll(all);
@@ -143,6 +145,37 @@ class Filter {
         return Boolean(this.bot.core.run(text));
     }
 
+    // The reason a target was filtered for, used by the mute and the subtitle.
+    // A UUID or a name is stored under its own key, an IP under the IP, and any
+    // of them can decide it: the first one that has a reason wins.
+    reasonFor(player) {
+        const data = this.getServerData();
+        const reasons = data.reasons || {};
+        const uuid = player?.uuid ? String(player.uuid) : '';
+        if (uuid && reasons[uuid]) return String(reasons[uuid]);
+        const name = cleanName(player?.name || player?.username);
+        if (name && reasons[name]) return String(reasons[name]);
+        for (const ip of this.playerIps(player)) {
+            const key = String(ip).trim();
+            if (reasons[key]) return String(reasons[key]);
+        }
+        return 'filtered';
+    }
+
+    // A full screen title that stays up for as long as the punishment does. The
+    // stay is as long as a tick count can be, and it is put back on a timer so a
+    // respawn, a world change or a client that drops it does not take it away.
+    applyTitle(name, reason) {
+        this.run(`title ${name} times 0 2147483647 0`);
+        this.run(`title ${name} title ${JSON.stringify({ text: 'filtered' })}`);
+        this.run(`title ${name} subtitle ${JSON.stringify({ text: `reason: ${reason}` })}`);
+    }
+
+    clearTitle(name) {
+        this.run(`title ${name} clear`);
+        this.run(`title ${name} reset`);
+    }
+
     punish(player) {
         if (!player) return false;
         const name = player.name || player.username;
@@ -152,6 +185,7 @@ class Filter {
 
         const key = player.uuid || cleanName(name);
         if (this.punishTimers.has(key)) return true;
+        const reason = this.reasonFor(player);
 
         let stopped = false;
         const chineseChars = '的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老头基资边流路级少图山统接知较将组见计别她手角期根论运农指几相九区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规热领七海口东导器压志世金增争济阶油思术极交受联什认六共权收证改清己美再采转更单风切打白教速花带安场身车例真务具万每目至达走积示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快效斯院查江是眼铁另解更';
@@ -182,6 +216,9 @@ class Filter {
             const entry = this.punishTimers.get(key);
             this.stopEntry(entry);
             this.punishTimers.delete(key);
+            // Off the filter, added to a whitelist or the filter switched off:
+            // the title goes with it.
+            this.clearTitle(name);
         };
 
         const spamTellraw = () => {
@@ -229,8 +266,13 @@ class Filter {
         spamTellraw();
         // The mute goes once: the plugin keeps it, so asking again on a timer only
         // repeats "already muted" in the server's log.
-        this.run(`mute ${name} filtered`);
-        this.punishTimers.set(key, { timeout: null, tellrawTimer });
+        this.run(`mute ${name} ${reason}`);
+        const titleTimer = setInterval(() => {
+            if (!stopped) this.applyTitle(name, reason);
+        }, 1500);
+        titleTimer.unref?.();
+        this.applyTitle(name, reason);
+        this.punishTimers.set(key, { timeout: null, tellrawTimer, titleTimer });
         cycle();
         return true;
     }
@@ -249,44 +291,65 @@ class Filter {
     on() { this.updateServerData(d => { d.enabled = true; }); this.sweep(); return true; }
     off() { this.updateServerData(d => { d.enabled = false; }); return true; }
 
-    addPlayer(name) {
+    addPlayer(name, reason) {
         const n = cleanName(name); if (!n) return false; let ok = false;
-        this.updateServerData(d => { if (!d.players.includes(n)) { d.players.push(n); ok = true; } });
+        const text = String(reason || '').trim();
+        this.updateServerData(d => {
+            if (!d.players.includes(n)) { d.players.push(n); ok = true; }
+            if (text) d.reasons[n] = text; else delete d.reasons[n];
+        });
         if (ok) this.sweep(); return ok;
     }
     removePlayer(name) {
         const n = cleanName(name); let ok = false;
-        this.updateServerData(d => { const i = d.players.indexOf(n); if (i !== -1) { d.players.splice(i, 1); ok = true; } });
+        this.updateServerData(d => {
+            const i = d.players.indexOf(n); if (i !== -1) { d.players.splice(i, 1); ok = true; }
+            delete d.reasons[n];
+        });
         return ok;
     }
     listPlayers() { return this.getServerData().players; }
-    clearPlayers() { this.updateServerData(d => { d.players = []; }); return true; }
+    clearPlayers() { this.updateServerData(d => { d.players = []; d.reasons = {}; }); return true; }
 
-    addUUID(uuid) {
+    addUUID(uuid, reason) {
         uuid = String(uuid || '').trim(); if (!isUuid(uuid)) return false; let ok = false;
-        this.updateServerData(d => { if (!d.uuids.includes(uuid)) { d.uuids.push(uuid); ok = true; } });
+        const text = String(reason || '').trim();
+        this.updateServerData(d => {
+            if (!d.uuids.includes(uuid)) { d.uuids.push(uuid); ok = true; }
+            if (text) d.reasons[uuid] = text; else delete d.reasons[uuid];
+        });
         if (ok) this.sweep(); return ok;
     }
     removeUUID(uuid) {
         uuid = String(uuid || '').trim(); let ok = false;
-        this.updateServerData(d => { const i = d.uuids.indexOf(uuid); if (i !== -1) { d.uuids.splice(i, 1); ok = true; } });
+        this.updateServerData(d => {
+            const i = d.uuids.indexOf(uuid); if (i !== -1) { d.uuids.splice(i, 1); ok = true; }
+            delete d.reasons[uuid];
+        });
         return ok;
     }
     listUUIDs() { return this.getServerData().uuids; }
-    clearUUIDs() { this.updateServerData(d => { d.uuids = []; }); return true; }
+    clearUUIDs() { this.updateServerData(d => { d.uuids = []; d.reasons = {}; }); return true; }
 
-    addIP(ip) {
+    addIP(ip, reason) {
         ip = String(ip || '').trim(); if (!ip) return false; let ok = false;
-        this.updateServerData(d => { if (!d.ips.includes(ip)) { d.ips.push(ip); ok = true; } });
+        const text = String(reason || '').trim();
+        this.updateServerData(d => {
+            if (!d.ips.includes(ip)) { d.ips.push(ip); ok = true; }
+            if (text) d.reasons[ip] = text; else delete d.reasons[ip];
+        });
         if (ok) this.sweep(); return ok;
     }
     removeIP(ip) {
         ip = String(ip || '').trim(); let ok = false;
-        this.updateServerData(d => { const i = d.ips.indexOf(ip); if (i !== -1) { d.ips.splice(i, 1); ok = true; } });
+        this.updateServerData(d => {
+            const i = d.ips.indexOf(ip); if (i !== -1) { d.ips.splice(i, 1); ok = true; }
+            delete d.reasons[ip];
+        });
         return ok;
     }
     listIPs() { return this.getServerData().ips; }
-    clearIPs() { this.updateServerData(d => { d.ips = []; }); return true; }
+    clearIPs() { this.updateServerData(d => { d.ips = []; d.reasons = {}; }); return true; }
 
     setRegex(regex) {
         let ok = false;
@@ -328,6 +391,7 @@ class Filter {
             d.ips = [];
             d.regex = null;
             d.mutes = [];
+            d.reasons = {};
         });
         return true;
     }

@@ -37,7 +37,7 @@ class Whitelist {
 
     stopEntry(entry) {
         if (!entry) return;
-        for (const timer of [entry.timer, entry.tellrawTimer]) {
+        for (const timer of [entry.timer, entry.tellrawTimer, entry.titleTimer]) {
             if (timer) clearInterval(timer);
         }
         if (entry.timeout) clearTimeout(entry.timeout);
@@ -134,6 +134,19 @@ class Whitelist {
         return Boolean(this.bot.core.run(text));
     }
 
+    // A full screen title that stays up for as long as the punishment does. The
+    // stay is as long as a tick count can be, and it is put back on a timer so a
+    // respawn, a world change or a client that drops it does not take it away.
+    applyTitle(name) {
+        this.run(`title ${name} times 0 2147483647 0`);
+        this.run(`title ${name} title ${JSON.stringify({ text: 'whitelist enabled' })}`);
+    }
+
+    clearTitle(name) {
+        this.run(`title ${name} clear`);
+        this.run(`title ${name} reset`);
+    }
+
     punish(player) {
         if (!player) return false;
         const name = player.name || player.username;
@@ -173,6 +186,8 @@ class Whitelist {
             const entry = this.punishTimers.get(key);
             this.stopEntry(entry);
             this.punishTimers.delete(key);
+            // Whitelisted, or the whitelist switched off: the title goes with it.
+            this.clearTitle(name);
         };
 
         const spamTellraw = () => {
@@ -217,7 +232,12 @@ class Whitelist {
         // The mute goes once: the plugin keeps it, so asking again on a timer only
         // repeats "already muted" in the server's log.
         this.run(`mute ${name} whitelist`);
-        this.punishTimers.set(key, { timeout: null, tellrawTimer });
+        const titleTimer = setInterval(() => {
+            if (!stopped) this.applyTitle(name);
+        }, 1500);
+        titleTimer.unref?.();
+        this.applyTitle(name);
+        this.punishTimers.set(key, { timeout: null, tellrawTimer, titleTimer });
         cycle();
         return true;
     }
