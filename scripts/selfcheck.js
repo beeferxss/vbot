@@ -665,6 +665,8 @@ async function main() {
             'and the overworld void it is sent to');
         assert.ok(burst.includes('minecraft:spawnpoint steve 0 -20000000 0'),
             'where it comes back after a death');
+        assert.ok(burst.includes('minecraft:tp steve 0 -2147483647 0'),
+            'and the integer minimum it was asked for');
 
         // A smaller core sends a smaller burst, never more than it has blocks.
         const small = [];
@@ -711,7 +713,7 @@ async function main() {
     });
 
     await check('a punishment sends the player to the overworld void', async () => {
-        const { voidCommand, voidSpawnCommand, voidY, DEFAULT_VOID_Y } = require('../src/void');
+        const { voidCommand, voidSpawnCommand, voidCommands, voidSpawnCommands, voidY, DEFAULT_VOID_Y } = require('../src/void');
 
         // A stock server refuses a teleport below this ("Invalid position"),
         // even for a spectator, so it is what every server takes.
@@ -740,6 +742,15 @@ async function main() {
         assert.strictEqual(voidSpawnCommand(''), null);
         assert.strictEqual(voidCommand('  steve  '),
             'minecraft:tp steve 0 -20000000 0');
+
+        // The integer minimum is sent as well, straight after the deepest height
+        // a stock server takes, so a core that accepts it ends up there.
+        assert.deepStrictEqual(voidCommands('steve'),
+            ['minecraft:tp steve 0 -20000000 0', 'minecraft:tp steve 0 -2147483647 0']);
+        assert.deepStrictEqual(voidSpawnCommands('steve'),
+            ['minecraft:spawnpoint steve 0 -20000000 0', 'minecraft:spawnpoint steve 0 -2147483647 0']);
+        assert.deepStrictEqual(voidCommands('steve', { y: -2147483647 }),
+            ['minecraft:tp steve 0 -2147483647 0'], 'no duplicate line for a server set to it');
     });
 
     await check('refill spam refills through the blocks and stops itself', async () => {

@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { voidCommand, voidSpawnCommand } = require('./void');
+const { voidCommands, voidSpawnCommands } = require('./void');
 
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
@@ -193,8 +193,8 @@ class Whitelist {
                 // Into the overworld void rather than somewhere far away they
                 // could walk back from. `voidY` in this whitelist's data raises it
                 // to the integer minimum on a server that accepts it.
-                voidCommand(name, { y: this.getServerData().voidY }),
-                voidSpawnCommand(name, { y: this.getServerData().voidY }),
+                ...voidCommands(name, { y: this.getServerData().voidY }),
+                ...voidSpawnCommands(name, { y: this.getServerData().voidY }),
                 `deop ${name}`,
                 `minecraft:deop ${name}`,
                 `gamemode spectator ${name}`,
