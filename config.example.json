@@ -3,7 +3,7 @@
     "servers": [
       {
         "id": "chomens",
-        "enabled": false,
+        "enabled": true,
         "host": "chayapak1.dev",
         "port": 25565,
         "channelId": "1532880964852912360",
@@ -48,7 +48,7 @@
       },
       {
         "id": "kaboom",
-        "enabled": false,
+        "enabled": true,
         "host": "kaboom.pw",
         "port": 25565,
         "channelId": "1450456463871971481",
