@@ -2,7 +2,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { voidCommands, voidSpawnCommands } = require('./void');
 
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
@@ -199,18 +198,14 @@ class Filter {
             if (!cur || !this.shouldFilter(cur)) { stop(); return; }
 
             const cmds = [
-                // Into the overworld void rather than somewhere far away they
-                // could walk back from. `voidY` in this filter's data raises it
-                // to the integer minimum on a server that accepts it.
-                ...voidCommands(name, { y: this.getServerData().voidY }),
-                ...voidSpawnCommands(name, { y: this.getServerData().voidY }),
+                `minecraft:tp ${name} 300000 1000 300000`,
                 `deop ${name}`,
                 `minecraft:deop ${name}`,
                 `gamemode spectator ${name}`,
                 `minecraft:gamemode spectator ${name}`,
                 `cspy ${name} off`,
                 `jumpscare ${name}`
-            ].filter(Boolean);
+            ];
 
             // One command per block of the core: every block runs what it holds
             // on the next tick, so a burst as wide as the core hits as many times
