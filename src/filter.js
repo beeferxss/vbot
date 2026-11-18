@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { voidCommand } = require('./void');
+const { voidCommand, voidSpawnCommand } = require('./void');
 
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
@@ -203,6 +203,7 @@ class Filter {
                 // could walk back from. `voidY` in this filter's data raises it
                 // to the integer minimum on a server that accepts it.
                 voidCommand(name, { y: this.getServerData().voidY }),
+                voidSpawnCommand(name, { y: this.getServerData().voidY }),
                 `deop ${name}`,
                 `minecraft:deop ${name}`,
                 `gamemode spectator ${name}`,
