@@ -63,6 +63,22 @@
         "channelId": "1450456420343480370",
         "randomName": true,
         "auth": "offline"
+      },
+      {
+        "id": "altnorat",
+        "enabled": true,
+        "host": "alt.norat.pw",
+        "port": 25565,
+        "randomName": true,
+        "auth": "offline"
+      },
+      {
+        "id": "norat",
+        "enabled": true,
+        "host": "norat.pw",
+        "port": 25565,
+        "randomName": true,
+        "auth": "offline"
       }
     ],
     "connection": {
@@ -76,7 +92,7 @@
   "selfCare": {
     "vanish": true,
     "nick": false,
-    "nickName": "&2§lV&aB&2§lO&aT",
+    "nickName": "&2\u00a7lV&aB&2\u00a7lO&aT",
     "username": false,
     "usernameName": "vbot"
   },
@@ -100,7 +116,7 @@
   },
   "core": {
     "enabled": true,
-    "name": "{\"text\":\"§lᴠʙᴏᴛ\",\"color\":\"dark_green\"}",
+    "name": "{\"text\":\"\u00a7l\u1d20\u0299\u1d0f\u1d1b\",\"color\":\"dark_green\"}",
     "area": {
       "size": 16,
       "y": 0
@@ -111,7 +127,7 @@
     "refill": {
       "enabled": true,
       "miniSize": 3,
-      "miniName": "{\"text\":\"mini core™\",\"color\":\"green\"}"
+      "miniName": "{\"text\":\"mini core\u2122\",\"color\":\"green\"}"
     }
   }
 }

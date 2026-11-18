@@ -63,47 +63,42 @@ jobs:
           test -f config.example.json
           node scripts/make-config.js
 
-      - name: Run bot with automatic crash recovery
+      # One session per job, up to the window below. A crash ends the run instead
+      # of being restarted on top of whatever went wrong, and the `stop` command
+      # exits with 42, which is the signal that no new session should start. The
+      # bot's output goes to this log: it logs at error level with chat off, and
+      # its proxy line says whether the connection went through WARP.
+      - name: Run bot
+        id: run
         shell: bash
         env:
-          # Six hours per session: the job timeout is 360 minutes, so the window
-          # stops a little short to leave room for persisting the data and
-          # starting the next run.
+          # A little short of the job timeout, so the data is saved and pushed
+          # before the runner stops the job.
           RUN_WINDOW_SECONDS: ${{ vars.VBOT_RUN_WINDOW_SECONDS || '20700' }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
-          RESTART_DELAY=10
-          deadline=$((SECONDS + RUN_WINDOW_SECONDS))
-          LOG=/tmp/vbot.log
+          set +e
+          timeout --signal=INT --kill-after=30s "${RUN_WINDOW_SECONDS}s" node src/index.js
+          status=$?
+          set -e
 
-          while (( SECONDS < deadline )); do
-            remaining=$((deadline - SECONDS))
-            started=$SECONDS
+          echo "session ended (exit ${status})"
+          echo "exit=${status}" >> "$GITHUB_OUTPUT"
 
-            # The bot's output never reaches the workflow log: it carries server
-            # chat, player names and addresses, and this log is public. Only how
-            # the session ended is printed, and the file is emptied for the next
-            # session so nothing piles up on the runner.
-            set +e
-            timeout \
-              --signal=INT \
-              --kill-after=15s \
-              "${remaining}s" \
-              node src/index.js > "$LOG" 2>&1
-            status=$?
-            set -e
-
-            : > "$LOG"
-            echo "session ended after $((SECONDS - started))s (exit ${status})"
-
-            if (( SECONDS >= deadline )); then
-              break
-            fi
-
-            echo "bot exited, restarting in ${RESTART_DELAY}s"
-            sleep "$RESTART_DELAY"
-          done
+          case "$status" in
+            0|124)
+              # On its own, or the window ran out: the next session starts.
+              ;;
+            42)
+              echo "the stop command was used; no new session will start"
+              echo "stop=1" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "the bot exited with ${status}; no new session will start"
+              exit "$status"
+              ;;
+          esac
 
       # Skipped when no server is enabled, so a misconfigured run does not
       # chain itself into an endless loop of pointless sessions.
@@ -142,7 +137,7 @@ jobs:
             push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Automatically start next session
-        if: steps.persist.outcome == 'success'
+        if: always() && steps.run.outcome == 'success' && steps.persist.outcome == 'success' && steps.run.outputs.stop != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

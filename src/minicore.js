@@ -449,6 +449,20 @@ class MiniCore {
         return sent !== false;
     }
 
+    // The cube goes away in one fill of air, through a block that is still
+    // standing or, with none left, as chat. Nothing is dug up: a fill put it
+    // there and a fill takes it away.
+    clear() {
+        const box = this.current();
+        if (!box) return false;
+        const command = `fill ${box.min.x} ${box.min.y} ${box.min.z} ` +
+            `${box.max.x} ${box.max.y} ${box.max.z} minecraft:air`;
+        const written = this.run(command);
+        if (!written) this.bot?.core?.chatRun?.(command);
+        this.forget();
+        return Boolean(written) || typeof this.bot?.core?.chatRun === 'function';
+    }
+
     destroy() {
         this.slots.clear();
         this.box = null;

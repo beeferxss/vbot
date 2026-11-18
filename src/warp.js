@@ -57,6 +57,9 @@ class Warp {
         // After a start that did not come up, the next attempts do not wait again:
         // they connect directly until this has passed.
         this.blockedUntil = 0;
+        // What the run has already said about the proxy, so the line is printed
+        // when it changes rather than per connection.
+        this.reported = null;
     }
 
     // Where the bot points to reach the tunnel.
@@ -155,6 +158,14 @@ class Warp {
         });
     }
 
+    // One line in the run: whether the connection went through the tunnel. It
+    // carries nothing about the address itself.
+    report(used) {
+        if (this.reported === used) return;
+        this.reported = used;
+        console.log(used ? 'proxy: on (connected through WARP)' : 'proxy: off (connected directly)');
+    }
+
     // Gives the client a socket to the server, through the tunnel, and falls back
     // to a direct connection when the proxy cannot carry it: being online without
     // WARP beats a reconnect loop that never gets in.
@@ -170,10 +181,12 @@ class Warp {
             // has come and gone.
             client.emit('connect');
             socket.resume?.();
+            this.report(true);
             return true;
         } catch (error) {
             this.lastError = error.message;
             this.log?.warn?.(`the WARP proxy could not carry it (${error.message}); connecting directly`);
+            this.report(false);
             if (client.ended || client.destroyed) return false;
             client.setSocket(net.connect({ host, port }));
             return false;

@@ -57,6 +57,8 @@ function snbt(component) {
     if (c.italic) parts.push('italic:1b');
     if (c.underlined) parts.push('underlined:1b');
 
+    if (c.insertion) parts.push(`insertion:${quote(c.insertion)}`);
+
     if (c.click) {
         const field = CLICK_FIELD[c.click.action] || 'value';
         const payload = field === 'page' ? Number(c.click.value) : quote(c.click.value);
@@ -82,6 +84,9 @@ function json(component) {
     if (c.bold) out.bold = true;
     if (c.italic) out.italic = true;
     if (c.underlined) out.underlined = true;
+
+    // Shift-clicking a chat line inserts this into the chat box.
+    if (c.insertion) out.insertion = String(c.insertion);
 
     if (c.click) {
         // The pre-1.21.5 JSON shape always used "value".

@@ -702,6 +702,86 @@ async function main() {
         assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
     });
 
+    await check('the mini core is taken away in one fill of air', async () => {
+        const { MiniCore } = require('../src/minicore');
+        const commands = [];
+        const bot = {
+            position: { x: 0, y: 64, z: 0 },
+            write: (name, packet) => {
+                commands.push(packet.command);
+                return true;
+            },
+            core: { chatRun: command => commands.push(`chat:${command}`) }
+        };
+        const mini = new MiniCore({ bot, logger, config: {} });
+        mini.confirmAll();
+
+        assert.strictEqual(mini.clear(), true);
+        assert.ok(
+            commands.some(command => /^fill -?\d+ -?\d+ -?\d+ -?\d+ -?\d+ -?\d+ minecraft:air$/.test(command)),
+            `the cube is filled with air: ${JSON.stringify(commands)}`
+        );
+    });
+
+    await check('stop clears both cores, then ends the process with the stop code', async () => {
+        const stop = require('../src/commands/stop');
+
+        const cleared = [];
+        const replies = [];
+        const ctx = {
+            args: [],
+            prefix: 'v\\',
+            reply: text => replies.push(text),
+            bot: {
+                core: {
+                    clear: () => (cleared.push('core'), true),
+                    fillItem: { clear: () => (cleared.push('mini core'), true) }
+                }
+            }
+        };
+
+        const realExit = process.exit;
+        let code = null;
+        process.exit = value => { code = value; };
+        try {
+            await stop.execute(ctx);
+            await new Promise(resolve => setTimeout(resolve, 1700));
+        } finally {
+            process.exit = realExit;
+        }
+
+        assert.strictEqual(stop.level, 'owner', 'the owner only');
+        assert.deepStrictEqual(cleared, ['mini core', 'core'], 'the cube first, then the area');
+        assert.strictEqual(code, 42, 'the code the workflow reads as stop');
+        assert.ok(replies.length, 'and it says so');
+    });
+
+    await check('a name opens its addresses and a uuid copies or inserts itself', async () => {
+        const list = require('../src/commands/list');
+        const uuid = '0f9d8c2a-1111-2222-3333-444455556666';
+
+        let parts = null;
+        const ctx = {
+            args: [],
+            prefix: 'v\\',
+            reply: value => { parts = value; },
+            bot: {
+                online: new Map([['steve', { name: 'steve', uuid }]]),
+                ipLookup: { ipFor: () => '10.0.0.9' }
+            }
+        };
+
+        await list.execute(ctx);
+
+        const name = parts.find(part => part && part.text === 'steve');
+        assert.deepStrictEqual(name.click, { action: 'suggest_command', value: 'v\\alts steve' },
+            'clicking the name runs alts for it');
+
+        const id = parts.find(part => part && part.text === uuid);
+        assert.deepStrictEqual(id.click, { action: 'copy_to_clipboard', value: uuid }, 'clicking the uuid copies it');
+        assert.strictEqual(id.insertion, uuid, 'shift-clicking puts it in the chat box');
+    });
+
     await check('a punished player keeps a full screen title saying why', async () => {
         const { Filter } = require('../src/filter');
         const { Whitelist } = require('../src/whitelist');
@@ -2871,9 +2951,11 @@ async function main() {
         const text = parts => parts.map(part => part.text).join('');
         assert.match(text(first), /Online \(10/, 'the header counts everyone');
         assert.match(text(first), /page 1\/2|\(10, page 1\/2\)/);
-        // One page of eight: a name and a UUID each copy the UUID.
-        assert.strictEqual(first.filter(part => part.clickEvent?.action === 'copy_to_clipboard').length, 16);
+        // One page of eight: each UUID copies itself, each name opens its addresses.
+        assert.strictEqual(first.filter(part => part.clickEvent?.action === 'copy_to_clipboard').length, 8);
         assert.strictEqual(first.filter(part => part.text === ' - ').length, 8);
+        const nameButton = first.find(part => part.text === 'Player1');
+        assert.strictEqual(nameButton.clickEvent.action, 'run_command', 'the name is a button');
 
         // The name hover carries the uuid and the address together.
         const firstRow = first.find(part => part.text === 'Player0');

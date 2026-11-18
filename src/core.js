@@ -1331,6 +1331,22 @@ class Core {
         }
     }
 
+    // The whole area goes away in one fill of air, through a block when one is
+    // standing and as chat when none is. Used by the stop command, after the mini
+    // core's own blocks - those recreate core cells every tick - are gone.
+    clear() {
+        const { origin, bounds } = this;
+        if (origin.x === null) return false;
+        const command = `fill ${origin.x} ${origin.y} ${origin.z} ` +
+            `${bounds.x} ${bounds.y} ${bounds.z} minecraft:air`;
+        const written = this.run(command);
+        if (!written) this.chatRun(command);
+        this.blocks.clear();
+        this.ready = false;
+        this.everReady = false;
+        return true;
+    }
+
     // Nothing guarantees the fill landed: the bot may not be opped yet, a chunk
     // may not be loaded, or every block may have been broken. Every couple of
     // seconds, rebuild whatever is missing - through a leftover block when there

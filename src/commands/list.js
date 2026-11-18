@@ -1,7 +1,8 @@
 'use strict';
 
-// Who is online, with a clickable UUID. Ported from the reference bot's list
-// command: one page of eight, previous/next as clickable buttons.
+// Who is online. A name opens its own addresses (`alts`), a UUID copies itself,
+// and shift-clicking a UUID puts it in the chat box. Ported from the reference
+// bot's list command: one page of eight, previous/next as clickable buttons.
 //
 // Clicks are suggestions here; the registry turns every suggestion into a real
 // button, so clicking a page arrow runs the command instead of pasting it.
@@ -60,15 +61,14 @@ module.exports = {
                 color: vanished
                     ? 'dark_gray'
                     : NAME_COLOURS[(start + index) % NAME_COLOURS.length],
-                // The hover carries both facts worth having, so a click can stay
-                // a copy.
+                // The name is the way into its addresses: the click runs the
+                // alts command as the player who clicked it, with their rank.
                 hover: {
-                    text: `${player.name}\n${uuid || 'uuid unknown'}\nip: ${ip || 'not known yet'}` +
+                    text: `${player.name}\n${uuid || 'uuid unknown'}\nip: ${ip || 'not known yet'}\n` +
+                        `click: the addresses of ${player.name}` +
                         (vanished ? '\nvanished: hidden from the tab list' : '')
                 },
-                ...(uuid
-                    ? { click: { action: 'copy_to_clipboard', value: uuid } }
-                    : {})
+                click: { action: 'suggest_command', value: `${ctx.prefix}alts ${player.name}` }
             });
             if (vanished) parts.push({ text: ' (vanish)', color: 'dark_gray', italic: true });
             parts.push({ text: ' - ', color: 'dark_gray' });
@@ -76,7 +76,10 @@ module.exports = {
                 ? {
                     text: uuid,
                     color: 'blue',
-                    hover: { text: 'Click to copy UUID' },
+                    // Shift-clicking a chat line puts its insertion in the chat
+                    // box, so the UUID is there to edit.
+                    insertion: uuid,
+                    hover: { text: 'Click to copy the UUID\nShift-click to put it in the chat box' },
                     click: { action: 'copy_to_clipboard', value: uuid }
                 }
                 : { text: 'uuid unknown', color: 'dark_gray' });
