@@ -1531,8 +1531,10 @@ async function main() {
         assert.strictEqual(payload, 'hello from the tunnel');
 
         // The client is handed that socket, and the connect event it waits for.
+        // It starts ended, as minecraft-protocol's own client does until setSocket.
         const client = new EventEmitter();
-        client.setSocket = handed => { client.socket = handed; };
+        client.ended = true;
+        client.setSocket = handed => { client.socket = handed; client.ended = false; };
         let connected = 0;
         client.on('connect', () => { connected += 1; });
 
@@ -1547,8 +1549,38 @@ async function main() {
         });
         assert.strictEqual(await warp.attach(client, { host: 'play.example.net', port: 25565 }), true);
         assert.strictEqual(connected, 1, 'the connect event the client waits for');
+        assert.strictEqual(client.ended, false, 'a fresh client that is ended only until its socket is set still gets one');
         assert.ok(client.socket, 'a socket to the server');
         client.socket.destroy();
+
+        // A client that really is gone takes no socket, and the one that was
+        // opened for it is closed instead of left hanging on the tunnel.
+        const unused = { destroyed: false, destroy() { this.destroyed = true; } };
+        const gone = new EventEmitter();
+        gone.ended = true;
+        gone.socket = { destroyed: true };
+        gone.setSocket = () => { throw new Error('a socket was handed to a client that was already gone'); };
+        const guarding = new Warp({
+            config: { enabled: true, host: '127.0.0.1', port: proxyPort, timeoutMs: 3000 },
+            logger,
+            run: async (binary, args) => ({
+                ok: true,
+                stdout: args[0] === 'status' ? 'Proxy is running on 127.0.0.1:25344' : '',
+                stderr: ''
+            }),
+            connect: async () => unused
+        });
+        assert.strictEqual(await guarding.attach(gone, { host: 'play.example.net', port: 25565 }), false);
+        assert.strictEqual(unused.destroyed, true, 'the socket opened for a gone client is closed');
+        assert.strictEqual(gone.socket.destroyed, true, 'nothing else happened to it');
+
+        // One that was ended while the tunnel was opening has no socket either.
+        const aborted = new EventEmitter();
+        aborted.ended = true;
+        aborted.serializer = { writableEnded: true };
+        aborted.setSocket = () => { throw new Error('a socket was handed to an ended client'); };
+        assert.strictEqual(await guarding.attach(aborted, { host: 'play.example.net', port: 25565 }), false);
+
         proxy.close();
     });
 

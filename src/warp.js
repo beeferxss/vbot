@@ -24,6 +24,17 @@ const READY_DELAY_MS = 500;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// minecraft-protocol starts a new client with ended = true and only clears it in
+// setSocket, so a client that is still waiting for its connection looks ended.
+// It is gone when it has been destroyed, when the socket it was given has ended,
+// or, before any socket, when client.end() ended its packet stream while the
+// tunnel was still being opened.
+function clientGone(client) {
+    if (client.destroyed) return true;
+    if (client.socket) return Boolean(client.ended || client.socket.destroyed);
+    return client.serializer?.writableEnded === true;
+}
+
 // Runs the client and always resolves, so a missing binary, a hanging proxy or a
 // non-zero exit is a result rather than an exception.
 function runCommand(binary, args, timeoutMs) {
@@ -172,7 +183,7 @@ class Warp {
     async attach(client, { host, port }) {
         try {
             const socket = await this.openSocket({ host, port });
-            if (client.ended || client.destroyed) {
+            if (clientGone(client)) {
                 socket.destroy();
                 return false;
             }
@@ -187,7 +198,7 @@ class Warp {
             this.lastError = error.message;
             this.log?.warn?.(`the WARP proxy could not carry it (${error.message}); connecting directly`);
             this.report(false);
-            if (client.ended || client.destroyed) return false;
+            if (clientGone(client)) return false;
             client.setSocket(net.connect({ host, port }));
             return false;
         }
