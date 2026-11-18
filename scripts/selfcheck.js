@@ -1405,6 +1405,33 @@ async function main() {
         assert.strictEqual(touched, 0, 'nothing runs when WARP is off');
     });
 
+    await check('on a runner WARP is called through sudo, without a prompt', async () => {
+        const { Warp } = require('../src/warp');
+        const calls = [];
+        const warp = new Warp({
+            config: { enabled: true, sudo: true, timeoutMs: 1000 },
+            logger,
+            run: async (binary, args) => {
+                calls.push([binary, ...args]);
+                return { ok: true, stdout: 'Status update: Connected', stderr: '' };
+            }
+        });
+
+        assert.strictEqual(await warp.available(), true);
+        await warp.rotate();
+
+        // The daemon is root's, so every call goes through `sudo -n` and names
+        // the client by its path: nobody is there to type a password.
+        for (const call of calls) {
+            assert.strictEqual(call[0], 'sudo', `through sudo: ${JSON.stringify(call)}`);
+            assert.strictEqual(call[1], '-n', 'never waits for a password');
+            assert.strictEqual(call[2], 'warp-cli');
+            assert.strictEqual(call[3], '--accept-tos');
+        }
+        assert.ok(calls.some(call => call.includes('registration') && call.includes('new')),
+            'a fresh registration is asked for');
+    });
+
     await check('a bot teleported into the end is brought back to the overworld', async () => {
         const EventEmitter = require('node:events');
         const { SelfCare } = require('../src/selfcare');

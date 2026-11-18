@@ -31,22 +31,57 @@ jobs:
       - name: Install dependencies
         run: npm ci --silent
 
-      # Only when the repository asks for it: Cloudflare WARP is what changes the
-      # bot's address when a server filters it, and it needs its own daemon.
+      # Cloudflare WARP is what changes the bot's address when a server filters
+      # it. It is installed on every run rather than behind a repository
+      # variable: the old gate needed one that was never set, so every run went
+      # without it and nothing said so. If the install cannot be done the job
+      # carries on - the bot just has no address to change - and the step shows
+      # as failed, which is where a real problem belongs.
       - name: Install Cloudflare WARP
-        if: vars.VBOT_WARP == 'true'
+        id: warp
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
+
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
             | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
             | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
-          sudo apt-get update -qq
+
+          # A cold runner's apt mirrors are flaky; three tries before giving up.
+          for attempt in 1 2 3; do
+            sudo apt-get update -qq && break || sleep 5
+          done
           sudo apt-get install -y cloudflare-warp
-          sudo systemctl enable --now warp-svc
-          warp-cli --accept-tos registration new
-          warp-cli --accept-tos connect
+
+          sudo systemctl enable --now warp-svc || sudo service warp-svc start
+
+          # The daemon runs as root and so must the calls that talk to it.
+          sudo warp-cli --accept-tos registration new || echo "already registered"
+          sudo warp-cli --accept-tos connect
+
+          status=""
+          for attempt in $(seq 1 20); do
+            status="$(sudo warp-cli --accept-tos status 2>&1 || true)"
+            case "$status" in
+              *Connected*) break ;;
+            esac
+            sleep 2
+          done
+          echo "$status"
+
+          # `warp=on` in the trace proves the runner's traffic goes through it.
+          curl -fsS --max-time 10 https://www.cloudflare.com/cdn-cgi/trace \
+            | grep -E '^(ip|warp)=' || true
+
+          case "$status" in
+            *Connected*) echo "ready=1" >> "$GITHUB_OUTPUT" ;;
+            *)
+              echo "WARP did not come up, the bot runs without it"
+              exit 1
+              ;;
+          esac
 
       - name: Generate configuration
         id: config
@@ -55,7 +90,9 @@ jobs:
           BOT_ADMIN_KEY: ${{ secrets.BOT_ADMIN_KEY }}
           BOT_TRUSTED_KEY: ${{ secrets.BOT_TRUSTED_KEY }}
           BOT_PREFIXES: ${{ vars.VBOT_PREFIXES }}
-          VBOT_WARP: ${{ vars.VBOT_WARP }}
+          # Only what the install step above actually managed to bring up.
+          VBOT_WARP: ${{ steps.warp.outputs.ready }}
+          VBOT_WARP_SUDO: ${{ steps.warp.outputs.ready == '1' }}
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
         shell: bash
         run: |

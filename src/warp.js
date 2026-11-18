@@ -46,9 +46,15 @@ class Warp {
         return ['--accept-tos', ...args];
     }
 
+    // `sudo` in the config is for a runner, where the client talks to a daemon
+    // that only root may reach: `sudo -n warp-cli --accept-tos ...` with no
+    // prompt, since there is nobody to answer one.
     async call(...args) {
+        const argv = this.args(...args);
+        const binary = this.config.sudo === true ? 'sudo' : this.binary;
+        const fullArgs = this.config.sudo === true ? ['-n', this.binary, ...argv] : argv;
         try {
-            return await this.run(this.binary, this.args(...args), this.timeoutMs);
+            return await this.run(binary, fullArgs, this.timeoutMs);
         } catch (error) {
             return { ok: false, stdout: '', stderr: error.message };
         }
