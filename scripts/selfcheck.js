@@ -1011,6 +1011,79 @@ async function main() {
         core.destroy();
     });
 
+    await check('the core starts once the position is known, however often it is asked', () => {
+        const fills = [];
+        const startBot = {
+            position: null,
+            client: { version: '1.21.4' },
+            write: () => true,
+            sendChat: () => true,
+            server: { username: 'vbot' }
+        };
+        const core = new Core({
+            bot: startBot,
+            config: {
+                enabled: true,
+                area: { size: 2, y: 64 },
+                // No join teleport here: the start is what is under test.
+                joinRtp: false,
+                refill: { enabled: true }
+            },
+            logger
+        });
+        core.fillItem = {
+            usable: true,
+            run: (...commands) => (fills.push(...commands.flat()), { x: 0, y: 63, z: 0 }),
+            destroy: () => {}
+        };
+
+        // No position yet: nothing is filled, and the core waits instead of
+        // giving up for the rest of the session.
+        core.onReady();
+        assert.strictEqual(fills.length, 0, 'nothing is filled without a position');
+        assert.strictEqual(core.started, false, 'the core has not started yet');
+
+        // The position packet is what starts it, on a server that was slow.
+        startBot.position = { x: 0.5, y: 64, z: 0.5 };
+        core.onReady();
+        assert.strictEqual(core.started, true, 'the position starts the core');
+        assert.match(fills[0], /^fill 0 64 0 1 65 1 /);
+
+        // A later position packet must not fill or teleport a second time.
+        core.onReady();
+        core.onReady();
+        assert.strictEqual(fills.length, 1, 'a second start does nothing');
+        core.destroy();
+        assert.strictEqual(core.started, false, 'a reconnect starts over');
+    });
+
+    await check('selfcare asks for creative when the server never names the gamemode', () => {
+        const EventEmitter = require('node:events');
+        const { SelfCare } = require('../src/selfcare');
+        const sent = [];
+        const careBot = new EventEmitter();
+        careBot.server = { username: 'vbot' };
+        careBot.client = { uuid: '00000000-0000-0000-0000-000000000002', entityId: 8, chat: () => {} };
+        careBot.sendChat = command => (sent.push(command), true);
+        careBot.core = null;
+
+        const care = new SelfCare({
+            bot: careBot,
+            config: { commandSpy: false, vanish: false },
+            logger
+        });
+        care.onReady();
+        care.opLevel = 1;
+        care.gamemode = null;
+
+        care.tick();
+        assert.ok(sent.includes('/gamemode creative'), 'creative is asked for without a known gamemode');
+        care.tick();
+        assert.strictEqual(sent.filter(command => command === '/gamemode creative').length, 1,
+            'and not again on the next tick');
+        care.destroy();
+    });
+
     await check('item numbers come from the server registries', async () => {
         // A registry packet is a list; the position in it is the id.
         const registryBot = new Bot({

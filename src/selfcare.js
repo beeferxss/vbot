@@ -9,6 +9,10 @@
 const RETRY_MS = 700;
 const TICK_MS = 1500;
 const OP_RETRY_MS = 5000;
+// Not every server names the gamemode: no field in the login packet, none in the
+// player list. Creative is still asked for, but with nothing to read back it is
+// asked again only this often instead of on every tick.
+const UNKNOWN_GAMEMODE_RETRY_MS = 15000;
 
 // Both the vanilla wording and the plugin wordings the reference listens for.
 const MUTED_LINES = [
@@ -67,6 +71,8 @@ class SelfCare {
         this.unmuteRequested = false;
         this.nickSent = false;
         this.usernameSent = false;
+        // Last time creative was asked for while the gamemode was unknown.
+        this.lastCreativeAt = 0;
 
         this.timer = null;
         this.timers = new Set();
@@ -202,7 +208,7 @@ class SelfCare {
     }
 
     ensureCreative({ immediate = false } = {}) {
-        if (!this.ready || !this.creative || this.gamemode === null) return;
+        if (!this.ready || !this.creative) return;
         if (this.gamemode === 1) {
             this.creativeRequested = false;
             return;
@@ -214,8 +220,21 @@ class SelfCare {
             return;
         }
 
+        // A server that never names the gamemode cannot be read back, so a bot
+        // left in survival looked after itself not at all. Creative is asked for
+        // anyway - through the core when it is up, so nothing shows in chat - and
+        // only every so often: with no answer to read, a request per tick would
+        // be spam.
+        const unknown = this.gamemode === null;
+        if (unknown && !immediate
+            && Date.now() - (this.lastCreativeAt || 0) < UNKNOWN_GAMEMODE_RETRY_MS) {
+            return;
+        }
+
+        this.lastCreativeAt = Date.now();
         this.creativeRequested = true;
-        this.runChat('gamemode creative');
+        if (unknown) this.run('gamemode creative');
+        else this.runChat('gamemode creative');
 
         if (immediate) {
             this.later(() => { this.creativeRequested = false; }, 100);
@@ -305,6 +324,7 @@ class SelfCare {
         this.unmuteRequested = false;
         this.nickSent = false;
         this.usernameSent = false;
+        this.lastCreativeAt = 0;
         this.ready = true;
 
         if (!this.enabled) return;
@@ -416,6 +436,9 @@ class SelfCare {
 
     tick() {
         if (!this.ready || !this.enabled) return;
+        // Op is what makes creative and the core possible at all, and it is the
+        // one thing that must not wait for a gamemode the server may never send.
+        if (this.opLevel === 0 && !this.opRequested) this.askOp();
         this.ensureCreative();
         if (!this.spyOn && !this.spyRequested) this.enableSpy();
         if (!this.vanished && !this.vanishRequested) this.ensureVanish();

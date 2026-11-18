@@ -103,6 +103,10 @@ class Core {
         this.cursor = 0;
         this.ready = false;
         this.everReady = false;
+        // Set once the join has run its course for this connection: a position
+        // packet that arrives late asks for a start again, and it must not
+        // teleport or fill a second time.
+        this.started = false;
         this.refilling = false;
         this.damageTimer = null;
         this.ownChanges = new Map();
@@ -1193,6 +1197,7 @@ class Core {
 
     onReady() {
         if (!this.enabled) return;
+        if (this.started) return;
         if (this.joining) return;
         if (this.bot?.destroyed) return;
 
@@ -1200,13 +1205,21 @@ class Core {
         // core area and nowhere to teleport from, and the packet is a moment
         // behind the login one.
         if (!this.bot?.position) {
-            if (this.positionTries >= POSITION_RETRIES) {
-                this.positionTries = 0;
-                return;
-            }
+            // The position packet is a moment behind the login one, and on some
+            // servers a lot more than that: a queue, a proxy, a slow world. The
+            // core keeps waiting for it instead of giving up for the rest of the
+            // session, which would leave the bot with no fill and no commands.
             this.positionTries += 1;
-            const timer = setTimeout(() => this.onReady(), POSITION_RETRY_MS);
+            const late = this.positionTries > POSITION_RETRIES;
+            const timer = setTimeout(
+                () => this.onReady(),
+                late ? POSITION_RETRY_MS * 8 : POSITION_RETRY_MS
+            );
             timer.unref?.();
+            if (late) {
+                this.logEvery('core-no-position', 60000, 'warn',
+                    'the server has not sent a position yet; the core starts as soon as it does');
+            }
             return;
         }
         this.positionTries = 0;
@@ -1218,6 +1231,7 @@ class Core {
     // What a join does once the bot is where it belongs: the area is filled, the
     // watchdog keeps it filled and the spam refill starts when it was asked to.
     begin() {
+        this.started = true;
         if (this.origin.x === null) this.reset();
         if (this.origin.x !== null) this.refill('startup');
         this.startWatchdog();
@@ -1407,6 +1421,9 @@ class Core {
     }
 
     destroy() {
+        // A reconnect starts over: the next join is a fresh start.
+        this.started = false;
+        this.positionTries = 0;
         this.fillItem?.destroy();
         if (this.joinTimer) {
             clearTimeout(this.joinTimer);

@@ -175,6 +175,13 @@ class Bot extends EventEmitter {
             client.on(event, packet => {
                 if (Number.isFinite(packet?.x) && Number.isFinite(packet?.y) && Number.isFinite(packet?.z)) {
                     this.position = { x: packet.x, y: packet.y, z: packet.z };
+                    // The core needs the position and gets one attempt of its own:
+                    // a server that sends it late (a queue, a proxy, a slow
+                    // world) would otherwise leave the bot without a core, which
+                    // means no fill and no commands that need one.
+                    if (this.core && this.state === 'ready' && !this.core.started && !this.core.joining) {
+                        this.core.onReady();
+                    }
                 }
                 // A teleport is only accepted once it is confirmed, and the world
                 // only counts as loaded once the client says so. Until both have
