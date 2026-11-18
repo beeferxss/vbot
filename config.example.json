@@ -69,6 +69,7 @@
         "enabled": true,
         "host": "alt.norat.pw",
         "port": 25565,
+        "channelId": "1572692313644335245",
         "randomName": true,
         "auth": "offline"
       },
@@ -77,6 +78,7 @@
         "enabled": true,
         "host": "norat.pw",
         "port": 25565,
+        "channelId": "1572692644830777436"
         "randomName": true,
         "auth": "offline"
       }
