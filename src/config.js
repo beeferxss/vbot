@@ -56,6 +56,9 @@ function defaults() {
             // Chat tag set with /prefix, not to be confused with the command
             // prefixes above. "&" colour codes are passed through as written.
             prefix: '&a[prefix: v\\]',
+            // Off by default: many servers reject /prefix or leave the tag on
+            // after the bot restarts, so the tag is only sent when asked for.
+            prefixEnabled: false,
             nick: null,
             // "tellraw" replies privately and needs the bot to be opped;
             // "chat" replies in normal chat.

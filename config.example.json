@@ -89,6 +89,7 @@
   },
   "bot": {
     "prefix": "&a[prefix: v\\]",
+    "prefixEnabled": false,
     "nick": "vbot"
   },
   "selfCare": {

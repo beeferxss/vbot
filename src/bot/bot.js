@@ -623,6 +623,7 @@ class Bot extends EventEmitter {
 
     // The chat tag, set with /prefix. Per server wins, same as the nick.
     tagPrefix() {
+        if (this.config.bot?.prefixEnabled === false) return null;
         const tag = this.server.prefix ?? this.config.bot?.prefix;
         if (typeof tag !== 'string') return null;
         const trimmed = tag.trim();

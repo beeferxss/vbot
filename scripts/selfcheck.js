@@ -373,6 +373,11 @@ async function main() {
     });
 
     await check('the chat prefix is styled and per server wins', () => {
+        // The example config ships the chat tag off, so nothing is sent.
+        assert.strictEqual(config.bot.prefixEnabled, false);
+        assert.strictEqual(bot.tagPrefix(), null);
+
+        config.bot.prefixEnabled = true;
         assert.strictEqual(bot.tagPrefix(), '&a[prefix: v\\]');
 
         const perServer = new Bot({
@@ -409,6 +414,7 @@ async function main() {
         tagged.applyPrefixTag();
         return new Promise(resolve => setTimeout(() => {
             assert.deepStrictEqual(sent, ['/prefix &a[prefix: v\\]']);
+            config.bot.prefixEnabled = false;
             resolve();
         }, 1400));
     });
@@ -2212,6 +2218,8 @@ async function main() {
         tokens
     }).loadAll();
 
+    const ENTITY_SELECTOR = '{"selector":"@e[limit=100]"}';
+
     const sent = [];
     const fakeBot = {
         // Pre-1.21.5, so replies use the JSON component shape the tests parse.
@@ -2272,6 +2280,104 @@ async function main() {
         assert.ok(custom && !/token/i.test(custom), `public command should run, got: ${custom}`);
     });
 
+    await check('servercrash switches methods and keeps the command valid', async () => {
+        const commands = [];
+        const crashBot = {
+            // The real bot routes every leading slash into the core, replies
+            // included, so the fake one tells the crash's own command apart from
+            // the tellraw answer and records both sides.
+            chat: text => {
+                const value = String(text);
+                if (!value.startsWith('/')) return false;
+                if (value.startsWith('/tellraw ')) {
+                    sent.push(value);
+                    return true;
+                }
+                commands.push(value.slice(1));
+                return true;
+            }
+        };
+
+        const list = await runWith('<Steve> v:servercrash list', {}, crashBot);
+        assert.match(list, /title/);
+
+        const unknown = await runWith('<Steve> v:servercrash nope', {}, crashBot);
+        assert.match(unknown, /Unknown method/);
+        assert.strictEqual(commands.length, 0, 'an unknown method sends nothing');
+
+        const plain = await runWith('<Steve> v:servercrash title', {}, crashBot);
+        assert.match(plain, /Boom: title x900/);
+        assert.strictEqual(commands.length, 1);
+        assert.ok(commands[0].startsWith('title @a title '), `got: ${commands[0].slice(0, 40)}`);
+        assert.strictEqual(commands[0].split(ENTITY_SELECTOR).length - 1, 900, 'one selector per count');
+
+        const huge = await runWith('<Steve> v:servercrash title 5000', {}, crashBot);
+        assert.match(huge, /clamped from 5000/);
+        assert.ok(commands[1].length <= 32000, 'a cut command would be invalid JSON');
+        assert.ok(commands[1].trimEnd().endsWith(']}'), 'the component stays closed');
+
+        const tooMany = await runWith('<Steve> v:servercrash title abc', {}, crashBot);
+        assert.match(tooMany, /x900/, 'a count that is not a number falls back to the default');
+    });
+
+    await check('crashchest seeds the chest and servercrash scoreboard reads it', async () => {
+        const commands = [];
+        const crashBot = {
+            chat: text => {
+                const value = String(text);
+                if (!value.startsWith('/')) return false;
+                if (value.startsWith('/tellraw ')) {
+                    sent.push(value);
+                    return true;
+                }
+                commands.push(value.slice(1));
+                return true;
+            },
+            core: { ready: true, size: 9, origin: { x: 16, y: 64, z: -32 } },
+            position: { x: 16, y: 64, z: -32 }
+        };
+
+        // Dispatched on the bot object itself, not a spread of it: the command
+        // remembers the chest on `bot`, and a copy would swallow that.
+        const crash = async line => {
+            sent.length = 0;
+            await registry.dispatch({ bot: crashBot, parsed: parseChatLine(line) });
+            return decodeReply(sent[0]);
+        };
+
+        const built = await crash('<Steve> v:crashchest 2');
+        assert.match(built, /Crash chest at 16 73 -32/);
+        assert.strictEqual(commands[0], 'setblock 16 73 -32 minecraft:air');
+        assert.strictEqual(commands[1], 'setblock 16 73 -32 minecraft:chest');
+
+        const merge = commands[2];
+        assert.ok(merge.startsWith('data merge block 16 73 -32 {CustomName:{text:"",extra:["'), `got: ${merge.slice(0, 60)}`);
+        assert.ok(merge.length <= 32000, 'the seed still fits one core command');
+        assert.ok(/[\u4e00-\u9fff]/.test(merge), 'the filler is an ideograph, three bytes a char');
+        assert.strictEqual(
+            commands.filter(command => command.startsWith('data modify block 16 73 -32 CustomName.extra append')).length,
+            2,
+            'one doubling per tick'
+        );
+        assert.deepStrictEqual(crashBot.crashChest, { x: 16, y: 73, z: -32 }, 'the chest is remembered');
+
+        commands.length = 0;
+        const fired = await crash('<Steve> v:servercrash scoreboard');
+        assert.match(fired, /Scoreboard crash on 16 73 -32/);
+        assert.ok(commands.includes('scoreboard objectives remove kickobj'));
+        assert.ok(commands.includes('scoreboard objectives add kickobj dummy'));
+        assert.ok(commands.includes('scoreboard objectives setdisplay sidebar kickobj'));
+        const display = commands[commands.length - 1];
+        assert.ok(display.startsWith('scoreboard players display name foo kickobj '), `got: ${display.slice(0, 60)}`);
+        assert.ok(display.includes('"block":"16 73 -32"'), 'the display reads the chest');
+        assert.ok(display.length <= 256, 'the trigger stays inside the command limit');
+
+        commands.length = 0;
+        const explicit = await crash('<Steve> v:servercrash scoreboard 1 2 3');
+        assert.match(explicit, /Scoreboard crash on 1 2 3/);
+        assert.ok(commands[commands.length - 1].includes('"block":"1 2 3"'), 'explicit coordinates win');
+    });
+
     await check('a session rank is cleared when the player joins again', () => {
         permissions.grant('Bob', LEVEL.TRUSTED, 'token');
         assert.strictEqual(permissions.levelFor({ name: 'Bob' }), LEVEL.TRUSTED);
@@ -2320,7 +2426,7 @@ async function main() {
         assert.match(output, /trusted: .*identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
-        assert.match(output, /admin: filter refill whitelist/);
+        assert.match(output, /admin: crashchest filter refill servercrash whitelist/);
 
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
         const identity = listing.find(part => part.text === 'identity');
