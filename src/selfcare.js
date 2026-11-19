@@ -69,8 +69,6 @@ class SelfCare {
         this.commandSpy = config.commandSpy !== false;
         this.vanish = config.vanish !== false;
         this.unmute = config.unmute !== false;
-        this.nick = config.nick !== false;
-        this.username = config.username !== false;
 
         this.opLevel = 0;
         this.gamemode = null;
@@ -90,8 +88,6 @@ class SelfCare {
         this.spyRequested = false;
         this.vanishRequested = false;
         this.unmuteRequested = false;
-        this.nickSent = false;
-        this.usernameSent = false;
         // Last time creative was asked for while the gamemode was unknown.
         this.lastCreativeAt = 0;
 
@@ -310,26 +306,6 @@ class SelfCare {
         });
     }
 
-    // Nick and username are one-shot per session: the server keeps them, and
-    // repeating them every tick would just spam.
-    applyNick() {
-        const nick = (this.config.nickName ?? this.config.nick ?? '').trim?.() ?? '';
-        if (!this.ready || !this.nick || !nick || this.nickSent) return;
-
-        this.nickSent = true;
-        this.log.info(`setting nickname to ${nick}`);
-        this.bot.sendChat(`/nick ${nick}`);
-    }
-
-    applyUsername() {
-        const name = (this.config.usernameName ?? '').trim?.() ?? '';
-        if (!this.ready || !this.username || !name || this.usernameSent) return;
-
-        this.usernameSent = true;
-        this.log.info(`setting username to ${name}`);
-        this.bot.sendChat(`/username ${name}`);
-    }
-
     // --- lifecycle ---------------------------------------------------------
 
     onReady() {
@@ -343,8 +319,6 @@ class SelfCare {
         this.spyRequested = false;
         this.vanishRequested = false;
         this.unmuteRequested = false;
-        this.nickSent = false;
-        this.usernameSent = false;
         this.lastCreativeAt = 0;
         this.rescueTries = 0;
         this.ready = true;
@@ -356,8 +330,6 @@ class SelfCare {
             this.enableSpy();
             this.askOp();
             this.ensureVanish();
-            this.applyNick();
-            this.applyUsername();
         }, 1500).unref?.();
     }
 
@@ -458,8 +430,6 @@ class SelfCare {
         this.creativeRequested = false;
         this.vanished = false;
         this.vanishRequested = false;
-        this.nickSent = false;
-        this.usernameSent = false;
         this.ensureCreative({ immediate: true });
         if (this.vanish) this.later(() => this.ensureVanish(), 1000);
     }

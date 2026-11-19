@@ -89,15 +89,10 @@
   },
   "bot": {
     "prefix": "&a[prefix: v\\]",
-    "prefixEnabled": false,
-    "nick": "vbot"
+    "prefixEnabled": false
   },
   "selfCare": {
-    "vanish": true,
-    "nick": false,
-    "nickName": "&2\u00a7lV&aB&2\u00a7lO&aT",
-    "username": false,
-    "usernameName": "vbot"
+    "vanish": true
   },
   "permissions": {
     "keys": {
@@ -119,10 +114,15 @@
   },
   "core": {
     "enabled": true,
-    "name": "{\"text\":\"\u00a7l\u1d20\u0299\u1d0f\u1d1b\",\"color\":\"dark_green\"}",
+    "name": "{\"text\":\"\u00a7lstone.png\",\"color\":\"dark_gray\"}",
     "area": {
       "size": 16,
-      "y": 0
+      "y": 0,
+      "offset": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      }
     },
     "joinRtp": {
       "enabled": true
@@ -130,7 +130,12 @@
     "refill": {
       "enabled": true,
       "miniSize": 2,
-      "miniName": "{\"text\":\"mini core\u2122\",\"color\":\"green\"}"
+      "miniOffset": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "miniName": "{\"text\":\"stone\",\"color\":\"gray\"}"
     }
   }
 }

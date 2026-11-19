@@ -110,7 +110,6 @@ class Bot extends EventEmitter {
         // Set once a signed player chat packet arrives: until then the server may
         // simply not support chat signing, so unsigned chat is all there is.
         this.signedChatSeen = false;
-        this.nickSent = false;
         this.prefixSent = false;
         // The server keeps the player "loading terrain" until the client says the
         // world is done; block placement is ignored until then.
@@ -257,7 +256,6 @@ class Bot extends EventEmitter {
             this.loadedSent = false;
             this.supportsPlayerLoaded = this.supportsPacket('player_loaded');
             this.emit('ready');
-            this.applyNick();
             this.applyPrefixTag();
             this.startPlayerScan();
             // Give the position packet a moment to arrive before placing anything.
@@ -328,7 +326,6 @@ class Bot extends EventEmitter {
             this.connectedAt = null;
             this.log.warn(`disconnected (${this.disconnectReason || 'socket closed'})`);
             this.emit('disconnect', this.disconnectReason);
-            this.nickSent = false;
             this.prefixSent = false;
             this.loadedSent = false;
             this.registries = { item: null, components: null };
@@ -617,26 +614,7 @@ class Bot extends EventEmitter {
         return true;
     }
 
-    // The server keeps the nickname, so it only has to be set once per session.
-    nickName() {
-        const nick = this.server.nick ?? this.config.bot?.nick;
-        if (typeof nick !== 'string') return null;
-        const trimmed = nick.trim();
-        return trimmed || null;
-    }
-
-    applyNick() {
-        const nick = this.nickName();
-        if (!nick || this.nickSent) return;
-        this.nickSent = true;
-        setTimeout(() => {
-            if (this.state !== 'ready') return;
-            this.log.info(`setting nickname to ${nick}`);
-            this.sendChat(`/nick ${nick}`);
-        }, 1000).unref?.();
-    }
-
-    // The chat tag, set with /prefix. Per server wins, same as the nick.
+    // The chat tag, set with /prefix. A per-server tag wins over the shared one.
     tagPrefix() {
         if (this.config.bot?.prefixEnabled === false) return null;
         const tag = this.server.prefix ?? this.config.bot?.prefix;
@@ -646,7 +624,7 @@ class Bot extends EventEmitter {
     }
 
     // The server keeps the prefix, so it is only sent once per session - and a
-    // moment after the nick, since both plugins can be picky about order.
+    // moment after the session settles, since the plugin can be picky about it.
     applyPrefixTag() {
         const tag = this.tagPrefix();
         if (!tag || this.prefixSent) return;
@@ -693,7 +671,7 @@ class Bot extends EventEmitter {
 
     // Commands only ever run through a core command block. Chat is never used
     // for them and never for talking: the two exceptions are the core's own
-    // fill and selfcare's nick/prefix upkeep, and both call sendChat() directly.
+    // fill and the prefix upkeep, and both call sendChat() directly.
     chat(message) {
         const text = String(message ?? '');
         if (!text.startsWith('/')) return false;
@@ -711,7 +689,7 @@ class Bot extends EventEmitter {
 
     // Plain chat, never routed through the core. Reserved for the paths that
     // cannot use a block: core refills (the fill has to reach the server even
-    // when the core is the broken thing) and selfcare's nick/prefix.
+    // when the core is the broken thing) and the prefix.
     sendChat(message) {
         const text = String(message ?? '');
         if (!text) return false;

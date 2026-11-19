@@ -353,25 +353,6 @@ async function main() {
         assert.deepStrictEqual(parseChatLine(system.line), { username: 'Steve', message: '|>whoami' });
     });
 
-    await check('the nickname is taken from config, per server wins', () => {
-        assert.strictEqual(bot.nickName(), config.bot.nick);
-        assert.strictEqual(bot.nickName(), 'vbot');
-
-        const perServer = new Bot({
-            server: { id: 'nick', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline', nick: 'other' },
-            config,
-            store,
-            permissions,
-            registry: { dispatch: async () => {} },
-            logger
-        });
-        assert.strictEqual(perServer.nickName(), 'other');
-
-        config.bot.nick = null;
-        assert.strictEqual(bot.nickName(), null);
-        config.bot.nick = 'vbot';
-    });
-
     await check('the chat prefix is styled and per server wins', () => {
         // The example config ships the chat tag off, so nothing is sent.
         assert.strictEqual(config.bot.prefixEnabled, false);
@@ -409,7 +390,7 @@ async function main() {
             logger
         });
         tagged.state = 'ready';
-        // Nick and prefix are selfcare, so they go out as chat directly.
+        // The prefix is set outside the core, so it goes out as chat directly.
         tagged.sendChat = message => (sent.push(message), true);
         tagged.applyPrefixTag();
         return new Promise(resolve => setTimeout(() => {
@@ -461,6 +442,17 @@ async function main() {
         assert.strictEqual(core.reset(), true);
         assert.deepStrictEqual(core.origin, { x: 32, y: 64, z: -16 });
         assert.deepStrictEqual(core.bounds, { x: 47, y: 79, z: -1 });
+
+        // An offset moves the whole area off the spot it would otherwise take.
+        const shifted = new Core({
+            bot: coreBot,
+            config: { enabled: true, area: { size: 16, y: 64, offset: { x: 4, y: -2, z: -4 } }, refill: { enabled: true } },
+            logger
+        });
+        assert.strictEqual(shifted.reset(), true);
+        assert.deepStrictEqual(shifted.origin, { x: 36, y: 62, z: -20 }, 'x/z off the grid origin, y off area.y');
+        assert.deepStrictEqual(shifted.bounds, { x: 51, y: 77, z: -5 });
+        shifted.destroy();
 
         core.refill('test');
         assert.strictEqual(handed[0], 'fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace');
@@ -1040,6 +1032,12 @@ async function main() {
         const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
         const mini = new MiniCore({ bot: miniBot, logger, config: {} });
         const box = mini.boxFor(mini.feet());
+
+        // The offset moves the cube, and nothing else about it.
+        const moved = new MiniCore({ bot: miniBot, logger, config: { miniOffset: { x: 3, y: 1, z: -2 } } });
+        assert.deepStrictEqual(moved.boxFor(moved.feet()).min, { x: 12, y: 67, z: -7 });
+        assert.strictEqual(moved.count, mini.count, 'the cube itself is the same size');
+        moved.destroy();
 
         // The fill lands in one go: every cell is shown at once.
         for (const cell of box.cells) mini.noteBlockChange({ location: cell, type: CMD_STATE });

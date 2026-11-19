@@ -59,7 +59,6 @@ function defaults() {
             // Off by default: many servers reject /prefix or leave the tag on
             // after the bot restarts, so the tag is only sent when asked for.
             prefixEnabled: false,
-            nick: null,
             // "tellraw" replies privately and needs the bot to be opped;
             // "chat" replies in normal chat.
             reply: 'tellraw'
@@ -105,11 +104,6 @@ function defaults() {
             vanish: true,
             // Undo a mute as soon as the server announces it.
             unmute: true,
-            // One-shot per session; both need a name to send.
-            nick: false,
-            nickName: null,
-            username: false,
-            usernameName: null
         },
         storage: {
             path: 'data/vbot.sqlite'
@@ -176,7 +170,11 @@ function defaults() {
             // Raw SNBT component for the blocks' CustomName, or null for none.
             // Example: {"text":"vbot","color":"green"}
             name: null,
-            area: { size: 9, y: 64 },
+            // `offset` moves the area off the spot it would otherwise take: x/z
+            // from the grid-aligned origin under the bot, y from `area.y`. A
+            // server that keeps the bot's own chunk clean can have the core
+            // somewhere else entirely.
+            area: { size: 9, y: 64, offset: { x: 0, y: 0, z: 0 } },
             // The bot drops itself at a random spot as soon as it joins, before
             // anything is filled, so the core is never built at the server's
             // spawn. Same range and height as the "rtp" command.
@@ -207,6 +205,9 @@ function defaults() {
                 // filled again where it was built as soon as any of its blocks go
                 // missing, and only moved once the bot is far away from it.
                 miniSize: 4,
+                // Where the cube sits off the spot it would otherwise take: it is
+                // centred over the bot, two blocks above its head.
+                miniOffset: { x: 0, y: 0, z: 0 },
                 // The cube's own name, as a raw SNBT component: every block of it
                 // is filled with this name.
                 miniName: '{"text":"mini core™","color":"green"}',
@@ -262,7 +263,6 @@ function normalizeServer(entry, index) {
         auth: entry.auth === 'microsoft' ? 'microsoft' : 'offline',
         version: entry.version ?? false,
         channelId: entry.channelId ? String(entry.channelId) : null,
-        nick: entry.nick ?? null,
         prefix: entry.prefix ?? null
     };
 }
