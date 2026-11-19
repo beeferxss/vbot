@@ -901,11 +901,20 @@ class DiscordBridge {
         if (!bot) return { ok: false, text: 'No server.' };
         if (bot.state !== 'ready') return { ok: false, text: `${bot.id} is not in game.` };
 
-        const name = String(player || '').trim();
-        if (!/^[A-Za-z0-9_.-]{1,16}$/.test(name)) return { ok: false, text: 'That is not a Minecraft name.' };
+        const wanted = String(player || '').trim();
+        if (!/^[A-Za-z0-9_.-]{1,16}$/.test(wanted)) return { ok: false, text: 'That is not a Minecraft name.' };
 
         const body = String(text || '').trim().replace(/^[!/ ]+/, '');
         if (!body) return { ok: false, text: 'Give a command, for example: rtp' };
+
+        // The record is the player's, not a name typed here: their stored spelling
+        // and uuid, so `whoami`, `seen`, `whois` and a rank granted by uuid all
+        // answer as they would in game - even for a player who is offline.
+        const stored = registry.store?.getPlayer?.(wanted) || null;
+        const name = stored?.name || wanted;
+        const uuid = stored?.uuid
+            ? stored.uuid
+            : (typeof bot.uuidFor === 'function' ? bot.uuidFor(name) : null);
 
         const lines = [];
         const sink = value => {
@@ -918,7 +927,7 @@ class DiscordBridge {
         // the command is checked against.
         const handled = await registry.dispatch({
             bot,
-            parsed: { username: name, message: body },
+            parsed: { username: name, uuid, message: body },
             verified: true,
             real: true,
             raw: true,

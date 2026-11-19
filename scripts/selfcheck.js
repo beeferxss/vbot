@@ -2507,22 +2507,30 @@ async function main() {
         assert.match(lines[0], /VojtaV12/);
     });
 
-    await check('help lists every rank and marks the ones you cannot use', async () => {
+    await check('help lists a player only the commands their rank has', async () => {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
         const output = decodeReply(sent[0]);
         assert.match(output, /^Commands \(\d+\)/);
         assert.match(output, /public: .*help/);
-        assert.match(output, /trusted: .*identity/);
         assert.match(output, /public: alts /);
         assert.match(output, /public: .*core/, 'the core command is public');
-        assert.match(output, /admin: crashchest filter refill servercrash whitelist/);
+        assert.doesNotMatch(output, /trusted:/, 'no rank above theirs is listed');
+        assert.doesNotMatch(output, /admin:/);
+        assert.doesNotMatch(output, /identity|servercrash|crashchest/);
 
+        // Everything listed is clickable, so nothing they cannot use is shown.
         const listing = JSON.parse(/^\/tellraw \S+ (.*)$/s.exec(sent[0])[1]);
-        const identity = listing.find(part => part.text === 'identity');
-        assert.ok(identity, 'trusted commands are still listed to a public player');
-        assert.strictEqual(identity.color, 'dark_gray');
-        assert.ok(!identity.clickEvent, 'a command you cannot use must not be clickable');
+        const names = listing.filter(part => part.clickEvent).map(part => part.text);
+        assert.ok(names.length >= 5);
+        for (const name of names) {
+            assert.ok(registry.find(name).level <= LEVEL.PUBLIC, `${name} must be within their rank`);
+        }
+
+        // Asking about one above them says what it needs, not what it does.
+        sent.length = 0;
+        await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help filter') });
+        assert.match(decodeReply(sent[0]), /filter needs admin; you are public\./);
     });
 
     await check('an owner sees every rank of command as usable', async () => {
@@ -3706,8 +3714,13 @@ async function main() {
         const { DiscordBridge } = require('../src/discord');
 
         const calls = [];
+        const storedUuid = '11111111-2222-3333-4444-555555555555';
         const registry = {
-            store: {},
+            store: {
+                getPlayer: name => (String(name).toLowerCase() === 'vojtav12'
+                    ? { name: 'VojtaV12', uuid: storedUuid, first_seen: 0, last_seen: 0 }
+                    : null)
+            },
             permissions: {},
             dispatch: async request => {
                 calls.push(request);
@@ -3716,7 +3729,7 @@ async function main() {
             }
         };
         const bridge = new DiscordBridge({ config: { bot: {} }, manager: null, logger, registry });
-        const bot = { id: 'kbpw', state: 'ready', uuidFor: () => null, chat: () => true };
+        const bot = { id: 'kbpw', state: 'ready', uuidFor: () => 'offline-uuid', chat: () => true };
 
         const result = await bridge.sudoCommand(bot, 'VojtaV12', 'rtp');
         assert.strictEqual(result.ok, true);
@@ -3724,10 +3737,18 @@ async function main() {
 
         const request = calls[0];
         assert.strictEqual(request.parsed.username, 'VojtaV12', 'it runs as the player');
+        assert.strictEqual(request.parsed.uuid, storedUuid, 'their stored uuid, so whoami and seen answer');
         assert.strictEqual(request.parsed.message, 'rtp');
         assert.strictEqual(request.raw, true, 'the text is the command, with no prefix');
         assert.strictEqual(request.verified, true);
         assert.strictEqual(request.real, true, 'their stored rank is what runs');
+
+        // A player with no record keeps the name as typed and falls back to the
+        // bot's own uuid lookup.
+        calls.length = 0;
+        await bridge.sudoCommand(bot, 'Nobody', 'whoami');
+        assert.strictEqual(calls[0].parsed.username, 'Nobody');
+        assert.strictEqual(calls[0].parsed.uuid, 'offline-uuid');
 
         assert.strictEqual((await bridge.sudoCommand(bot, 'not a name!', 'rtp')).ok, false);
         assert.strictEqual((await bridge.sudoCommand(bot, 'Steve', '   ')).ok, false);
