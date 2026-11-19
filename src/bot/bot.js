@@ -18,6 +18,7 @@ const { Filter } = require('../filter');
 const { Whitelist } = require('../whitelist');
 const { Cloops } = require('../cloops');
 const { attachTabComplete } = require('../tabcomplete');
+const { randomName } = require('../config');
 
 const CHAT_PACKETS = ['chat', 'player_chat', 'profileless_chat', 'system_chat', 'disguised_chat'];
 
@@ -119,6 +120,20 @@ class Bot extends EventEmitter {
 
     get connection() {
         return this.config.minecraft.connection;
+    }
+
+    // A new WARP address is a new address, but the login name is still the one
+    // the server filtered, so a bot that was handed a random name rolls a fresh
+    // one for the next session. A name picked in config is the bot's identity
+    // (op, records, permissions) and never changes on its own.
+    rollUsername() {
+        const server = this.server;
+        if (!server?.randomName) return null;
+
+        const previous = server.username;
+        server.username = randomName();
+        this.log?.info?.(`address changed, so the username did too: ${previous} -> ${server.username}`);
+        return server.username;
     }
 
     start() {

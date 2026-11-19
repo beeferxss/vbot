@@ -126,6 +126,10 @@ class FilterGuard {
             return false;
         }
 
+        // The address is new, so a randomly named bot takes a new name with it:
+        // the old name is still the player the server just filtered.
+        this.bot.rollUsername?.();
+
         // The daemon reports connected before the address is actually in use.
         await sleep(this.settleMs);
 

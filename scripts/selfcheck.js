@@ -1483,6 +1483,7 @@ async function main() {
         guardBot.registry = null;
         guardBot.stop = reason => steps.push(`stop:${reason}`);
         guardBot.start = () => steps.push('start');
+        guardBot.rollUsername = () => steps.push('rename');
 
         const warp = {
             enabled: true,
@@ -1516,6 +1517,8 @@ async function main() {
         assert.strictEqual(guard.rotations, 1, 'one address change');
         assert.ok(steps.includes('rotate'), 'the address is changed');
         assert.ok(steps.some(step => step.startsWith('stop:')), 'the bot leaves the server first');
+        assert.ok(steps.indexOf('rename') > steps.indexOf('rotate'), 'a new name goes with the new address');
+        assert.ok(steps.indexOf('rename') < steps.indexOf('start'), 'and it is taken before the next join');
         assert.strictEqual(steps[steps.length - 1], 'start', 'and comes back on the new one');
 
         // Three changes are the most it gets; after that it stays in game.
@@ -1550,6 +1553,24 @@ async function main() {
         assert.strictEqual(offGuard.staying, true, 'it stays in game instead');
         guard.destroy();
         offGuard.destroy();
+    });
+
+    await check('a random username is rolled again when the address changes', () => {
+        const { Bot } = require('../src/bot/bot');
+        const roll = Bot.prototype.rollUsername;
+
+        // `randomName: true` is an identity the server never learns for long.
+        const random = { randomName: true, username: 'Abc123xy' };
+        const renamed = roll.call({ server: random, log: logger });
+        assert.match(renamed, /^[A-Za-z0-9]{8}$/, 'a fresh name, not the filtered one');
+        assert.notStrictEqual(renamed, 'Abc123xy');
+        assert.strictEqual(random.username, renamed, 'the bot joins with the new one');
+
+        // A name from config is the bot's identity: op and permissions hang off
+        // it, so it is left alone.
+        const fixed = { randomName: false, username: 'SteveBot' };
+        assert.strictEqual(roll.call({ server: fixed, log: logger }), null);
+        assert.strictEqual(fixed.username, 'SteveBot');
     });
 
     await check('warp changes the address by re-registering and restarting its proxy', async () => {
