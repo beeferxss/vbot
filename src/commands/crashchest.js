@@ -11,26 +11,50 @@ const DEFAULT_DOUBLINGS = 6;
 // Each doubling is one tick and one more copy of everything already there; past
 // ten the value is already gigabytes and the server is gone well before it.
 const MAX_DOUBLINGS = 10;
+// The buildable world, so a typo cannot ask for a chest at 40 million.
+const WORLD_LIMIT = 30000000;
+const MIN_Y = -64;
+const MAX_Y = 320;
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// `crashchest <x> <y> <z> [doublings]` picks the spot; anything shorter is just
+// a doubling count and the spot is worked out from the core. Returns null when
+// three arguments were given but they are not a place in the world.
+function parsePosition(args) {
+    if (args.length < 3) return { position: null, rest: args };
+
+    const coords = args.slice(0, 3).map(value => Number(value));
+    const valid = coords.every(value => Number.isInteger(value)) &&
+        Math.abs(coords[0]) <= WORLD_LIMIT && Math.abs(coords[2]) <= WORLD_LIMIT &&
+        coords[1] >= MIN_Y && coords[1] <= MAX_Y;
+    if (!valid) return null;
+
+    return { position: { x: coords[0], y: coords[1], z: coords[2] }, rest: args.slice(3) };
+}
 
 module.exports = {
     name: 'crashchest',
     description: 'Build the crash chest that servercrash scoreboard points at (admin only)',
-    usage: 'crashchest [doublings]',
+    usage: 'crashchest [x y z] [doublings]',
     level: 'admin',
 
     async execute(ctx) {
         const core = ctx.bot.core;
         if (!core || !core.ready) return ctx.reply('Core is not ready.');
 
-        const requested = parseInt(ctx.args[0], 10);
+        const parsed = parsePosition(ctx.args);
+        if (!parsed) {
+            return ctx.reply(`Usage: ${ctx.prefix}crashchest [x y z] [doublings]`);
+        }
+
+        const requested = parseInt(parsed.rest[0], 10);
         const doublings = Math.max(
             0,
             Math.min(Number.isFinite(requested) ? requested : DEFAULT_DOUBLINGS, MAX_DOUBLINGS)
         );
 
-        const position = chestPosition(ctx.bot);
+        const position = parsed.position || chestPosition(ctx.bot);
         if (!position) return ctx.reply('No position yet: the bot has not seen a spawn packet.');
         const at = `${position.x} ${position.y} ${position.z}`;
 

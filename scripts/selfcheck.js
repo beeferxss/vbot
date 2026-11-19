@@ -2376,6 +2376,30 @@ async function main() {
         const explicit = await crash('<Steve> v:servercrash scoreboard 1 2 3');
         assert.match(explicit, /Scoreboard crash on 1 2 3/);
         assert.ok(commands[commands.length - 1].includes('"block":"1 2 3"'), 'explicit coordinates win');
+
+        commands.length = 0;
+        const placed = await crash('<Steve> v:crashchest -120 70 400 1');
+        assert.match(placed, /Crash chest at -120 70 400/);
+        assert.strictEqual(commands[0], 'setblock -120 70 400 minecraft:air');
+        assert.strictEqual(commands[1], 'setblock -120 70 400 minecraft:chest');
+        assert.ok(commands[2].startsWith('data merge block -120 70 400 '), 'the chosen spot gets the seed');
+        assert.strictEqual(
+            commands.filter(command => command.startsWith('data modify block -120 70 400')).length,
+            1,
+            'the doubling count still applies'
+        );
+        assert.deepStrictEqual(crashBot.crashChest, { x: -120, y: 70, z: 400 }, 'the chosen chest is remembered');
+
+        commands.length = 0;
+        const reminder = await crash('<Steve> v:servercrash scoreboard');
+        assert.match(reminder, /Scoreboard crash on -120 70 400/, 'the scoreboard follows the chosen chest');
+
+        commands.length = 0;
+        const rejected = await crash('<Steve> v:crashchest 1 2 3');
+        assert.match(rejected, /Crash chest at 1 2 3/);
+        commands.length = 0;
+        assert.match(await crash('<Steve> v:crashchest 1 nope 3'), /Usage: v:crashchest \[x y z\] \[doublings\]/);
+        assert.strictEqual(commands.length, 0, 'nothing is sent for bad coordinates');
     });
 
     await check('a session rank is cleared when the player joins again', () => {
