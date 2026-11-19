@@ -92,7 +92,7 @@
       "v\\",
       "\u00b0"
     ],
-    "inGamePrefixes": true,
+    "inGamePrefixes": false,
     "prefix": "&a[prefix: v\\]",
     "prefixEnabled": false
   },
