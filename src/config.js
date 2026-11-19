@@ -44,7 +44,11 @@ function defaults() {
                 autoReconnect: true,
                 reconnectDelayMs: 3000,
                 maxReconnectDelayMs: 60000,
-                maxAttempts: 0
+                maxAttempts: 0,
+                // A server that takes the socket and then says nothing leaves the
+                // bot "connecting" forever; this is how long it waits for the
+                // login packet before the attempt is failed and retried.
+                loginTimeoutMs: 30000
             }
         },
         bot: {

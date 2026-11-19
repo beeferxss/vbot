@@ -3,6 +3,16 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// A punishment burst is bounded on purpose. One write per block of the core
+// sounds cheap until the core is 16^3, where it is 4096 packets every burst: the
+// event loop never gets back to the socket, the bot stops reading packets and the
+// core looks frozen - and it grows with the core, so a bigger core made it worse.
+// The core cursor walks the area, so a capped burst still covers every block.
+const MAX_BURST_WRITES = 128;
+const BURST_INTERVAL_MS = 100;
+const TELLRAW_INTERVAL_MS = 250;
+const TELLRAW_LENGTH = 120;
+
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
 }
@@ -227,7 +237,7 @@ class Filter {
             if (stopped) return;
             const cur = current();
             if (!cur || !this.shouldFilter(cur)) { stop(); return; }
-            const msg = randomChinese(300);
+            const msg = randomChinese(TELLRAW_LENGTH);
             this.run(`tellraw ${name} ${JSON.stringify({ text: msg })}`);
         };
 
@@ -246,13 +256,14 @@ class Filter {
                 `jumpscare ${name}`
             ];
 
-            // One command per block of the core: every block runs what it holds
+            // One command per block written into: every block runs what it holds
             // on the next tick, so a burst as wide as the core hits as many times
             // per tick as the core has blocks. Before, the burst was a fixed 155
             // commands in a loop and most of the core sat idle.
             const volume = Math.max(1, Math.floor(Number(this.bot.core?.volume)) || 1);
+            const width = Math.min(volume, MAX_BURST_WRITES);
             const punish = cmds.length * 5;
-            for (let i = 0; i < volume; i++) {
+            for (let i = 0; i < width; i++) {
                 this.run(i < punish ? cmds[i % cmds.length] : `jumpscare ${name}`);
             }
 
@@ -260,10 +271,10 @@ class Filter {
             // once would overwrite commands before they ever ran, so leave the
             // blocks a tick to execute what was just written.
             const entry = this.punishTimers.get(key);
-            if (entry) entry.timeout = setTimeout(cycle, 50);
+            if (entry) entry.timeout = setTimeout(cycle, BURST_INTERVAL_MS);
         };
 
-        const tellrawTimer = setInterval(spamTellraw, 50);
+        const tellrawTimer = setInterval(spamTellraw, TELLRAW_INTERVAL_MS);
         tellrawTimer.unref?.();
         spamTellraw();
         // The mute goes once: the plugin keeps it, so asking again on a timer only

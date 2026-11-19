@@ -5,6 +5,7 @@ const mc = require('minecraft-protocol');
 const { chatTextFromPacket, chatEventFromPacket, languageFor, parseChatLine } = require('../minecraft/chat');
 const { normalizeUuid, offlineUuid } = require('../minecraft/uuid');
 const { playerInfoEntries } = require('../minecraft/players');
+const { resolveServerAddress } = require('../minecraft/address');
 const { Core } = require('../core');
 const { ClickTokens } = require('../clicktokens');
 const { SelfCare } = require('../selfcare');
@@ -91,6 +92,10 @@ class Bot extends EventEmitter {
         this.state = 'idle';
         this.attempts = 0;
         this.reconnectTimer = null;
+        // Set while the address is being resolved and the client built, so a
+        // second start() cannot open a second connection over the same server.
+        this.connecting = false;
+        this.loginTimer = null;
         this.destroyed = false;
         this.disconnectReason = null;
         this.known = new Map();
@@ -117,37 +122,65 @@ class Bot extends EventEmitter {
     }
 
     start() {
-        if (this.destroyed || this.client || this.reconnectTimer) return false;
+        if (this.destroyed || this.client || this.connecting || this.reconnectTimer) return false;
         this.connect();
         return true;
     }
 
     connect() {
         this.reconnectTimer = null;
+        if (this.destroyed || this.client || this.connecting) return;
+
+        this.connecting = true;
+        this.state = 'connecting';
+        // Looking the address up is async, so the client is built off the caller's
+        // stack; a failure is a lost attempt, not a crash.
+        this.open()
+            .catch(error => {
+                this.log.error(`connect failed: ${error.message}`);
+                this.state = 'offline';
+                this.scheduleReconnect();
+            })
+            .finally(() => { this.connecting = false; });
+    }
+
+    async open() {
         const { server } = this;
 
+        // The address a client dials is not always the name it types: play.norat.pw
+        // and alt.norat.pw have no A record at all, only a _minecraft._tcp SRV
+        // record. minecraft-protocol follows that on its own default path, but a
+        // custom connect (and anything that hands the name to the WARP tunnel)
+        // skips it, and then the lookup happens against a name with no address.
+        const target = await resolveServerAddress({ host: server.host, port: server.port });
+        if (this.destroyed) return;
+        if (target.host !== server.host || target.port !== server.port) {
+            this.log.info(`${server.host} answers on ${target.host}:${target.port}`);
+        }
+
         const options = {
-            host: server.host,
-            port: server.port,
+            host: target.host,
+            port: target.port,
             username: server.username,
-            auth: server.auth
+            auth: server.auth,
+            // Proxies route on the hostname in the handshake, and a vanilla client
+            // always sends the one the player typed, never the SRV target.
+            fakeHost: server.host
         };
         const version = server.version || this.config.minecraft.version;
         if (version) options.version = version;
-
-        this.state = 'connecting';
 
         // A server that has filtered the bot once sees a different address from
         // then on: every connection goes through the WARP proxy, which is what
         // the filter guard turns over.
         if (this.warp?.enabled) {
-            options.connect = client => this.warp.attach(client, { host: server.host, port: server.port });
+            options.connect = client => this.warp.attach(client, target);
             this.log.info(
-                `connecting to ${server.host}:${server.port} as ${server.username} ` +
+                `connecting to ${target.host}:${target.port} as ${server.username} ` +
                 `through the WARP proxy at ${this.warp.proxyUrl}`
             );
         } else {
-            this.log.info(`connecting to ${server.host}:${server.port} as ${server.username}`);
+            this.log.info(`connecting to ${target.host}:${target.port} as ${server.username}`);
         }
 
         let client;
@@ -163,6 +196,29 @@ class Bot extends EventEmitter {
         this.bind(client);
         this.core?.bindClient(client);
         this.cspy?.bind(client);
+        this.armLoginWatchdog(client);
+    }
+
+    // A server that takes the socket and then says nothing leaves the bot sitting
+    // in 'connecting' with nothing to show for it. Fail the attempt instead, so the
+    // reason is in the log and the reconnect happens on its own.
+    armLoginWatchdog(client) {
+        this.clearLoginWatchdog();
+        const timeoutMs = positive(this.connection.loginTimeoutMs, 30000);
+        this.loginTimer = setTimeout(() => {
+            this.loginTimer = null;
+            if (this.client !== client || this.state === 'ready' || this.destroyed) return;
+            this.disconnectReason = `login timed out after ${timeoutMs}ms`;
+            this.log.error(`${this.disconnectReason}; dropping the connection`);
+            try { client.end('login timeout'); } catch { /* already gone */ }
+        }, timeoutMs);
+        this.loginTimer.unref?.();
+    }
+
+    clearLoginWatchdog() {
+        if (!this.loginTimer) return;
+        clearTimeout(this.loginTimer);
+        this.loginTimer = null;
     }
 
     bind(client) {
@@ -172,6 +228,7 @@ class Bot extends EventEmitter {
         const isCurrent = () => this.client === client;
 
         client.on('login', packet => {
+            this.clearLoginWatchdog();
             this.attempts = 0;
             this.state = 'ready';
             this.connectedAt = Date.now();
@@ -250,6 +307,7 @@ class Bot extends EventEmitter {
 
         client.on('end', () => {
             if (!isCurrent()) return;
+            this.clearLoginWatchdog();
             this.client = null;
             this.state = 'offline';
             this.connectedAt = null;
@@ -669,6 +727,8 @@ class Bot extends EventEmitter {
 
     stop(reason = 'stopped') {
         this.log.info(reason);
+        this.clearLoginWatchdog();
+        this.connecting = false;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;

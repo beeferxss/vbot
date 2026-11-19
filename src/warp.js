@@ -189,8 +189,14 @@ class Warp {
             }
             client.setSocket(socket);
             // The socket is already connected, so the event the client waits for
-            // has come and gone.
-            client.emit('connect');
+            // has come and gone - but createClient only attaches the protocol
+            // handlers (setProtocol listens for exactly this event) after this
+            // callback returns. Emitting it here lands on nobody and the handshake
+            // is never written, which looks like a bot that hangs in 'connecting'
+            // with no error until the server drops it.
+            setImmediate(() => {
+                if (!clientGone(client)) client.emit('connect');
+            });
             socket.resume?.();
             this.report(true);
             return true;

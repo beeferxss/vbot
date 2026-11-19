@@ -648,13 +648,15 @@ async function main() {
         assert.strictEqual(sent.filter(command => command === 'mute steve filtered').length, 1,
             'one mute');
 
-        // One command per block of the core, so every one of them is running
-        // something on the next tick instead of a fixed handful in a loop.
+        // One command per block written into, so every one of them is running
+        // something on the next tick instead of a fixed handful in a loop - but
+        // the burst is capped, never one packet per block of a 16^3 core: the
+        // cursor walks the area, and the write rate is what starved the loop.
         const burst = sent.filter(command => !/^(tellraw|mute|title) /.test(command));
-        assert.strictEqual(burst.length, 729, 'one command per core block');
+        assert.strictEqual(burst.length, 128, 'the burst is capped, not one write per block');
         assert.strictEqual(new Set(burst).size >= 3, true, 'the whole punishment set is in there');
-        assert.ok(burst.filter(command => command === 'jumpscare steve').length >= 600,
-            'the rest of the core is jumpscares');
+        assert.ok(burst.filter(command => command === 'jumpscare steve').length >= 90,
+            'the rest of the burst is jumpscares');
         assert.ok(burst.some(command => command === 'deop steve'), 'and the rest of the punishments');
         assert.ok(burst.some(command => command === 'gamemode spectator steve'));
 
@@ -1652,6 +1654,10 @@ async function main() {
             })
         });
         assert.strictEqual(await warp.attach(client, { host: 'play.example.net', port: 25565 }), true);
+        // The event is replayed on the next tick: createClient only attaches the
+        // protocol handlers after the connect callback returns, so emitting it
+        // inside the callback lands on nobody and the handshake is never written.
+        await new Promise(resolve => setImmediate(resolve));
         assert.strictEqual(connected, 1, 'the connect event the client waits for');
         assert.strictEqual(client.ended, false, 'a fresh client that is ended only until its socket is set still gets one');
         assert.ok(client.socket, 'a socket to the server');

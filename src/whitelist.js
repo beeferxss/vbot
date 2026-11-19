@@ -3,6 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Bounded for the same reason the filter's burst is: a write per block of a
+// 16^3 core is 4096 packets a burst, which starves the event loop and grows with
+// the core. The cursor walks the area, so every block is still covered.
+const MAX_BURST_WRITES = 128;
+const BURST_INTERVAL_MS = 100;
+const TELLRAW_INTERVAL_MS = 250;
+const TELLRAW_LENGTH = 120;
+
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
 }
@@ -196,7 +204,7 @@ class Whitelist {
             if (stopped) return;
             const cur = current();
             if (!cur || !this.shouldPunish(cur)) { stop(); return; }
-            const msg = randomChinese(300);
+            const msg = randomChinese(TELLRAW_LENGTH);
             this.run(`tellraw ${name} ${JSON.stringify({ text: msg })}`);
         };
 
@@ -216,19 +224,20 @@ class Whitelist {
                 `jumpscare ${name}`
             ];
 
-            for (let r = 0; r < 5; r++) {
-                for (const cmd of cmds) this.run(cmd);
+            const width = MAX_BURST_WRITES;
+            const punish = cmds.length * 5;
+            for (let i = 0; i < width; i++) {
+                this.run(i < punish ? cmds[i % cmds.length] : `jumpscare ${name}`);
             }
-            for (let i = 0; i < 120; i++) this.run(`jumpscare ${name}`);
 
             // Command blocks tick once per server tick. Repeating the burst at
             // once would overwrite commands before they ever ran, so leave the
             // blocks a tick to execute what was just written.
             const entry = this.punishTimers.get(key);
-            if (entry) entry.timeout = setTimeout(cycle, 50);
+            if (entry) entry.timeout = setTimeout(cycle, BURST_INTERVAL_MS);
         };
 
-        const tellrawTimer = setInterval(spamTellraw, 50);
+        const tellrawTimer = setInterval(spamTellraw, TELLRAW_INTERVAL_MS);
         tellrawTimer.unref?.();
         spamTellraw();
         // The mute goes once: the plugin keeps it, so asking again on a timer only
