@@ -53,6 +53,10 @@ function defaults() {
         },
         bot: {
             prefixes: ['v\\', '\u00b0'],
+            // In-game commands are started by one of `prefixes` above. Off: no
+            // chat line can run a command, and only Discord (and the console)
+            // reach the bot.
+            inGamePrefixes: true,
             // Chat tag set with /prefix, not to be confused with the command
             // prefixes above. "&" colour codes are passed through as written.
             prefix: '&a[prefix: v\\]',
@@ -208,9 +212,9 @@ function defaults() {
                 // Where the cube sits off the spot it would otherwise take: it is
                 // centred over the bot, two blocks above its head.
                 miniOffset: { x: 0, y: 0, z: 0 },
-                // The cube's own name, as a raw SNBT component: every block of it
-                // is filled with this name.
-                miniName: '{"text":"mini core™","color":"green"}',
+                // The cube is filled unnamed: a block nobody named is one more
+                // thing that looks untouched.
+                miniName: null,
                 // Send the fill, and a command no core block took, as plain chat
                 // when the bot has nothing of its own to run it in: that is the
                 // only way to build the first core block on a server that does
@@ -296,10 +300,14 @@ function loadConfig(configPath = process.env.VBOT_CONFIG || path.join(ROOT, 'con
         return server;
     });
 
-    if (!Array.isArray(config.bot.prefixes) || !config.bot.prefixes.length) {
-        throw new ConfigError('bot.prefixes must be a non-empty array');
+    if (!Array.isArray(config.bot.prefixes)) {
+        throw new ConfigError('bot.prefixes must be an array');
     }
     config.bot.prefixes = config.bot.prefixes.map(prefix => String(prefix)).filter(Boolean);
+    config.bot.inGamePrefixes = config.bot.inGamePrefixes !== false;
+    if (config.bot.inGamePrefixes && !config.bot.prefixes.length) {
+        throw new ConfigError('bot.prefixes must be a non-empty array (or set bot.inGamePrefixes: false)');
+    }
 
     const connection = config.minecraft.connection;
     connection.reconnectDelayMs = Math.max(250, Number(connection.reconnectDelayMs) || 3000);

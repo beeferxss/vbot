@@ -70,6 +70,10 @@ class CommandRegistry {
 
     // Longest configured prefix wins, so "v:" beats ":"
     matchPrefix(message) {
+        // In-game commands can be turned off entirely: no chat line then starts
+        // one, and only a raw dispatch (Discord's /sudo, the console) gets in.
+        if (this.config.bot?.inGamePrefixes === false) return null;
+
         const prefixes = this.config.bot.prefixes || [];
         let found = null;
         for (const prefix of prefixes) {
@@ -80,16 +84,25 @@ class CommandRegistry {
         return found;
     }
 
-    async dispatch({ bot, parsed, verified = true, real = true, trustedClicker = false }) {
-        const prefix = this.matchPrefix(parsed.message);
-        if (!prefix) return false;
+    // `raw` takes the message as the command already, with no bot prefix to
+    // strip (Discord's /sudo). `sink` sees every reply as it goes out, so a
+    // caller outside the game can keep the output; the player is still answered.
+    async dispatch({ bot, parsed, verified = true, real = true, trustedClicker = false, raw = false, sink = null }) {
+        const prefix = raw ? '' : this.matchPrefix(parsed.message);
+        if (prefix === null) return false;
 
-        const body = parsed.message.slice(prefix.length).trim();
+        const text = String(parsed.message ?? '');
+        const body = (raw ? text : text.slice(prefix.length)).trim();
         if (!body) return false;
 
         const [label, ...argv] = body.split(/\s+/);
         const command = this.find(label);
-        const reply = text => this.reply(bot, parsed.username, text, command?.name || label);
+        const reply = text => {
+            if (typeof sink === 'function') {
+                try { sink(text); } catch { /* a bad sink is not the command's problem */ }
+            }
+            return this.reply(bot, parsed.username, text, command?.name || label);
+        };
 
         if (!command) {
             reply(`Unknown command "${label}". Try ${prefix}help`);

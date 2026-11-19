@@ -88,6 +88,11 @@
     }
   },
   "bot": {
+    "prefixes": [
+      "v\\",
+      "\u00b0"
+    ],
+    "inGamePrefixes": true,
     "prefix": "&a[prefix: v\\]",
     "prefixEnabled": false
   },
@@ -134,8 +139,7 @@
         "x": 0,
         "y": 0,
         "z": 0
-      },
-      "miniName": "{\"text\":\"stone\",\"color\":\"gray\"}"
+      }
     }
   }
 }

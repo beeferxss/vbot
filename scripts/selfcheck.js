@@ -119,11 +119,13 @@ async function main() {
             spamMs: 150,
             auto: false,
             item: true,
+            miniName: null,
             // The example is tuned by hand, so what it sets wins: the rest of the
             // refill settings are the defaults.
             ...example.core.refill,
             chatFallback: true
         });
+        assert.strictEqual(config.core.refill.miniName, null, 'the cube is filled unnamed');
         // Addresses come from /seen only; whois is kept for the identity fields.
         assert.match(config.alts.lookupCommand, /^seen /, 'seen is the lookup command');
         assert.doesNotMatch(config.alts.fallbackCommand, /whois/i);
@@ -2460,6 +2462,51 @@ async function main() {
         assert.strictEqual(degreeRegistry.matchPrefix('!help'), null);
     });
 
+    await check('in-game prefixes can be switched off in config', async () => {
+        const quiet = new CommandRegistry({
+            dir: path.join(ROOT, 'src', 'commands'),
+            config: { ...config, bot: { ...config.bot, inGamePrefixes: false } },
+            permissions,
+            store,
+            logger,
+            tokens
+        }).loadAll();
+
+        assert.strictEqual(quiet.matchPrefix('v:help'), null, 'no chat line matches a prefix');
+        sent.length = 0;
+        assert.strictEqual(
+            await quiet.dispatch({ bot: fakeBot, parsed: parseChatLine('<Steve> v:help') }),
+            false,
+            'nothing in game runs a command'
+        );
+        assert.strictEqual(sent.length, 0);
+
+        // The same commands still answer a raw dispatch: that is what /sudo uses.
+        const handled = await quiet.dispatch({
+            bot: fakeBot,
+            parsed: { username: 'Steve', message: 'help' },
+            raw: true
+        });
+        assert.strictEqual(handled, true);
+        assert.match(decodeReply(sent[0]), /^Commands \(\d+\)/);
+    });
+
+    await check('a raw dispatch runs as a player and answers both ways', async () => {
+        sent.length = 0;
+        const lines = [];
+        const handled = await registry.dispatch({
+            bot: fakeBot,
+            parsed: { username: 'VojtaV12', message: 'whoami' },
+            raw: true,
+            sink: value => lines.push(value)
+        });
+
+        assert.strictEqual(handled, true);
+        assert.ok(sent.some(line => line.startsWith('/tellraw VojtaV12 ')), 'the player is answered in game');
+        assert.strictEqual(lines.length, 1, 'and the same reply reaches the sink');
+        assert.match(lines[0], /VojtaV12/);
+    });
+
     await check('help lists every rank and marks the ones you cannot use', async () => {
         sent.length = 0;
         await registry.dispatch({ bot: fakeBot, parsed: parseChatLine('<Unranked> v:help') });
@@ -3653,6 +3700,38 @@ async function main() {
 
         const unknown = await runner.executeCommand(bot, member(['A']), 'nope');
         assert.strictEqual(unknown.ok, false);
+    });
+
+    await check('discord sudo runs the command as that player', async () => {
+        const { DiscordBridge } = require('../src/discord');
+
+        const calls = [];
+        const registry = {
+            store: {},
+            permissions: {},
+            dispatch: async request => {
+                calls.push(request);
+                request.sink?.('You are at 12 70 -4');
+                return true;
+            }
+        };
+        const bridge = new DiscordBridge({ config: { bot: {} }, manager: null, logger, registry });
+        const bot = { id: 'kbpw', state: 'ready', uuidFor: () => null, chat: () => true };
+
+        const result = await bridge.sudoCommand(bot, 'VojtaV12', 'rtp');
+        assert.strictEqual(result.ok, true);
+        assert.strictEqual(result.text, 'You are at 12 70 -4', 'the output comes back to discord');
+
+        const request = calls[0];
+        assert.strictEqual(request.parsed.username, 'VojtaV12', 'it runs as the player');
+        assert.strictEqual(request.parsed.message, 'rtp');
+        assert.strictEqual(request.raw, true, 'the text is the command, with no prefix');
+        assert.strictEqual(request.verified, true);
+        assert.strictEqual(request.real, true, 'their stored rank is what runs');
+
+        assert.strictEqual((await bridge.sudoCommand(bot, 'not a name!', 'rtp')).ok, false);
+        assert.strictEqual((await bridge.sudoCommand(bot, 'Steve', '   ')).ok, false);
+        assert.strictEqual((await bridge.sudoCommand({ id: 'x', state: 'offline' }, 'Steve', 'rtp')).ok, false);
     });
 
     await check('chat is relayed as an ansi code block', async () => {

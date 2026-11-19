@@ -632,6 +632,21 @@ class DiscordBridge {
                 .addStringOption(option => option
                     .setName('server')
                     .setDescription('Server id (default: the one linked to this channel)')
+                    .setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('sudo')
+                .setDescription('Run a vbot command as a player in game: their name, their rank, their output')
+                .addStringOption(option => option
+                    .setName('player')
+                    .setDescription('Minecraft name to run as')
+                    .setRequired(true))
+                .addStringOption(option => option
+                    .setName('command')
+                    .setDescription('For example: rtp, whoami, get ip')
+                    .setRequired(true))
+                .addStringOption(option => option
+                    .setName('server')
+                    .setDescription('Server id (default: the one linked to this channel)')
                     .setRequired(false))
         ].map(command => command.toJSON());
 
@@ -872,6 +887,48 @@ class DiscordBridge {
         return { ok: true, text: lines.join('\n') || `${command.name}: done.` };
     }
 
+    // /sudo: runs a vbot command as a player in game. The command sees that
+    // player's name, so anything positional (rtp, tp, a name in the arguments)
+    // acts on them, and it is checked against their stored rank like any in-game
+    // command - a privileged one still needs the token they authenticated with,
+    // so nobody borrows a rank they do not hold. The player gets the reply as a
+    // tellraw in game and the same lines come back here.
+    async sudoCommand(bot, player, text) {
+        const registry = this.registry;
+        if (!registry || typeof registry.dispatch !== 'function') {
+            return { ok: false, text: 'Commands are not loaded.' };
+        }
+        if (!bot) return { ok: false, text: 'No server.' };
+        if (bot.state !== 'ready') return { ok: false, text: `${bot.id} is not in game.` };
+
+        const name = String(player || '').trim();
+        if (!/^[A-Za-z0-9_.-]{1,16}$/.test(name)) return { ok: false, text: 'That is not a Minecraft name.' };
+
+        const body = String(text || '').trim().replace(/^[!/ ]+/, '');
+        if (!body) return { ok: false, text: 'Give a command, for example: rtp' };
+
+        const lines = [];
+        const sink = value => {
+            const line = plainText(value);
+            if (line) lines.push(line);
+        };
+
+        // raw: the text is the command already, with no bot prefix in front.
+        // verified/real: the player is a real player, so their rank is the one
+        // the command is checked against.
+        const handled = await registry.dispatch({
+            bot,
+            parsed: { username: name, message: body },
+            verified: true,
+            real: true,
+            raw: true,
+            sink
+        });
+
+        if (!handled) return { ok: false, text: `Nothing ran: ${body}` };
+        return { ok: true, text: lines.join('\n') || `${name}: ran ${body.split(/\s+/)[0]}` };
+    }
+
     async handleInteraction(interaction) {
         if (!interaction?.isChatInputCommand?.() || !this.ready) return;
 
@@ -965,6 +1022,42 @@ class DiscordBridge {
             return interaction.reply({
                 embeds: [this.resultEmbed({
                     label: interaction.commandName,
+                    bot,
+                    text: result.text,
+                    ok: result.ok,
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
+        }
+
+        if (interaction.commandName === 'sudo') {
+            if (this.rankFor(interaction.member) < LEVEL.TRUSTED) {
+                return interaction.reply({
+                    embeds: [this.resultEmbed({ label: 'sudo', text: 'The Trusted role is required for /sudo.', ok: false })],
+                    flags: ephemeral
+                });
+            }
+
+            const player = interaction.options.getString('player') || '';
+            const text = interaction.options.getString('command') || '';
+            const wanted = interaction.options.getString('server');
+            const linked = this.channelBots.get(interaction.channelId);
+            const bot = wanted
+                ? this.bots().find(candidate => candidate.id.toLowerCase() === wanted.toLowerCase())
+                : linked;
+
+            if (!bot) {
+                return interaction.reply({
+                    embeds: [this.resultEmbed({ label: 'sudo', text: this.missingBot(interaction, wanted), ok: false })],
+                    flags: ephemeral
+                });
+            }
+
+            const result = await this.sudoCommand(bot, player, text);
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: `sudo · ${String(player).trim() || 'player'}`,
                     bot,
                     text: result.text,
                     ok: result.ok,
