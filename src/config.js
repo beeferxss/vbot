@@ -174,11 +174,9 @@ function defaults() {
             // Raw SNBT component for the blocks' CustomName, or null for none.
             // Example: {"text":"vbot","color":"green"}
             name: null,
-            // `offset` moves the area off the spot it would otherwise take: x/z
-            // from the grid-aligned origin under the bot, y from `area.y`. A
-            // server that keeps the bot's own chunk clean can have the core
-            // somewhere else entirely.
-            area: { size: 9, y: 64, offset: { x: 0, y: 0, z: 0 } },
+            // `y` is the level the area is filled at, whatever height the bot is
+            // standing at; -30 keeps the cube underground and out of the way.
+            area: { size: 9, y: -30 },
             // The bot drops itself at a random spot as soon as it joins, before
             // anything is filled, so the core is never built at the server's
             // spawn. Same range and height as the "rtp" command.
@@ -209,9 +207,6 @@ function defaults() {
                 // filled again where it was built as soon as any of its blocks go
                 // missing, and only moved once the bot is far away from it.
                 miniSize: 4,
-                // Where the cube sits off the spot it would otherwise take: it is
-                // centred over the bot, two blocks above its head.
-                miniOffset: { x: 0, y: 0, z: 0 },
                 // The cube is filled unnamed: a block nobody named is one more
                 // thing that looks untouched.
                 miniName: null,

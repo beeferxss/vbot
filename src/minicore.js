@@ -58,12 +58,6 @@ function blockState(packet) {
 }
 
 // update_command_block carries the block's own mode.
-// A config offset of whole blocks, with anything missing or unreadable as 0.
-function offsetOf(value) {
-    const pick = key => (Number.isFinite(Number(value?.[key])) ? Math.floor(Number(value[key])) : 0);
-    return { x: pick('x'), y: pick('y'), z: pick('z') };
-}
-
 function blockMode(block) {
     if (/chain_command_block$/.test(block)) return 0;
     if (/repeating_command_block$/.test(block)) return 1;
@@ -88,9 +82,6 @@ class MiniCore {
             || (Number.isFinite(count) && count > 0 ? Math.round(Math.cbrt(count)) : SIDE);
         this.side = Math.min(Math.max(wanted, 1), MAX_SIDE);
         this.count = this.side ** 3;
-        // Where the cube sits off the spot it would otherwise take: its corner is
-        // centred over the bot, two blocks above its head.
-        this.offset = offsetOf(config.miniOffset);
         this.stepMs = Number(config.stepMs) > 0 ? Number(config.stepMs) : STEP_MS;
         // The cells the server has shown a command block in, by cell.
         this.slots = new Map();
@@ -142,12 +133,11 @@ class MiniCore {
     // the bot stands: size x size x size, one level above its head.
     boxFor(at) {
         const side = this.side;
-        const offset = this.offset;
-        const low = at.y + 2 + offset.y;
+        const low = at.y + 2;
         const min = {
-            x: at.x - Math.floor(side / 2) + offset.x,
+            x: at.x - Math.floor(side / 2),
             y: low,
-            z: at.z - Math.floor(side / 2) + offset.z
+            z: at.z - Math.floor(side / 2)
         };
         const max = { x: min.x + side - 1, y: low + side - 1, z: min.z + side - 1 };
         const cells = [];

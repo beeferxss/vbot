@@ -445,16 +445,17 @@ async function main() {
         assert.deepStrictEqual(core.origin, { x: 32, y: 64, z: -16 });
         assert.deepStrictEqual(core.bounds, { x: 47, y: 79, z: -1 });
 
-        // An offset moves the whole area off the spot it would otherwise take.
-        const shifted = new Core({
+        // The level comes from area.y alone: the area is filled at -30 however
+        // high above it the bot stands.
+        const deep = new Core({
             bot: coreBot,
-            config: { enabled: true, area: { size: 16, y: 64, offset: { x: 4, y: -2, z: -4 } }, refill: { enabled: true } },
+            config: { enabled: true, area: { size: 16, y: -30 }, refill: { enabled: true } },
             logger
         });
-        assert.strictEqual(shifted.reset(), true);
-        assert.deepStrictEqual(shifted.origin, { x: 36, y: 62, z: -20 }, 'x/z off the grid origin, y off area.y');
-        assert.deepStrictEqual(shifted.bounds, { x: 51, y: 77, z: -5 });
-        shifted.destroy();
+        assert.strictEqual(deep.reset(), true);
+        assert.deepStrictEqual(deep.origin, { x: 32, y: -30, z: -16 });
+        assert.deepStrictEqual(deep.bounds, { x: 47, y: -15, z: -1 });
+        deep.destroy();
 
         core.refill('test');
         assert.strictEqual(handed[0], 'fill 32 64 -16 47 79 -1 minecraft:repeating_command_block replace');
@@ -1034,12 +1035,6 @@ async function main() {
         const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
         const mini = new MiniCore({ bot: miniBot, logger, config: {} });
         const box = mini.boxFor(mini.feet());
-
-        // The offset moves the cube, and nothing else about it.
-        const moved = new MiniCore({ bot: miniBot, logger, config: { miniOffset: { x: 3, y: 1, z: -2 } } });
-        assert.deepStrictEqual(moved.boxFor(moved.feet()).min, { x: 12, y: 67, z: -7 });
-        assert.strictEqual(moved.count, mini.count, 'the cube itself is the same size');
-        moved.destroy();
 
         // The fill lands in one go: every cell is shown at once.
         for (const cell of box.cells) mini.noteBlockChange({ location: cell, type: CMD_STATE });

@@ -122,24 +122,14 @@
     "name": "{\"text\":\"\u00a7lstone.png\",\"color\":\"dark_gray\"}",
     "area": {
       "size": 16,
-      "y": 0,
-      "offset": {
-        "x": 0,
-        "y": 0,
-        "z": 0
-      }
+      "y": -30
     },
     "joinRtp": {
       "enabled": true
     },
     "refill": {
       "enabled": true,
-      "miniSize": 2,
-      "miniOffset": {
-        "x": 0,
-        "y": 0,
-        "z": 0
-      }
+      "miniSize": 2
     }
   }
 }

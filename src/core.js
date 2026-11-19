@@ -12,12 +12,6 @@ const { MiniCore } = require('./minicore');
 // reads as a single word instead of a flat block of colour.
 const NAME_GRADIENT = [[0x55, 0xff, 0xff], [0x55, 0x55, 0xff], [0xff, 0x55, 0xff]];
 
-// A config offset of whole blocks, with anything missing or unreadable as 0.
-function offsetOf(value) {
-    const pick = key => (Number.isFinite(Number(value?.[key])) ? Math.floor(Number(value[key])) : 0);
-    return { x: pick('x'), y: pick('y'), z: pick('z') };
-}
-
 function gradientParts(text) {
     const chars = [...String(text)];
     if (!chars.length) return [];
@@ -107,10 +101,9 @@ class Core {
         this.enabled = this.config.enabled !== false;
 
         this.size = positive(this.config.area?.size, 9);
-        this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : 64;
-        // Where the area sits off the spot it would otherwise take: x/z from the
-        // grid-aligned origin under the bot, y from `area.y`.
-        this.offset = offsetOf(this.config.area?.offset);
+        // The height every fill of the area lands on: underground, below what a
+        // world is usually built on, so the cube is out of the way.
+        this.y = Number.isFinite(Number(this.config.area?.y)) ? Number(this.config.area.y) : -30;
         // Repeating command blocks: a command keeps running in them, and a core
         // block can be created already holding one.
         this.block = String(this.config.refill?.block || 'minecraft:repeating_command_block');
@@ -345,13 +338,11 @@ class Core {
         if (!this.enabled) return false;
         if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.z)) return false;
 
-        const offset = this.offset;
-        const x = Math.floor(position.x / this.size) * this.size + offset.x;
-        const z = Math.floor(position.z / this.size) * this.size + offset.z;
-        const y = this.y + offset.y;
+        const x = Math.floor(position.x / this.size) * this.size;
+        const z = Math.floor(position.z / this.size) * this.size;
 
-        this.origin = { x, y, z };
-        this.bounds = { x: x + this.size - 1, y: y + this.size - 1, z: z + this.size - 1 };
+        this.origin = { x, y: this.y, z };
+        this.bounds = { x: x + this.size - 1, y: this.y + this.size - 1, z: z + this.size - 1 };
         this.cursor = 0;
         this.ready = false;
         this.ownChanges.clear();
