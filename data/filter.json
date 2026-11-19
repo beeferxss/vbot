@@ -23,5 +23,29 @@
         "regex": null,
         "mutes": [],
         "reasons": {}
+    },
+    "chomens": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
+    },
+    "altnorat": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
+    },
+    "norat": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
     }
 }

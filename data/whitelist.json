@@ -16,5 +16,23 @@
         "players": [],
         "uuids": [],
         "ips": []
+    },
+    "chomens": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
+    },
+    "altnorat": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
+    },
+    "norat": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
     }
 }
