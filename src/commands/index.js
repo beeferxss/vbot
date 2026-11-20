@@ -55,7 +55,10 @@ class CommandRegistry {
             description: command.description || '',
             usage: command.usage || '',
             level,
-            execute: command.execute
+            execute: command.execute,
+            // Optional extra hover detail `help` prints under the entry: a
+            // command with variants (servercrash's methods) names them itself.
+            hover: command.hover ?? null
         };
 
         this.commands.set(entry.name, entry);

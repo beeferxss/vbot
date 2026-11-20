@@ -17,8 +17,22 @@ function clickable(prefix, command) {
         text: command.name,
         color: COMMAND_COLOR,
         click: { action: 'suggest_command', value: `${prefix}help ${command.name}` },
-        hover: { text: `${usageOf(prefix, command)}\n${command.description || 'no description'}\nclick to open its help` }
+        hover: { text: `${usageOf(prefix, command)}\n${command.description || 'no description'}${detailsOf(command)}\nclick to open its help` }
     };
+}
+
+// A command that holds a set of variants - servercrash's methods, say - names
+// them on its own. `hover` may be a string or a function of no arguments, and
+// its lines are indented so they read as part of the entry, not as a new one.
+function detailsLines(command) {
+    const extra = typeof command.hover === 'function' ? command.hover() : command.hover;
+    if (!extra) return [];
+    return String(extra).split('\n').map(line => `  ${line}`);
+}
+
+function detailsOf(command) {
+    const lines = detailsLines(command);
+    return lines.length ? `\n${lines.join('\n')}` : '';
 }
 
 module.exports = {
@@ -48,7 +62,7 @@ module.exports = {
             // Suggest the command itself, ready to type, instead of copying the
             // usage line with its placeholders in it.
             const suggest = `${ctx.prefix}${command.name}`;
-            ctx.reply([
+            const parts = [
                 {
                     text: usage,
                     color: COMMAND_COLOR,
@@ -58,7 +72,14 @@ module.exports = {
                 { text: ' — ', color: 'dark_gray' },
                 { text: command.description || 'no description', color: 'gray' },
                 { text: ` [${levelName(command.level)}]`, color: RANK_COLOR[levelName(command.level)] }
-            ]);
+            ];
+
+            // The same variants the list's hover names, so opening the help is
+            // not a step backwards from hovering it.
+            const details = detailsLines(command);
+            if (details.length) parts.push({ text: `\n${details.join('\n')}`, color: 'dark_gray' });
+
+            ctx.reply(parts);
             return;
         }
 

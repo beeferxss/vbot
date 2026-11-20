@@ -1,6 +1,13 @@
 'use strict';
 
-const { chestPosition } = require('../crash');
+const {
+    chestPosition,
+    parseChestArgs,
+    clampDoublings,
+    buildCrashChest,
+    SEED_LENGTH,
+    BYTES_PER_CHAR
+} = require('../crash');
 
 // A crash method is one command string. The core writes it into a command
 // block, and bot.chat() refuses to run anything without a ready core, so the
@@ -76,6 +83,45 @@ const METHODS = {
             ctx.run(display);
             return true;
         }
+    },
+    // The chest is built exactly as `crashchest` builds it, then broken with
+    // setblock's destroy mode: the block is handled as a break instead of a
+    // plain replace, so the server drops and serialises the whole name on the
+    // way out. One command does the break, so the size reached is the size that
+    // gets processed.
+    destroy: {
+        description: 'crash chest, then setblock it to air with destroy',
+        run: async ctx => {
+            const core = ctx.bot.core;
+            if (!core || !core.ready) return ctx.reply('Core is not ready.');
+
+            const parsed = parseChestArgs(ctx.args.slice(1));
+            if (!parsed) {
+                return ctx.reply(`Usage: ${ctx.prefix}servercrash destroy [x y z] [doublings]`);
+            }
+
+            const position = parsed.position || ctx.bot.crashChest || chestPosition(ctx.bot);
+            if (!position) {
+                return ctx.reply(
+                    `No chest yet: ${ctx.prefix}crashchest first, or ` +
+                    `${ctx.prefix}servercrash destroy <x> <y> <z>.`
+                );
+            }
+
+            const doublings = clampDoublings(parsed.rest[0]);
+            const built = await buildCrashChest(ctx, position, doublings);
+            if (!built.ok) return ctx.reply(built.error);
+
+            ctx.reply(
+                `Crash chest at ${built.at}: ` +
+                `${built.chars.toLocaleString()} chars ` +
+                `(~${(built.chars * BYTES_PER_CHAR).toLocaleString()} bytes). Breaking it.`
+            );
+            if (!ctx.run(`setblock ${built.at} minecraft:air destroy`)) {
+                return ctx.reply('The core could not break the chest.');
+            }
+            return true;
+        }
     }
 };
 
@@ -110,6 +156,12 @@ module.exports = {
     usage: 'servercrash <method|list> [count]',
     level: 'admin',
     METHODS,
+
+    // The help entry's hover: every method and what it does, so the list does
+    // not have to be run first to know what is in it.
+    hover: () => Object.entries(METHODS)
+        .map(([name, method]) => `${name}: ${method.description || 'no description'}`)
+        .join('\n'),
 
     async execute(ctx) {
         const names = Object.keys(METHODS);
