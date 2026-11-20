@@ -133,8 +133,35 @@ jobs:
 
           AUTH_HEADER="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
 
-          git -c http.extraheader="$AUTH_HEADER" \
-            push origin "HEAD:${GITHUB_REF_NAME}"
+          # The branch can move between the checkout and this push - another
+          # session's data commit, or a config change pushed while the bot ran.
+          # Rebase this run's commit onto whatever is there now and try again,
+          # so a rejected push does not throw the session's data away.
+          for attempt in 1 2 3; do
+            if git -c http.extraheader="$AUTH_HEADER" \
+              push origin "HEAD:${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+
+            echo "push rejected (attempt ${attempt}); rebasing onto ${GITHUB_REF_NAME}"
+
+            if ! git fetch --no-tags origin "${GITHUB_REF_NAME}"; then
+              echo "fetch failed; the data is committed locally but not pushed"
+              exit 1
+            fi
+
+            if ! git -c core.hooksPath=/dev/null rebase FETCH_HEAD; then
+              # The data files are binary and this run's copy is the current
+              # state, so keep it for the files that conflict and take the rest
+              # of the branch as it is.
+              echo "rebase conflicted; merging with this run's data winning conflicts"
+              git rebase --abort || true
+              git -c core.hooksPath=/dev/null merge -X ours --no-edit FETCH_HEAD
+            fi
+          done
+
+          echo "could not push the data after 3 attempts"
+          exit 1
 
       - name: Automatically start next session
         if: always() && steps.run.outcome == 'success' && steps.persist.outcome == 'success' && steps.run.outputs.stop != '1'

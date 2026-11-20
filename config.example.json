@@ -81,6 +81,24 @@
         "channelId": "1572692313644335245",
         "randomName": true,
         "auth": "offline"
+      },
+      {
+        "id": "yesnorat",
+        "enabled": true,
+        "host": "yes.norat.pw",
+        "port": 25565,
+        "channelId": "1573404086957645834",
+        "randomName": true,
+        "auth": "offline"
+      },
+      {
+        "id": "pboom",
+        "enabled": true,
+        "host": "orders-panic.gl.joinmc.link",
+        "port": 25565,
+        "channelId": "1573404385537433671",
+        "randomName": true,
+        "auth": "offline"
       }
     ],
     "connection": {
