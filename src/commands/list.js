@@ -55,6 +55,7 @@ module.exports = {
             if (index > 0) parts.push({ text: '\n' });
             const uuid = player.uuid;
             const ip = ctx.bot.ipLookup ? ctx.bot.ipLookup.ipFor(player.name) : null;
+            const known = ctx.bot.versions?.versionFor?.(player.name);
             const vanished = player.vanished === true;
             parts.push({
                 text: player.name,
@@ -65,6 +66,7 @@ module.exports = {
                 // alts command as the player who clicked it, with their rank.
                 hover: {
                     text: `${player.name}\n${uuid || 'uuid unknown'}\nip: ${ip || 'not known yet'}\n` +
+                        `version: ${known?.version || 'unknown'}\n` +
                         `click: the addresses of ${player.name}` +
                         (vanished ? '\nvanished: hidden from the tab list' : '')
                 },

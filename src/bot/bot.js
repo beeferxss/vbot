@@ -13,6 +13,7 @@ const { BotCSpy } = require('../botcspy');
 const { Warp } = require('../warp');
 const { FilterGuard } = require('../filterguard');
 const { IpLookup } = require('../iplookup');
+const { VersionLookup } = require('../versions');
 const path = require('node:path');
 const { Filter } = require('../filter');
 const { Whitelist } = require('../whitelist');
@@ -63,6 +64,13 @@ class Bot extends EventEmitter {
             bot: this,
             store,
             config: config.alts || {},
+            logger: this.log
+        });
+        // The version each player joins on, for the hover `alts` shows.
+        this.versions = new VersionLookup({
+            bot: this,
+            store,
+            config: config.versions || {},
             logger: this.log
         });
 
@@ -500,6 +508,7 @@ class Bot extends EventEmitter {
             this.listed.add(key);
             if (isNew) {
                 this.ipLookup?.queue(name);
+                this.versions?.queue(name);
                 // A rank redeemed with a token belongs to the session it was
                 // redeemed in, so joining again starts at public instead of
                 // carrying an old rank back in.
@@ -585,7 +594,10 @@ class Bot extends EventEmitter {
                 uuid: existing?.uuid ?? this.uuidFor(name),
                 vanished: !this.listed.has(key)
             });
-            if (!existing) this.ipLookup?.queue(name);
+            if (!existing) {
+                this.ipLookup?.queue(name);
+                this.versions?.queue(name);
+            }
             added += 1;
         }
 
@@ -751,6 +763,7 @@ class Bot extends EventEmitter {
         this.cspy?.destroy();
         this.filterGuard?.destroy();
         this.ipLookup?.destroy();
+        this.versions?.destroy();
         this.removeAllListeners();
     }
 }

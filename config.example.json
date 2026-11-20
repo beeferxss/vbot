@@ -107,10 +107,10 @@
   },
   "bot": {
     "prefixes": [
-      "v\\",
+      "\\",
       "\u00b0"
     ],
-    "inGamePrefixes": false,
+    "inGamePrefixes": true,
     "prefix": "&a[prefix: v\\]",
     "prefixEnabled": false
   },

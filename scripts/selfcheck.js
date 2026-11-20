@@ -796,8 +796,9 @@ async function main() {
         assert.strictEqual(kick.level, 'trusted', 'trusted and above only');
 
         await kick.execute(ctxFor('steve'));
-        assert.strictEqual(sent.length, 1, 'the first packet goes out with the command');
+        assert.strictEqual(sent.length, 2, 'the first title and subtitle go out with the command');
         assert.ok(sent[0].includes('steve'), 'aimed at the named player');
+        assert.ok(sent[1].includes('steve') && sent[1].includes('subtitle'), 'with their subtitle');
         assert.strictEqual(bot.kickLoops.size, 1, 'and it keeps going from there');
 
         stopLoops();
@@ -813,7 +814,7 @@ async function main() {
         stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('re:^st'));
-        assert.strictEqual(sent.length, 1, 'a regex can match one');
+        assert.strictEqual(sent.length, 2, 'a regex can match one');
         assert.ok(sent[0].includes('steve'));
 
         stopLoops();
@@ -888,7 +889,8 @@ async function main() {
             reply: value => { parts = value; },
             bot: {
                 online: new Map([['steve', { name: 'steve', uuid }]]),
-                ipLookup: { ipFor: () => '10.0.0.9' }
+                ipLookup: { ipFor: () => '10.0.0.9' },
+                versions: { versionFor: name => (name === 'steve' ? { version: '26.3', at: Date.now() } : null) }
             }
         };
 
@@ -897,6 +899,7 @@ async function main() {
         const name = parts.find(part => part && part.text === 'steve');
         assert.deepStrictEqual(name.click, { action: 'suggest_command', value: 'v\\alts steve' },
             'clicking the name runs alts for it');
+        assert.match(name.hover.text, /version: 26\.3/, 'the hover carries the last known version');
 
         const id = parts.find(part => part && part.text === uuid);
         assert.deepStrictEqual(id.click, { action: 'copy_to_clipboard', value: uuid }, 'clicking the uuid copies it');
@@ -2284,7 +2287,10 @@ async function main() {
         const columns = table =>
             scratch.db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
 
-        assert.deepStrictEqual(columns('players'), ['name_key', 'name', 'uuid', 'first_seen', 'last_seen']);
+        assert.deepStrictEqual(
+            columns('players'),
+            ['name_key', 'name', 'uuid', 'first_seen', 'last_seen', 'version', 'version_at']
+        );
         assert.deepStrictEqual(columns('users'), ['name_key', 'name', 'uuid', 'level', 'granted_by', 'granted_at']);
 
         // Addresses are stored because /alts cannot work without them.
@@ -2322,6 +2328,8 @@ async function main() {
         const migrated = new Store(file).open();
         const columns = migrated.db.prepare('PRAGMA table_info(players)').all().map(row => row.name);
         assert.ok(!columns.includes('messages'), 'message counter should be gone');
+        assert.ok(columns.includes('version'), 'the last known version column should be added');
+        assert.ok(columns.includes('version_at'));
         const steve = migrated.getPlayer('Steve');
         assert.strictEqual(steve.first_seen, 111);
         assert.strictEqual(steve.last_seen, 222);
@@ -2331,6 +2339,19 @@ async function main() {
             .map(row => row.name);
         assert.ok(!tables.includes('meta'), 'meta table should be dropped');
         migrated.close();
+    });
+
+    await check('a last known version is kept on the player row', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-version-'));
+        const scratch = new Store(path.join(dir, 'vbot.sqlite')).open();
+
+        const first = scratch.recordVersion('Steve', '26.3');
+        assert.strictEqual(first.version, '26.3');
+        assert.ok(first.version_at > 0, 'it carries when it was seen');
+
+        scratch.recordVersion('Steve', '1.21.4');
+        assert.strictEqual(scratch.getPlayer('Steve').version, '1.21.4', 'the newest replaces the last');
+        scratch.close();
     });
 
     await check('store checkpoints the WAL before the database is committed', () => {
@@ -2621,7 +2642,7 @@ async function main() {
         }).loadAll();
 
         assert.strictEqual(degreeRegistry.matchPrefix('\u00b0help'), '\u00b0');
-        assert.strictEqual(degreeRegistry.matchPrefix('v\\help'), 'v\\');
+        assert.strictEqual(degreeRegistry.matchPrefix('\\help'), '\\');
         assert.strictEqual(degreeRegistry.matchPrefix('!help'), null);
     });
 
@@ -3205,6 +3226,51 @@ async function main() {
         lookup.destroy();
     });
 
+    await check('viaver gives each player a last known version', async () => {
+        const { parseViaver, VersionLookup } = require('../src/versions');
+
+        const parker = '[Parker2991] UUID: 8575b68d-a667-3877-97b1-3cd78404bc9d9\n' +
+            'Client protocol: 26.3 Server protocol: 26.3 Client: false';
+        assert.deepStrictEqual(parseViaver(parker, 'Parker2991'), {
+            name: 'Parker2991',
+            client: '26.3',
+            server: '26.3',
+            viaClient: 'false'
+        });
+
+        const both = `${parker}\n[znq] UUID: 276f92b0-2e1d-8d9d-9d0d-3531bb562bf0\n` +
+            'Client protocol: 1.21.4 Server protocol: 26.3 Client: false';
+        assert.strictEqual(parseViaver(both, 'znq').client, '1.21.4', 'the name above the line picks it');
+        assert.strictEqual(parseViaver(both, 'nobody'), null, 'never another player\'s line');
+        assert.strictEqual(parseViaver('nothing here', 'Steve'), null);
+
+        const asked = [];
+        const versionBot = {
+            state: 'ready',
+            online: new Map([['steve', { name: 'Steve' }]]),
+            core: {
+                ready: true,
+                runTracked: async (command, options) => {
+                    asked.push({ command, options });
+                    return 'Client protocol: 26.3 Server protocol: 26.3 Client: false';
+                }
+            }
+        };
+        const versions = new VersionLookup({ bot: versionBot, store, config: { gapMs: 5 }, logger });
+
+        assert.strictEqual(versions.queue('Steve'), true);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        assert.deepStrictEqual(asked.map(entry => entry.command), ['viaver player Steve']);
+        assert.strictEqual(store.getPlayer('Steve').version, '26.3', 'the version is kept on the player row');
+        assert.strictEqual(versions.versionFor('Steve').version, '26.3');
+
+        assert.strictEqual(versions.rescan(), 1, 'an online player is looked at again');
+        await new Promise(resolve => setTimeout(resolve, 80));
+        assert.strictEqual(asked.length, 2, 'a rescan asks even though the cache has an answer');
+
+        versions.destroy();
+    });
+
     await check('every online player is rescanned on an interval', async () => {
         const { IpLookup } = require('../src/iplookup');
         const asked = [];
@@ -3299,6 +3365,41 @@ async function main() {
 
         // Public, like the reference bot's: anyone may look at a cluster.
         assert.match(await run('<Unranked> v:alts Steve'), /alts Steve — 1 address/);
+    });
+
+    await check('alts shows the last known version on a name hover', async () => {
+        const alts = require('../src/commands/alts');
+
+        store.recordIp('VersionGuy', '10.9.9.9');
+        store.recordIp('VersionAlt', '10.9.9.9');
+        store.recordVersion('VersionGuy', '26.3');
+        store.recordVersion('VersionAlt', '1.21.4');
+
+        let parts = null;
+        const ctx = {
+            args: ['VersionGuy'],
+            prefix: 'v\\',
+            store,
+            reply: value => { parts = value; },
+            bot: {
+                online: new Map(),
+                ipLookup: { usable: false, historyFor: name => store.ipsFor(name) },
+                versions: {
+                    versionFor: name => {
+                        const player = store.getPlayer(name);
+                        return player?.version ? { version: player.version, at: player.version_at } : null;
+                    }
+                }
+            }
+        };
+
+        await alts.execute(ctx);
+
+        const guy = parts.find(part => part && part.text === 'VersionGuy');
+        assert.match(guy.hover.text, /last known version: 26\.3/);
+        const alt = parts.find(part => part && part.text === 'VersionAlt');
+        assert.match(alt.hover.text, /last known version: 1\.21\.4/, 'the other account shows its own');
+        assert.doesNotMatch(alt.hover.text, /26\.3/);
     });
 
     await check('the tab list tracks who is online, not just who was seen', () => {
@@ -4249,10 +4350,10 @@ async function main() {
         assert.match(sent[1], /^\/?tp Unranked \d+ 100 \d+$/);
     });
 
-    await check('kick repeats the payload four times a second until the player is gone', async () => {
+    await check('kick repeats the title and subtitle ten times a second until the player is gone', async () => {
         const kick = require('../src/commands/kick');
-        const { KICK_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../src/crash');
-        assert.strictEqual(KICK_INTERVAL_MS, 250, 'four times a second');
+        const { TITLE_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../src/crash');
+        assert.strictEqual(TITLE_INTERVAL_MS, 100, 'ten times a second');
         assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors by default');
 
         const sent = [];
@@ -4271,14 +4372,17 @@ async function main() {
 
         await kick.execute(ctx);
         const payload = targetedTitle('Steve');
-        assert.strictEqual(sent[0], payload, 'the first packet goes out at once');
-        assert.ok(payload.startsWith('title Steve title '), 'a title, aimed at that player alone');
-        assert.strictEqual(
-            payload.split('{"selector":"@e[limit=100]"}').length - 1,
-            TITLE_DEFAULT,
-            'nine hundred selectors in the component');
-        assert.ok(sent[0].length <= 32000, 'and it still fits one core command');
-        assert.strictEqual(sent.length, 2, 'and the reply follows it');
+        assert.deepStrictEqual(sent.slice(0, 2), payload, 'the title and subtitle go out at once');
+        assert.ok(payload[0].startsWith('title Steve title '), 'a title, aimed at that player alone');
+        assert.ok(payload[1].startsWith('title Steve subtitle '), 'and a subtitle with it');
+        for (const command of payload) {
+            assert.strictEqual(
+                command.split('{"selector":"@e[limit=100]"}').length - 1,
+                TITLE_DEFAULT,
+                'nine hundred selectors in each component');
+            assert.ok(command.length <= 32000, 'and each still fits one core command');
+        }
+        assert.strictEqual(sent.length, 3, 'and the reply follows them');
         assert.ok(bot.kickLoops instanceof Map, 'the repeat is tracked on the bot');
         assert.strictEqual(bot.kickLoops.size, 1);
 
@@ -4287,24 +4391,82 @@ async function main() {
         // is the selector count and the name in front of it is the target.
         await kick.execute({ ...ctx, args: ['Steve', '1200'] });
         assert.strictEqual(bot.kickLoops.size, 1, 'one timer per name');
+        const bigger = targetedTitle('Steve', 1200);
         assert.strictEqual(
-            sent.filter(command => command === targetedTitle('Steve', 1200)).length,
-            1,
+            sent.filter(command => bigger.includes(command)).length,
+            bigger.length,
             'a count argument changes the selector stack');
+        assert.ok(
+            bigger[0].split('{"selector":"@e[limit=100]"}').length - 1 > TITLE_DEFAULT,
+            'and it asks for more selectors');
 
         // Back to the default payload for the rest of the checks.
         await kick.execute(ctx);
 
-        const sentBefore = sent.filter(command => command === payload).length;
-        await new Promise(resolve => setTimeout(resolve, KICK_INTERVAL_MS + 80));
-        const sentDuring = sent.filter(command => command === payload).length;
-        assert.ok(sentDuring > sentBefore, 'it repeats while they are online');
+        const sentBefore = sent.filter(command => payload.includes(command)).length;
+        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 80));
+        const sentDuring = sent.filter(command => payload.includes(command)).length;
+        assert.ok(sentDuring > sentBefore + 1, 'it repeats both while they are online');
 
         bot.online.delete('steve');
-        await new Promise(resolve => setTimeout(resolve, KICK_INTERVAL_MS + 80));
-        const sentAfter = sent.filter(command => command === payload).length;
+        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 80));
+        const sentAfter = sent.filter(command => payload.includes(command)).length;
         assert.strictEqual(sentAfter, sentDuring, 'nothing is sent once they left');
         assert.strictEqual(bot.kickLoops.size, 0, 'the loop clears itself');
+    });
+
+    await check('kick accepts @a, @p and @r selectors', async () => {
+        const kick = require('../src/commands/kick');
+        const { targetedTitle } = require('../src/crash');
+
+        const sent = [];
+        const bot = {
+            server: { username: 'vbot' },
+            online: new Map([
+                ['steve', { name: 'Steve' }],
+                ['alex', { name: 'Alex' }]
+            ]),
+            core: {}
+        };
+        const run = args => kick.execute({
+            args,
+            prefix: 'v:',
+            bot,
+            run: command => (sent.push(command), true),
+            reply: text => (sent.push(`[reply] ${text}`), text)
+        });
+        const stopLoops = () => {
+            for (const timer of bot.kickLoops?.values() ?? []) clearInterval(timer);
+            bot.kickLoops?.clear();
+        };
+
+        await run(['@a']);
+        assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@a'), 'the whole list is titled by selector');
+        assert.strictEqual(bot.kickLoops.size, 1, 'one loop for @a, not one per player');
+        assert.match(sent[2], /@a/);
+
+        stopLoops();
+        sent.length = 0;
+
+        await run(['@p']);
+        assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@p'), '@p is left to the server');
+        assert.strictEqual(sent.length, 3);
+        assert.match(sent[2], /@p \(Steve\)/);
+
+        stopLoops();
+        sent.length = 0;
+
+        await run(['@r']);
+        assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@r'), '@r is left to the server');
+        assert.match(sent[2], /@r \((Steve|Alex)\)/);
+
+        stopLoops();
+        sent.length = 0;
+
+        // Selector arguments belong to the server, so they go through as written.
+        await run(['@a[distance=..5]']);
+        assert.ok(sent[0].startsWith('title @a[distance=..5] title '), 'arguments go through');
+        stopLoops();
     });
 
     store.close();

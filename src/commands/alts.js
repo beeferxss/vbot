@@ -29,11 +29,25 @@ function onlineNames(bot) {
     return new Set(bot.online instanceof Map ? bot.online.keys() : []);
 }
 
-function account({ name, prefix }) {
+// The hover a name carries: what clicking does, and the last version the player
+// joined on. The version comes from the player row, so it is there for someone
+// who is offline too.
+function nameHover(bot, name, hint) {
+    const known = bot?.versions?.versionFor?.(name);
+    const lines = [hint];
+    if (known?.version) {
+        lines.push(known.at
+            ? `last known version: ${known.version} (${timeAgo(known.at)})`
+            : `last known version: ${known.version}`);
+    }
+    return { text: lines.join('\n') };
+}
+
+function account({ name, prefix, bot }) {
     return {
         text: name,
         color: 'white',
-        hover: { text: `Show the addresses of ${name}` },
+        hover: nameHover(bot, name, `Show the addresses of ${name}`),
         click: { action: 'suggest_command', value: `${prefix}alts ${name}` }
     };
 }
@@ -45,7 +59,7 @@ async function byPlayer(ctx, player) {
 
     const parts = [
         { text: 'alts ', color: 'gold' },
-        { text: player, color: 'white' },
+        { text: player, color: 'white', hover: nameHover(ctx.bot, player, `Show the addresses of ${player}`) },
         { text: ips.length ? ` — ${ips.length} address(es)` : ' — no addresses stored yet', color: 'gray' }
     ];
 
@@ -83,7 +97,7 @@ async function byPlayer(ctx, player) {
         parts.push({ text: ' — also ', color: 'gray' });
         others.slice(0, MAX_ALTS).forEach((other, index) => {
             if (index) parts.push({ text: ', ', color: 'dark_gray' });
-            const entryPart = account({ name: other.name, prefix: ctx.prefix });
+            const entryPart = account({ name: other.name, prefix: ctx.prefix, bot: ctx.bot });
             if (online.has(other.name.toLowerCase())) {
                 entryPart.color = ONLINE_COLOUR;
                 entryPart.hover.text += ' (online)';
@@ -111,7 +125,7 @@ function byIp(ctx, ip) {
         const name = row.name || '(unknown)';
         const isOnline = online.has(name.toLowerCase());
         parts.push({ text: '\n' });
-        parts.push(account({ name, prefix: ctx.prefix }));
+        parts.push(account({ name, prefix: ctx.prefix, bot: ctx.bot }));
         parts.push({ text: ` ${timeAgo(row.last_seen)}`, color: 'dark_gray' });
         if (isOnline) parts.push({ text: ' (online)', color: ONLINE_COLOUR });
     }

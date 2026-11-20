@@ -12,7 +12,9 @@ CREATE TABLE IF NOT EXISTS players (
     name       TEXT NOT NULL,
     uuid       TEXT,
     first_seen INTEGER NOT NULL,
-    last_seen  INTEGER NOT NULL
+    last_seen  INTEGER NOT NULL,
+    version    TEXT,
+    version_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS player_ips (
@@ -63,8 +65,9 @@ class Store {
 
     // Older databases carried a message counter on players and a meta table.
     // Neither is persisted any more, so drop them instead of carrying dead data.
+    // The version columns are newer than the rest, so they are added in place.
     migrate() {
-        const columns = this.db.prepare('PRAGMA table_info(players)').all().map(row => row.name);
+        let columns = this.columns('players');
 
         if (columns.includes('messages')) {
             this.db.exec('BEGIN');
@@ -87,9 +90,17 @@ class Store {
                 this.db.exec('ROLLBACK');
                 throw error;
             }
+            columns = this.columns('players');
         }
 
         this.db.exec('DROP TABLE IF EXISTS meta');
+
+        if (!columns.includes('version')) this.db.exec('ALTER TABLE players ADD COLUMN version TEXT');
+        if (!columns.includes('version_at')) this.db.exec('ALTER TABLE players ADD COLUMN version_at INTEGER');
+    }
+
+    columns(table) {
+        return this.db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
     }
 
     // Folds the write-ahead log into the main file so a copy of the database
@@ -196,6 +207,20 @@ class Store {
             SELECT ip, first_seen, last_seen FROM player_ips
             WHERE name_key = ? ORDER BY last_seen DESC
         `).all(key);
+    }
+
+    // The version a player last joined on, read from viaver. The row is created
+    // here if nothing else has seen them yet, and the time is what `alts` shows
+    // as "last known".
+    recordVersion(name, version) {
+        const key = Store.key(name);
+        const text = String(version || '').trim();
+        if (!key || !text) return null;
+
+        if (!this.getPlayer(name)) this.touchPlayer(name);
+        this.db.prepare('UPDATE players SET version = ?, version_at = ? WHERE name_key = ?')
+            .run(text, Date.now(), key);
+        return this.getPlayer(name);
     }
 
     playersForIp(ip) {

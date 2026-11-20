@@ -52,7 +52,7 @@ function defaults() {
             }
         },
         bot: {
-            prefixes: ['v\\', '\u00b0'],
+            prefixes: ['\\', '\u00b0'],
             // In-game commands are started by one of `prefixes` above. Off: no
             // chat line can run a command, and only Discord (and the console)
             // reach the bot.
@@ -96,6 +96,19 @@ function defaults() {
             gapMs: 1200,
             timeoutMs: 3000,
             rescanMs: 60000
+        },
+        // The version each player joins on, read from ViaVersion: it is not in
+        // the tab list, so `/viaver player <name>` is asked and the answer is
+        // kept as the last version seen. `alts` shows it on the name's hover.
+        versions: {
+            enabled: true,
+            command: 'viaver player {player}',
+            // A version is re-read while the player is online, and the join
+            // lookup is skipped when the stored one is this fresh.
+            cacheMs: 600000,
+            gapMs: 1500,
+            timeoutMs: 4000,
+            rescanMs: 300000
         },
         selfCare: {
             enabled: true,

@@ -1,14 +1,19 @@
 'use strict';
 
-const { KICK_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../crash');
+const { TITLE_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../crash');
 const { cleanName, isUuid, isIp } = require('../filter');
 
-// One target, four shapes. `re:` or `/.../` is a regex over the online names;
+// One target, five shapes. `@a`, `@p` and `@r` are selectors, handed to the
+// server as they are; `re:` or `/.../` is a regex over the online names;
 // anything that parses as a UUID or an address is matched as one; the rest is a
 // name. The command never asks the caller which kind they meant.
 function parseTarget(raw) {
     const text = String(raw || '').trim();
     if (!text) return null;
+    // Kept for the command itself; the arguments in brackets are the server's to
+    // apply, so they are passed through untouched.
+    const selector = text.match(/^@([aprs])(\[[^\]]*\])?$/i);
+    if (selector) return { kind: 'selector', value: `@${selector[1].toLowerCase()}${selector[2] || ''}` };
     if (text.startsWith('re:')) {
         try { return { kind: 'regex', value: new RegExp(text.slice(3), 'i') }; }
         catch { return null; }
@@ -38,15 +43,37 @@ function matches(bot, player, spec) {
     return false;
 }
 
-// Starts the title payload on this player and keeps it going four times a second
-// until their name is no longer in `online`: they left, the client dropped, or
-// the server timed them out. The loop lives on the bot, so a second `kick` for
-// the same name replaces the timer instead of leaving two of them writing, and it
-// clears itself on the first turn that finds the player gone.
-function keepKicking(ctx, player, count) {
+// @p means nearest to the command, which runs at the core; the bot stands in
+// that area, so its position picks the same player. Without positions to compare
+// the first one in the list stands in.
+function nearestPlayer(bot, players) {
+    const at = bot.position;
+    if (at && Number.isFinite(at.x) && Number.isFinite(at.z)) {
+        let best = null;
+        let bestDistance = Infinity;
+        for (const player of players) {
+            const position = player?.position;
+            if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.z)) continue;
+            const distance = (position.x - at.x) ** 2 + (position.z - at.z) ** 2;
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = player;
+            }
+        }
+        if (best) return best;
+    }
+    return players[0];
+}
+
+// Starts the title payload on `target` and keeps it going ten times a second
+// until the loop says the target is gone: they left, the client dropped, or the
+// server timed them out. The payload is two commands, the title and its
+// subtitle, so each turn writes both. The loop lives on the bot under `key`, so a
+// second `kick` for the same target replaces the timer instead of leaving two of
+// them writing, and it clears itself on the first turn that finds it gone.
+function keepKicking(ctx, target, key, stillOnline, count) {
     const bot = ctx.bot;
-    const key = cleanName(player.name);
-    const payload = targetedTitle(player.name, count);
+    const payload = targetedTitle(target, count);
     if (!payload) return false;
     const loops = bot.kickLoops instanceof Map
         ? bot.kickLoops
@@ -54,21 +81,21 @@ function keepKicking(ctx, player, count) {
 
     clearInterval(loops.get(key));
 
-    const online = () => !bot.destroyed && bot.online instanceof Map && bot.online.has(key);
+    const online = () => !bot.destroyed && stillOnline();
     const send = () => {
         if (!online()) {
             clearInterval(loops.get(key));
             loops.delete(key);
             return;
         }
-        ctx.run(payload);
+        for (const command of payload) ctx.run(command);
     };
 
-    // The first packet goes out with the command; only a delivery that the core
-    // accepted starts the repeat.
-    if (!online() || !ctx.run(payload)) return false;
+    // The first pair goes out with the command; only a delivery that the core
+    // accepted, both commands of it, starts the repeat.
+    if (!online() || !payload.every(command => ctx.run(command))) return false;
 
-    const timer = setInterval(send, KICK_INTERVAL_MS);
+    const timer = setInterval(send, TITLE_INTERVAL_MS);
     timer.unref?.();
     loops.set(key, timer);
     return true;
@@ -78,9 +105,9 @@ module.exports = {
     name: 'kick',
     aliases: ['k'],
     description:
-        `Disconnect one online player by name, IP, UUID or regex: a stack of ${TITLE_DEFAULT} entity selectors in a title aimed at them, ` +
-        'repeated four times a second until they leave',
-    usage: 'kick <player|ip|uuid|re:pattern|/pattern/> [count]',
+        `Disconnect one online player by name, IP, UUID, regex or selector: a stack of ${TITLE_DEFAULT} entity selectors ` +
+        'in a title and its subtitle, aimed at them, repeated ten times a second until they leave',
+    usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count]',
     level: 'trusted',
 
     async execute(ctx) {
@@ -104,23 +131,52 @@ module.exports = {
 
         const online = bot.online instanceof Map ? [...bot.online.values()] : [];
         const self = cleanName(bot.server?.username);
-        const hits = online.filter(player =>
-            player?.name &&
-            cleanName(player.name) !== self &&
-            matches(bot, player, spec));
+        const everyone = online.filter(player => player?.name && cleanName(player.name) !== self);
 
+        // A selector stays a selector in the command, so the server resolves it
+        // on every tick; the list only decides when the repeat starts and stops.
+        // `@a` is one loop for the whole list, and @p/@r run until the player
+        // they picked at the start is gone.
+        if (spec.kind === 'selector') {
+            if (!everyone.length) return ctx.reply(`Nobody online matches ${spec.value}.`);
+
+            const base = spec.value.slice(0, 2);
+            const sent = [];
+            if (base === '@a') {
+                const stillOnline = () => bot.online instanceof Map &&
+                    [...bot.online.keys()].some(key => key !== self);
+                if (keepKicking(ctx, spec.value, spec.value, stillOnline, count)) sent.push(spec.value);
+            } else {
+                const player = base === '@p'
+                    ? nearestPlayer(bot, everyone)
+                    : everyone[Math.floor(Math.random() * everyone.length)];
+                const key = cleanName(player.name);
+                const stillOnline = () => bot.online instanceof Map && bot.online.has(key);
+                if (keepKicking(ctx, spec.value, key, stillOnline, count)) {
+                    sent.push(`${spec.value} (${player.name})`);
+                }
+            }
+            if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
+            return ctx.reply(
+                `Titling ${sent.length} x${count} ten times a second until they leave: ${sent.join(', ')}`
+            );
+        }
+
+        const hits = everyone.filter(player => matches(bot, player, spec));
         if (!hits.length) return ctx.reply(`Nobody online matches ${raw}.`);
 
-        // Four packets a second per match, until they are gone: a client that
+        // Ten pairs a second per match, until they are gone: a client that
         // reconnects before the server's timeout runs out is still the same name
-        // in `online`, so the next packet is already on its way.
+        // in `online`, so the next pair is already on its way.
         const sent = [];
         for (const player of hits) {
-            if (keepKicking(ctx, player, count)) sent.push(player.name);
+            const key = cleanName(player.name);
+            const stillOnline = () => bot.online instanceof Map && bot.online.has(key);
+            if (keepKicking(ctx, player.name, key, stillOnline, count)) sent.push(player.name);
         }
         if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
         return ctx.reply(
-            `Titling ${sent.length} x${count} four times a second until they leave: ${sent.join(', ')}`
+            `Titling ${sent.length} x${count} ten times a second until they leave: ${sent.join(', ')}`
         );
     }
 };
