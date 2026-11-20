@@ -11,6 +11,11 @@ const MAX_BURST_WRITES = 128;
 const BURST_INTERVAL_MS = 100;
 const TELLRAW_INTERVAL_MS = 250;
 const TELLRAW_LENGTH = 120;
+// The disconnect takes the server's own timeout to land, and a client that
+// reconnects inside that window is still on the list. Re-sending the one packet
+// every few seconds keeps a punished player off for as long as they keep coming
+// back, without touching the write budget the burst already uses.
+const KICK_INTERVAL_MS = 3000;
 
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
@@ -46,7 +51,7 @@ class Whitelist {
 
     stopEntry(entry) {
         if (!entry) return;
-        for (const timer of [entry.timer, entry.tellrawTimer, entry.titleTimer]) {
+        for (const timer of [entry.timer, entry.tellrawTimer, entry.titleTimer, entry.kickTimer]) {
             if (timer) clearInterval(timer);
         }
         if (entry.timeout) clearTimeout(entry.timeout);
@@ -100,6 +105,51 @@ class Whitelist {
         all[id] = data;
         this.saveAll(all);
         return data;
+    }
+
+    // Same shape as updateServerData, once per configured server. `--all` on an
+    // add writes the entry into every server the bot is on.
+    updateEveryServerData(updateFn) {
+        const all = this.loadAll();
+        for (const id of this.serverIds()) {
+            if (!all[id] || typeof all[id] !== 'object') {
+                all[id] = { enabled: false, players: [], uuids: [], ips: [] };
+            }
+            const data = all[id];
+            if (typeof data.enabled !== 'boolean') data.enabled = false;
+            if (!Array.isArray(data.players)) data.players = [];
+            if (!Array.isArray(data.uuids)) data.uuids = [];
+            if (!Array.isArray(data.ips)) data.ips = [];
+            updateFn(data);
+            all[id] = data;
+        }
+        this.saveAll(all);
+    }
+
+    // The servers this bot is configured for; the current one is always in the
+    // set, so a store with no config still gets its own entry.
+    serverIds() {
+        const ids = new Set();
+        const servers = this.bot?.config?.minecraft?.servers;
+        if (Array.isArray(servers)) {
+            for (const server of servers) if (server?.id) ids.add(String(server.id));
+        }
+        if (this.bot?.id) ids.add(String(this.bot.id));
+        return [...ids];
+    }
+
+    // Every address the bot has seen this name on, for `add-ip <name>`.
+    ipsFor(name) {
+        const out = new Set();
+        const key = String(name || '').trim();
+        if (!key) return [];
+        const seen = this.bot.online instanceof Map ? this.bot.online.get(cleanName(key)) : null;
+        if (seen?.ip) out.add(String(seen.ip).trim());
+        const stored = this.bot.store?.ipsFor?.(key) || [];
+        for (const row of stored) if (row?.ip) out.add(String(row.ip).trim());
+        const current = this.bot.ipLookup?.ipFor?.(key);
+        if (current) out.add(String(current).trim());
+        return [...out].filter(Boolean);
     }
 
     playerIps(player) {
@@ -256,9 +306,21 @@ class Whitelist {
         const tellrawTimer = setInterval(spamTellraw, TELLRAW_INTERVAL_MS);
         tellrawTimer.unref?.();
         spamTellraw();
-        // One packet, aimed at this player alone: the rest of the list never
-        // sees it, and the server drops that connection when it stops answering.
-        this.run(targetedKick(name));
+
+        // One packet, aimed at this player alone, re-sent while they stay on the
+        // list: a rejoin inside the server's timeout window is still the same
+        // name in `online`, so the next packet is already queued. Off the burst,
+        // so it costs one write every few seconds instead of a slot per turn.
+        const kickNow = () => {
+            if (stopped) return;
+            const cur = current();
+            if (!cur || !this.shouldPunish(cur)) { stop(); return; }
+            this.run(targetedKick(name));
+        };
+        const kickTimer = setInterval(kickNow, KICK_INTERVAL_MS);
+        kickTimer.unref?.();
+        kickNow();
+
         // The mute goes once: the plugin keeps it, so asking again on a timer only
         // repeats "already muted" in the server's log.
         this.run(`mute ${name} whitelist`);
@@ -267,7 +329,7 @@ class Whitelist {
         }, 1500);
         titleTimer.unref?.();
         this.applyTitle(name);
-        this.punishTimers.set(key, { timeout: null, tellrawTimer, titleTimer });
+        this.punishTimers.set(key, { timeout: null, tellrawTimer, titleTimer, kickTimer });
         cycle();
         return true;
     }
@@ -286,17 +348,32 @@ class Whitelist {
     on() { this.updateServerData(d => { d.enabled = true; }); this.sweep(); return true; }
     off() { this.updateServerData(d => { d.enabled = false; }); return true; }
 
-    addPlayer(name) { const n = cleanName(name); if (!n) return false; let ok = false; this.updateServerData(d => { if (!d.players.includes(n)) { d.players.push(n); ok = true; } }); if (ok) this.sweep(); return ok; }
+    addPlayer(name, all = false) {
+        const n = cleanName(name); if (!n) return false; let ok = false;
+        const apply = d => { if (!d.players.includes(n)) { d.players.push(n); ok = true; } };
+        if (all) this.updateEveryServerData(apply); else this.updateServerData(apply);
+        if (ok) this.sweep(); return ok;
+    }
     removePlayer(name) { const n = cleanName(name); let ok = false; this.updateServerData(d => { const i = d.players.indexOf(n); if (i !== -1) { d.players.splice(i, 1); ok = true; } }); return ok; }
     listPlayers() { return this.getServerData().players; }
     clearPlayers() { this.updateServerData(d => { d.players = []; }); return true; }
 
-    addUUID(uuid) { uuid = String(uuid || '').trim(); if (!isUuid(uuid)) return false; let ok = false; this.updateServerData(d => { if (!d.uuids.includes(uuid)) { d.uuids.push(uuid); ok = true; } }); if (ok) this.sweep(); return ok; }
+    addUUID(uuid, all = false) {
+        uuid = String(uuid || '').trim(); if (!isUuid(uuid)) return false; let ok = false;
+        const apply = d => { if (!d.uuids.includes(uuid)) { d.uuids.push(uuid); ok = true; } };
+        if (all) this.updateEveryServerData(apply); else this.updateServerData(apply);
+        if (ok) this.sweep(); return ok;
+    }
     removeUUID(uuid) { uuid = String(uuid || '').trim(); let ok = false; this.updateServerData(d => { const i = d.uuids.indexOf(uuid); if (i !== -1) { d.uuids.splice(i, 1); ok = true; } }); return ok; }
     listUUIDs() { return this.getServerData().uuids; }
     clearUUIDs() { this.updateServerData(d => { d.uuids = []; }); return true; }
 
-    addIP(ip) { ip = String(ip || '').trim(); if (!ip) return false; let ok = false; this.updateServerData(d => { if (!d.ips.includes(ip)) { d.ips.push(ip); ok = true; } }); if (ok) this.sweep(); return ok; }
+    addIP(ip, all = false) {
+        ip = String(ip || '').trim(); if (!ip) return false; let ok = false;
+        const apply = d => { if (!d.ips.includes(ip)) { d.ips.push(ip); ok = true; } };
+        if (all) this.updateEveryServerData(apply); else this.updateServerData(apply);
+        if (ok) this.sweep(); return ok;
+    }
     removeIP(ip) { ip = String(ip || '').trim(); let ok = false; this.updateServerData(d => { const i = d.ips.indexOf(ip); if (i !== -1) { d.ips.splice(i, 1); ok = true; } }); return ok; }
     listIPs() { return this.getServerData().ips; }
     clearIPs() { this.updateServerData(d => { d.ips = []; }); return true; }

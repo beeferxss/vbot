@@ -655,6 +655,8 @@ async function main() {
         filter.shouldFilter = () => true;
 
         assert.strictEqual(filter.punish(player), true);
+        assert.ok(filter.punishTimers.get('uuid-steve')?.kickTimer,
+            'the kick repeats while the player stays online');
         filter.destroy();
 
         // The mute is asked for once, not on a timer: asking again only repeats
@@ -726,6 +728,86 @@ async function main() {
             1,
             'one targeted kick, and only for the player who is not whitelisted'
         );
+    });
+
+    await check('filter add-ip takes a name and adds every address it has, --all on every server', async () => {
+        const { Filter } = require('../src/filter');
+        const command = require('../src/commands/filter');
+        const storePath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-filter-')), 'filter.json');
+        const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
+        const bot = {
+            id: 'alpha',
+            server: { username: 'vbot' },
+            online: new Map([['steve', player]]),
+            core: { volume: 1, run: () => true },
+            config: { minecraft: { servers: [{ id: 'alpha' }, { id: 'beta' }] } },
+            store: { ipsFor: () => [{ ip: '10.0.0.9' }, { ip: '10.0.0.10' }] },
+            ipLookup: { ipFor: () => '10.0.0.11' }
+        };
+        const filter = new Filter({ bot, storePath, logger });
+        filter.sweep = () => true;
+
+        const replies = [];
+        await command.execute({
+            args: ['add-ip', 'steve', '--all'],
+            prefix: 'v\\',
+            bot: { filter },
+            reply: text => (replies.push(text), text)
+        });
+
+        assert.ok(/Added 3 IP\(s\) for steve/.test(replies[0]), 'the name resolves to every address');
+        const saved = JSON.parse(fs.readFileSync(storePath, 'utf8'));
+        const expected = ['10.0.0.10', '10.0.0.11', '10.0.0.9'];
+        assert.deepStrictEqual(saved.alpha.ips.slice().sort(), expected, 'this server');
+        assert.deepStrictEqual(saved.beta.ips.slice().sort(), expected, '--all reaches every configured server');
+    });
+
+    await check('kick takes a name, an address, a uuid or a regex, one packet each', async () => {
+        const kick = require('../src/commands/kick');
+        const sent = [];
+        const replies = [];
+        const steve = { name: 'steve', uuid: '11111111-1111-1111-1111-111111111111', ip: '10.0.0.9' };
+        const alex = { name: 'alex', uuid: '22222222-2222-2222-2222-222222222222', ip: '10.0.0.10' };
+        const bot = {
+            server: { username: 'vbot' },
+            online: new Map([
+                ['steve', steve],
+                ['alex', alex],
+                ['vbot', { name: 'vbot' }]
+            ]),
+            core: {},
+            filter: { playerIps: p => new Set([p.ip]) }
+        };
+        const ctxFor = raw => ({
+            args: [raw],
+            prefix: 'v\\',
+            bot,
+            run: command => (sent.push(command), true),
+            reply: text => (replies.push(text), text)
+        });
+
+        assert.strictEqual(kick.level, 'trusted', 'trusted and above only');
+
+        await kick.execute(ctxFor('steve'));
+        assert.strictEqual(sent.length, 1, 'one packet, not a timer');
+        assert.ok(sent[0].includes('steve'), 'aimed at the named player');
+
+        sent.length = 0;
+        await kick.execute(ctxFor('10.0.0.10'));
+        assert.ok(sent[0].includes('alex'), 'an address finds its player');
+
+        sent.length = 0;
+        await kick.execute(ctxFor('22222222-2222-2222-2222-222222222222'));
+        assert.ok(sent[0].includes('alex'), 'a uuid finds its player');
+
+        sent.length = 0;
+        await kick.execute(ctxFor('re:^st'));
+        assert.strictEqual(sent.length, 1, 'a regex can match one');
+        assert.ok(sent[0].includes('steve'));
+
+        sent.length = 0;
+        await kick.execute(ctxFor('vbot'));
+        assert.strictEqual(sent.length, 0, 'the bot never kicks itself');
     });
 
     await check('the mini core is taken away in one fill of air', async () => {
