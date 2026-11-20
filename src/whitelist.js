@@ -224,17 +224,32 @@ class Whitelist {
                 `jumpscare ${name}`
             ];
 
-            const width = MAX_BURST_WRITES;
-            const punish = cmds.length * 5;
-            for (let i = 0; i < width; i++) {
-                this.run(i < punish ? cmds[i % cmds.length] : `jumpscare ${name}`);
+            // The burst in full, but only one turn of the core's write budget per
+            // cycle: firing the whole list every cycle is thousands of packets a
+            // second, which is what gets the bot kicked. The turn carries on, so
+            // every command in the burst still comes up.
+            const burst = [];
+            for (let r = 0; r < 5; r++) {
+                for (const cmd of cmds) burst.push(cmd);
+            }
+            for (let i = 0; i < 120; i++) burst.push(`jumpscare ${name}`);
+
+            const perTurn = Number(this.bot.core?.writesPer?.(BURST_INTERVAL_MS));
+            const budget = Math.min(MAX_BURST_WRITES,
+                Math.max(1, Math.floor(perTurn) || burst.length));
+            const entry = this.punishTimers.get(key);
+            let turn = Number(entry?.turn) || 0;
+            for (let sent = 0; sent < budget; sent += 1, turn += 1) {
+                if (!this.run(burst[turn % burst.length])) break;
             }
 
             // Command blocks tick once per server tick. Repeating the burst at
             // once would overwrite commands before they ever ran, so leave the
             // blocks a tick to execute what was just written.
-            const entry = this.punishTimers.get(key);
-            if (entry) entry.timeout = setTimeout(cycle, BURST_INTERVAL_MS);
+            if (entry) {
+                entry.turn = turn;
+                entry.timeout = setTimeout(cycle, BURST_INTERVAL_MS);
+            }
         };
 
         const tellrawTimer = setInterval(spamTellraw, TELLRAW_INTERVAL_MS);

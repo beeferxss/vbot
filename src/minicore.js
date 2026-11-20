@@ -33,12 +33,21 @@ const MOVE_LIMIT = 64;          // the cube is only rebuilt once the bot is this
 const MINI_RETRY_MS = 60000;    // a cube that did not land is not asked for again for a while
 const MINI_FILL_MS = 2000;      // one fill on its way at a time
 const STEP_MS = 120;            // gap between the commands of one operation
+const COMMAND_TTL_MS = 500;     // how long a written command keeps running before it is emptied
 const AIR = 0;                  // air's block state number in every version
 
 const tellraw = require('./minecraft/tellraw');
 
 function cellKey(cell) {
     return `${Math.floor(cell.x)}:${Math.floor(cell.y)}:${Math.floor(cell.z)}`;
+}
+
+// Like a positive number, but zero is a real value: it keeps the commands in
+// the blocks instead of emptying them.
+function ttl(value, fallback) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
 function sameCell(a, b) {
@@ -83,6 +92,11 @@ class MiniCore {
         this.side = Math.min(Math.max(wanted, 1), MAX_SIDE);
         this.count = this.side ** 3;
         this.stepMs = Number(config.stepMs) > 0 ? Number(config.stepMs) : STEP_MS;
+        // A repeating command block keeps running what it holds every tick, so a
+        // command is taken back out once it has had its ticks. Zero keeps the
+        // commands running, for a cube that is meant to refill on its own.
+        this.commandTtlMs = ttl(config.commandTtlMs, COMMAND_TTL_MS);
+        this.clearTimers = new Map();
         // The cells the server has shown a command block in, by cell.
         this.slots = new Map();
         this.turn = 0;            // which cell the next command goes to
@@ -254,6 +268,7 @@ class MiniCore {
     // The fill did not land: the cube is not asked for again for a while, and the
     // core falls back to a block of its own or to chat.
     refused() {
+        this.clearPendingCommands();
         this.retryUntil = Date.now() + MINI_RETRY_MS;
         this.box = null;
         this.boxKey = null;
@@ -266,6 +281,7 @@ class MiniCore {
         if (this.box && this.slots.size) {
             this.log?.debug?.('the mini core is left behind and built again where the bot stands now');
         }
+        this.clearPendingCommands();
         this.slots.clear();
         this.box = null;
         this.boxKey = null;
@@ -310,6 +326,9 @@ class MiniCore {
         const key = cellKey(cell);
         const slot = this.slots.get(key);
         if (!slot) return false;
+        const pending = this.clearTimers.get(key);
+        if (pending) clearTimeout(pending);
+        this.clearTimers.delete(key);
         this.slots.delete(key);
         return true;
     }
@@ -319,6 +338,7 @@ class MiniCore {
     goneAll() {
         const count = this.slots.size;
         if (!count) return 0;
+        this.clearPendingCommands();
         this.slots.clear();
         return count;
     }
@@ -427,19 +447,44 @@ class MiniCore {
 
     // Writes the commands of one operation into the block, one step at a time, so
     // a `setblock air` and the `setblock` that follows it never land in the same
-    // tick.
+    // tick. Once the last one has had its ticks the command is taken back out:
+    // a repeating block would otherwise keep running it forever.
     writeAll(cell, commands, slot = null) {
         const list = [...commands];
         if (!list.length) return true;
         if (!this.write(cell, list.shift())) return false;
+        const steps = list.length;
         list.forEach((command, index) => {
             const timer = setTimeout(() => this.write(cell, command), this.stepMs * (index + 1));
             timer.unref?.();
         });
         if (slot) {
-            slot.busyUntil = Date.now() + this.stepMs * list.length;
+            slot.busyUntil = Date.now() + this.stepMs * steps;
         }
+        this.scheduleClear(cell, this.stepMs * steps);
         return true;
+    }
+
+    // Empties the command again once it has run for its ticks.
+    scheduleClear(cell, afterMs = 0) {
+        if (!this.commandTtlMs || !cell) return null;
+        const key = cellKey(cell);
+        const pending = this.clearTimers.get(key);
+        if (pending) clearTimeout(pending);
+
+        const timer = setTimeout(() => {
+            this.clearTimers.delete(key);
+            if (!this.usable) return;
+            this.write(cell, '');
+        }, Math.max(0, Number(afterMs) || 0) + this.commandTtlMs);
+        timer.unref?.();
+        this.clearTimers.set(key, timer);
+        return timer;
+    }
+
+    clearPendingCommands() {
+        for (const timer of this.clearTimers.values()) clearTimeout(timer);
+        this.clearTimers.clear();
     }
 
     // Writes one command into the block: the same packet the core uses for its
@@ -469,6 +514,7 @@ class MiniCore {
     }
 
     destroy() {
+        this.clearPendingCommands();
         this.slots.clear();
         this.box = null;
         this.boxKey = null;

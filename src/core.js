@@ -54,6 +54,18 @@ const DAMAGE_DELAY_MS = 250;
 const REFILL_SETTLE_MS = 200;
 const WATCHDOG_MS = 1000;
 const DEFAULT_SPAM_MS = 150;
+// The server kicks a client that sends too many packets. A punishment is a
+// write into every block of the core, hundreds of them in one tick, so command
+// writes are paced instead: a small burst at once, then this many per second.
+// The writes that do not fit are simply retried by the caller's next cycle.
+const DEFAULT_WRITE_RATE = 100;
+const DEFAULT_WRITE_BURST = 20;
+// A written command is not spent after one run: a repeating command block keeps
+// running what it holds every tick. The command is therefore taken back out of
+// the block again after it has had its ticks, or a burst leaves the whole core
+// running forever - which melts the server and gets the bot kicked. Zero turns
+// the clean-up off for a core that is meant to keep its commands.
+const DEFAULT_COMMAND_TTL_MS = 500;
 // A fill's own block updates can arrive a second or more later, and a refill
 // twice in a row is never useful, so both the grace and the rate limit are
 // generous. Without them one slow update looped refills forever.
@@ -147,6 +159,15 @@ class Core {
         this.spamTimer = null;
         this.spam = null;
         this.spamMs = positive(this.config.refill?.spamMs, DEFAULT_SPAM_MS);
+        // Command-block writes are paced so a burst never reaches the server as
+        // thousands of packets at once.
+        this.writeRate = positive(this.config.refill?.writeRate, DEFAULT_WRITE_RATE);
+        this.writeBurst = Math.max(1, positive(this.config.refill?.writeBurst, DEFAULT_WRITE_BURST));
+        this.writeTokens = this.writeBurst;
+        this.writeAt = Date.now();
+        // cell -> timer that empties the command again once it has run.
+        this.commandTtlMs = ttl(this.config.refill?.commandTtlMs, DEFAULT_COMMAND_TTL_MS);
+        this.clearTimers = new Map();
         // Where a join teleport takes the bot before anything is built.
         this.joinRtp = null;
         const rtp = this.config.joinRtp;
@@ -347,6 +368,8 @@ class Core {
         this.ready = false;
         this.ownChanges.clear();
         this.blocks.clear();
+        // Timers for cells of the area being left behind mean nothing here.
+        this.clearPendingCommands();
         this.log.debug(`core area ${this.origin.x} ${this.origin.y} ${this.origin.z}`);
         return true;
     }
@@ -510,7 +533,10 @@ class Core {
                 mode: this.blockMode(),
                 flags: 0b101
             }));
-            if (ok) return cell;
+            if (ok) {
+                this.scheduleClear(cell);
+                return cell;
+            }
             this.ownChanges.delete(keyOf(cell));
             this.blocks.set(keyOf(cell), false);
         }
@@ -606,6 +632,64 @@ class Core {
         return timer;
     }
 
+    // Whether one command-block write may go out now. A burst is allowed, then
+    // writes trickle at `writeRate` per second: a punishment loop that writes
+    // every block of the core cannot turn into thousands of packets per tick,
+    // which is what a server kicks for. A caller that gets false just tries
+    // again on its next cycle, so nothing queues up.
+    takeWrite() {
+        const now = Date.now();
+        const elapsed = Math.max(0, now - this.writeAt);
+        this.writeAt = now;
+        this.writeTokens = Math.min(
+            this.writeBurst,
+            this.writeTokens + (elapsed * this.writeRate) / 1000
+        );
+        if (this.writeTokens < 1) return false;
+        this.writeTokens -= 1;
+        return true;
+    }
+
+    // How many writes fit in a window of this size, so a caller that runs on a
+    // timer can ask for a turn's worth instead of firing a whole core's worth
+    // and having most of it refused.
+    writesPer(windowMs = 50) {
+        const ms = Math.max(0, Number(windowMs) || 0);
+        return Math.max(1, Math.floor((this.writeRate * ms) / 1000));
+    }
+
+    // A repeating command block runs the command it holds every tick, so the
+    // command has to be taken back out once it has had its ticks. This is what
+    // keeps a burst from turning the core into a permanent command loop: the
+    // packets stop when the burst does, and nothing keeps running behind it.
+    scheduleClear(cell) {
+        if (!this.commandTtlMs || !cell) return null;
+        const key = keyOf(cell);
+        const pending = this.clearTimers.get(key);
+        if (pending) clearTimeout(pending);
+
+        const timer = setTimeout(() => {
+            this.clearTimers.delete(key);
+            if (!this.enabled || this.bot?.destroyed) return;
+            // The cell stays a command block; only its command goes. A write that
+            // cannot go out is harmless - the next connection rebuilds the area.
+            this.bot.write?.('update_command_block', {
+                location: cell,
+                command: '',
+                mode: this.blockMode(),
+                flags: 0b101
+            });
+        }, this.commandTtlMs);
+        timer.unref?.();
+        this.clearTimers.set(key, timer);
+        return timer;
+    }
+
+    clearPendingCommands() {
+        for (const timer of this.clearTimers.values()) clearTimeout(timer);
+        this.clearTimers.clear();
+    }
+
     // Spreads commands over the cube instead of hammering one block, so a
     // command never lands in the block that is currently executing. Destroyed
     // blocks are skipped, so a command is never written into nothing.
@@ -621,9 +705,11 @@ class Core {
         if (this.origin.x === null && !this.reset()) return null;
 
         if (!this.areaLoaded()) {
-            this.logEvery('core-unloaded', 15000, 'warn',
-                'core area is not loaded around the bot (teleported away?); commands will retry once it is');
-            return null;
+            // A teleport (the join, a punishment, a world change) leaves the area
+            // behind. Move the grid to where the bot stands and rebuild there
+            // instead of refusing every command for the rest of the session; the
+            // command goes into the new area on this same turn.
+            if (!this.relocate('unloaded area')) return null;
         }
 
         // If we somehow lost track of liveness after the core has been
@@ -636,6 +722,12 @@ class Core {
 
         // The mini core never takes a command: it is there to run the fills that
         // rebuild the main area, nothing else.
+
+        if (!this.takeWrite()) {
+            this.logEvery('core-paced', 5000, 'debug',
+                'core writes are paced to keep the bot connected; retrying shortly');
+            return null;
+        }
 
         for (let attempt = 0; attempt < this.volume; attempt++) {
             const cell = this.nextCell();
@@ -663,6 +755,7 @@ class Core {
                 // Treat unknown blocks as alive once a write succeeds.
                 this.blocks.set(keyOf(cell), true);
                 this.lastLocation = cell;
+                this.scheduleClear(cell);
                 this.refillAfterRun();
                 return cell;
             }
@@ -1159,6 +1252,25 @@ class Core {
         return dropped > 0;
     }
 
+    // The bot is somewhere other than the area the core was built in: a join, a
+    // punishment teleport, a world change. The grid moves to where it stands now
+    // and the old area is forgotten, so the core heals instead of being stuck
+    // "unloaded" for the whole session.
+    relocate(reason = 'moved') {
+        if (!this.enabled || this.joining || this.bot?.destroyed) return false;
+        const position = this.bot?.position;
+        if (!position || !Number.isFinite(position.x) || !Number.isFinite(position.z)) return false;
+
+        const before = this.origin.x === null ? null : `${this.origin.x}:${this.origin.z}`;
+        if (!this.reset(position)) return false;
+        if (before === `${this.origin.x}:${this.origin.z}`) return false;
+
+        this.logEvery('core-moved', 10000, 'debug',
+            `core moved to ${this.origin.x} ${this.origin.z} (${reason})`);
+        this.refill('moved', { force: true });
+        return true;
+    }
+
     // Command blocks only tick in loaded chunks. If the bot has been teleported
     // (or the server dropped the chunk) a write is silently lost, so it is
     // better to refuse and let the caller retry.
@@ -1333,6 +1445,10 @@ class Core {
         this.watchdog = setInterval(() => {
             if (!this.enabled || this.refilling || this.spamTimer) return;
             if (this.origin.x === null && !this.reset()) return;
+            if (!this.areaLoaded()) {
+                this.relocate('watchdog');
+                return;
+            }
 
             // Blocks that were taken away without a block update are only found by
             // asking, so one of them is asked about on every tick that is due.
@@ -1455,12 +1571,20 @@ class Core {
             this.watchdog = null;
         }
         this.ownChanges.clear();
+        // Nothing may write after the connection that could carry it is gone.
+        this.clearPendingCommands();
         // A reconnect rebuilds the core: the old blocks may be gone, and a stale
-        // "alive" map would send commands into nothing.
+        // "alive" map would send commands into nothing. The grid starts over from
+        // the position the next connection reports, never the one left behind.
         this.blocks.clear();
         this.everReady = false;
         this.ready = false;
         this.refilling = false;
+        this.origin = { x: null, y: this.y, z: null };
+        this.bounds = { x: null, y: this.y + this.size - 1, z: null };
+        this.cursor = 0;
+        this.writeTokens = this.writeBurst;
+        this.writeAt = Date.now();
         this.lastFill = null;
         this.fillFailures = 0;
     }
@@ -1580,6 +1704,13 @@ function isAir(packet) {
 function positive(value, fallback) {
     const number = Math.floor(Number(value));
     return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+// Like positive(), but zero is a real value: it turns the clean-up off.
+function ttl(value, fallback) {
+    if (value === undefined || value === null || value === '') return fallback;
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number >= 0 ? number : fallback;
 }
 
 module.exports = { Core };
