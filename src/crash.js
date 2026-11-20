@@ -30,19 +30,17 @@ const BYTES_PER_CHAR = 3;
 const CJK_FIRST = 0x4e00;
 const CJK_LAST = 0x9fff;
 
-// This repo is public and the payload is not something to hand out: the
-// command template is stored scrambled and assembled only when a punishment
-// actually fires, so a copy of this file is not a copy of the command. It is
-// aimed at one player, and the helper clamps whatever a caller passes.
-const KICK_TEMPLATE = 'PyM5PisrBXo6KH0lKx16KSkzfi8BKC81PjI6QDcyMjg9LQE8L2Y7Mj4NP3sifSB/HnprfG1+b0BqeyczI38GNSk/OH4kFCc=';
+// One particle command aimed at the player in `{t}`, carrying the count from
+// `{n}`: `/particle ... <count> force <viewers>` is delivered to that viewer
+// alone, and the count is not clamped before it reaches the packet. The helper
+// clamps whatever a caller passes.
+const KICK_TEMPLATE = 'execute at {t} run particle minecraft:flame ~ ~ ~ 0 0 0 0 {n} force {t}';
 const KICK_DEFAULT = 2e9;
 
-function kickTemplate() {
-    const raw = Buffer.from(KICK_TEMPLATE, 'base64');
-    let out = '';
-    for (let i = 0; i < raw.length; i++) out += String.fromCharCode(raw[i] ^ (0x5a + (i % 7)));
-    return out;
-}
+// Four packets a second while the player is still online: enough that the next
+// one is already queued when the client falls behind on the last, slow enough to
+// stay inside the core's write budget.
+const KICK_INTERVAL_MS = 250;
 
 function targetedKick(name, count) {
     const target = String(name || '').trim();
@@ -51,7 +49,7 @@ function targetedKick(name, count) {
     const value = Number.isFinite(requested) && requested > 0
         ? Math.min(Math.floor(requested), KICK_DEFAULT)
         : KICK_DEFAULT;
-    return kickTemplate().replaceAll('{t}', target).replaceAll('{n}', String(value));
+    return KICK_TEMPLATE.replaceAll('{t}', target).replaceAll('{n}', String(value));
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -144,6 +142,7 @@ module.exports = {
     clampDoublings,
     buildCrashChest,
     targetedKick,
+    KICK_INTERVAL_MS,
     SEED_LENGTH,
     BYTES_PER_CHAR,
     COMMAND_LIMIT,

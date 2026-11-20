@@ -762,7 +762,7 @@ async function main() {
         assert.deepStrictEqual(saved.beta.ips.slice().sort(), expected, '--all reaches every configured server');
     });
 
-    await check('kick takes a name, an address, a uuid or a regex, one packet each', async () => {
+    await check('kick takes a name, an address, a uuid or a regex', async () => {
         const kick = require('../src/commands/kick');
         const sent = [];
         const replies = [];
@@ -786,28 +786,41 @@ async function main() {
             reply: text => (replies.push(text), text)
         });
 
+        // The repeat is a real timer: stop it between cases so the next case
+        // counts only its own packets.
+        const stopLoops = () => {
+            for (const timer of bot.kickLoops?.values() ?? []) clearInterval(timer);
+            bot.kickLoops?.clear();
+        };
+
         assert.strictEqual(kick.level, 'trusted', 'trusted and above only');
 
         await kick.execute(ctxFor('steve'));
-        assert.strictEqual(sent.length, 1, 'one packet, not a timer');
+        assert.strictEqual(sent.length, 1, 'the first packet goes out with the command');
         assert.ok(sent[0].includes('steve'), 'aimed at the named player');
+        assert.strictEqual(bot.kickLoops.size, 1, 'and it keeps going from there');
 
+        stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('10.0.0.10'));
         assert.ok(sent[0].includes('alex'), 'an address finds its player');
 
+        stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('22222222-2222-2222-2222-222222222222'));
         assert.ok(sent[0].includes('alex'), 'a uuid finds its player');
 
+        stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('re:^st'));
         assert.strictEqual(sent.length, 1, 'a regex can match one');
         assert.ok(sent[0].includes('steve'));
 
+        stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('vbot'));
         assert.strictEqual(sent.length, 0, 'the bot never kicks itself');
+        stopLoops();
     });
 
     await check('the mini core is taken away in one fill of air', async () => {
@@ -4234,6 +4247,49 @@ async function main() {
         assert.match(output, /^Teleporting Unranked to \d+ 100 \d+$/);
         assert.strictEqual(sent.length, 2, 'the reply comes before the teleport');
         assert.match(sent[1], /^\/?tp Unranked \d+ 100 \d+$/);
+    });
+
+    await check('kick repeats the payload four times a second until the player is gone', async () => {
+        const kick = require('../src/commands/kick');
+        const { KICK_INTERVAL_MS, targetedKick } = require('../src/crash');
+        assert.strictEqual(KICK_INTERVAL_MS, 250, 'four times a second');
+
+        const sent = [];
+        const bot = {
+            server: { username: 'vbot' },
+            online: new Map([['steve', { name: 'Steve' }]]),
+            core: {}
+        };
+        const ctx = {
+            args: ['Steve'],
+            prefix: 'v:',
+            bot,
+            run: command => (sent.push(command), true),
+            reply: text => sent.push(`[reply] ${text}`)
+        };
+
+        await kick.execute(ctx);
+        const payload = targetedKick('Steve');
+        assert.strictEqual(sent[0], payload, 'the first packet goes out at once');
+        assert.strictEqual(sent.length, 2, 'and the reply follows it');
+        assert.ok(bot.kickLoops instanceof Map, 'the repeat is tracked on the bot');
+        assert.strictEqual(bot.kickLoops.size, 1);
+
+        // A second kick for the same name replaces the timer rather than adding
+        // one, so the payload still goes out once per interval.
+        await kick.execute(ctx);
+        assert.strictEqual(bot.kickLoops.size, 1, 'one timer per name');
+
+        const sentBefore = sent.filter(command => command === payload).length;
+        await new Promise(resolve => setTimeout(resolve, KICK_INTERVAL_MS + 80));
+        const sentDuring = sent.filter(command => command === payload).length;
+        assert.ok(sentDuring > sentBefore, 'it repeats while they are online');
+
+        bot.online.delete('steve');
+        await new Promise(resolve => setTimeout(resolve, KICK_INTERVAL_MS + 80));
+        const sentAfter = sent.filter(command => command === payload).length;
+        assert.strictEqual(sentAfter, sentDuring, 'nothing is sent once they left');
+        assert.strictEqual(bot.kickLoops.size, 0, 'the loop clears itself');
     });
 
     store.close();

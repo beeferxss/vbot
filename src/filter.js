@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { targetedKick } = require('./crash');
+const { KICK_INTERVAL_MS, targetedKick } = require('./crash');
 
 // A punishment burst is bounded on purpose. One write per block of the core
 // sounds cheap until the core is 16^3, where it is 4096 packets every burst: the
@@ -17,7 +17,6 @@ const TELLRAW_LENGTH = 120;
 // reconnects inside that window is still on the list. Re-sending the one packet
 // every few seconds keeps a filtered player off for as long as they keep coming
 // back, without touching the write budget the burst already uses.
-const KICK_INTERVAL_MS = 3000;
 
 function cleanName(name) {
     return String(name || '').replace(/\u00a7[0-9a-fk-or]/gi, '').trim().toLowerCase();
@@ -348,11 +347,11 @@ class Filter {
         tellrawTimer.unref?.();
         spamTellraw();
 
-        // The kick is one packet for this player alone, and it is re-sent for as
-        // long as they stay on the list: a client that reconnects before the
-        // server's timeout runs out is still the same name in `online`, so the
-        // next packet is already on its way. It runs off the burst, so it costs
-        // one write every few seconds instead of a slot in every turn.
+        // The kick is one packet for this player alone, and it is re-sent four
+        // times a second for as long as they stay on the list: a client that
+        // reconnects before the server's timeout runs out is still the same name
+        // in `online`, so the next packet is already on its way. It runs off the
+        // burst, so it costs one write per interval instead of a slot per turn.
         const kickNow = () => {
             if (stopped) return;
             const cur = current();
