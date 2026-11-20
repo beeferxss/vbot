@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS player_ips (
     PRIMARY KEY (name_key, ip)
 );
 
+CREATE TABLE IF NOT EXISTS mails (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    to_key    TEXT NOT NULL,
+    from_name TEXT NOT NULL,
+    text      TEXT NOT NULL,
+    sent_at   INTEGER NOT NULL,
+    read_at   INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS users (
     name_key   TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -40,6 +49,7 @@ const INDEXES = `
 CREATE INDEX IF NOT EXISTS idx_players_uuid ON players(uuid);
 CREATE INDEX IF NOT EXISTS idx_users_uuid ON users(uuid);
 CREATE INDEX IF NOT EXISTS idx_player_ips_ip ON player_ips(ip);
+CREATE INDEX IF NOT EXISTS idx_mails_to ON mails(to_key);
 `;
 
 const PLAYERS_COLUMNS = 'name_key, name, uuid, first_seen, last_seen';
@@ -231,6 +241,54 @@ class Store {
             FROM player_ips i LEFT JOIN players p ON p.name_key = i.name_key
             WHERE i.ip = ? ORDER BY i.last_seen DESC
         `).all(address);
+    }
+
+    // Offline messages. A mailbox follows the name, like ranks do: sending to
+    // "steve" reaches the player who joins as Steve, and the sender's spelling
+    // is kept for the line the mailbox prints.
+    sendMail(from, to, text) {
+        const key = Store.key(to);
+        const message = String(text || '').trim();
+        if (!key || !message) return null;
+
+        const fromName = String(from || '').trim() || 'console';
+        const info = this.db.prepare(`
+            INSERT INTO mails (to_key, from_name, text, sent_at, read_at)
+            VALUES (?, ?, ?, ?, NULL)
+        `).run(key, fromName, message, Date.now());
+        return { id: Number(info.lastInsertRowid), from: fromName, text: message };
+    }
+
+    mailsFor(name) {
+        const key = Store.key(name);
+        if (!key) return [];
+        return this.db.prepare('SELECT * FROM mails WHERE to_key = ? ORDER BY sent_at').all(key);
+    }
+
+    unreadMailCount(name) {
+        const key = Store.key(name);
+        if (!key) return 0;
+        const row = this.db.prepare('SELECT COUNT(*) AS count FROM mails WHERE to_key = ? AND read_at IS NULL').get(key);
+        return Number(row?.count || 0);
+    }
+
+    markMailsRead(name) {
+        const key = Store.key(name);
+        if (!key) return 0;
+        const info = this.db
+            .prepare('UPDATE mails SET read_at = ? WHERE to_key = ? AND read_at IS NULL')
+            .run(Date.now(), key);
+        return Number(info.changes || 0);
+    }
+
+    // Read mail is the default to clear; `all` takes the unread as well.
+    clearMails(name, { all = false } = {}) {
+        const key = Store.key(name);
+        if (!key) return 0;
+        const info = all
+            ? this.db.prepare('DELETE FROM mails WHERE to_key = ?').run(key)
+            : this.db.prepare('DELETE FROM mails WHERE to_key = ? AND read_at IS NOT NULL').run(key);
+        return Number(info.changes || 0);
     }
 
     getUser(name) {

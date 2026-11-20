@@ -824,6 +824,53 @@ async function main() {
         stopLoops();
     });
 
+    await check('supercb expands one command per online player', async () => {
+        const supercb = require('../src/commands/supercb');
+        const sent = [];
+        const replies = [];
+        const bot = {
+            server: { username: 'vbot' },
+            online: new Map([
+                ['steve', { name: 'Steve', uuid: 'uuid-steve' }],
+                ['alex', { name: 'Alex', uuid: 'uuid-alex' }],
+                ['vbot', { name: 'vbot' }]
+            ]),
+            uuidFor: name => `offline-${name.toLowerCase()}`
+        };
+        const ctxFor = raw => ({
+            args: raw.split(' '),
+            argString: raw,
+            prefix: 'v\\',
+            bot,
+            run: command => (sent.push(command), true),
+            reply: value => (replies.push(value), value)
+        });
+
+        await supercb.execute(ctxFor('effect give $name minecraft:speed 5 1'));
+        assert.deepStrictEqual(sent, [
+            'effect give Steve minecraft:speed 5 1',
+            'effect give Alex minecraft:speed 5 1'
+        ], 'one per player, never the bot');
+
+        sent.length = 0;
+        await supercb.execute(ctxFor('$regex:^a say hi $uuid'));
+        assert.deepStrictEqual(sent, ['say hi uuid-alex'], 'the regex picks who runs it');
+
+        sent.length = 0;
+        await supercb.execute(ctxFor('$regex:^z say hi'));
+        assert.strictEqual(sent.length, 0);
+        assert.match(replies.at(-1), /Nobody online matches/);
+
+        sent.length = 0;
+        await supercb.execute(ctxFor('$regex:[ say hi'));
+        assert.strictEqual(sent.length, 0);
+        assert.match(replies.at(-1), /Invalid regex/);
+
+        sent.length = 0;
+        await supercb.execute(ctxFor('say hello'));
+        assert.deepStrictEqual(sent, ['say hello'], 'no placeholders runs it once');
+    });
+
     await check('the mini core is taken away in one fill of air', async () => {
         const { MiniCore } = require('../src/minicore');
         const commands = [];
@@ -2299,12 +2346,18 @@ async function main() {
             ['name_key', 'ip', 'uuid', 'first_seen', 'last_seen']
         );
 
+        // Mail is offline messages, so it owns its own table.
+        assert.deepStrictEqual(
+            columns('mails'),
+            ['id', 'to_key', 'from_name', 'text', 'sent_at', 'read_at']
+        );
+
         const tables = scratch.db
             .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
             .all()
             .map(row => row.name)
             .filter(name => !name.startsWith('sqlite_'));
-        assert.deepStrictEqual(tables.sort(), ['player_ips', 'players', 'users'], `unexpected tables: ${tables}`);
+        assert.deepStrictEqual(tables.sort(), ['mails', 'player_ips', 'players', 'users'], `unexpected tables: ${tables}`);
         scratch.close();
     });
 
@@ -2351,6 +2404,42 @@ async function main() {
 
         scratch.recordVersion('Steve', '1.21.4');
         assert.strictEqual(scratch.getPlayer('Steve').version, '1.21.4', 'the newest replaces the last');
+        scratch.close();
+    });
+
+    await check('mail is stored per player, read once and cleared', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-mail-'));
+        const scratch = new Store(path.join(dir, 'vbot.sqlite')).open();
+        const mail = require('../src/commands/mail');
+
+        const replies = [];
+        const ctxFor = (who, args) => ({
+            args,
+            prefix: 'v\\',
+            username: who,
+            store: scratch,
+            reply: value => (replies.push(value), value)
+        });
+
+        await mail.execute(ctxFor('Steve', ['send', 'Alex', 'meet at spawn']));
+        assert.match(replies.at(-1), /Message sent to Alex/);
+        assert.strictEqual(scratch.unreadMailCount('alex'), 1, 'the mailbox follows the name');
+        assert.deepStrictEqual(scratch.mailsFor('Alex').map(entry => entry.text), ['meet at spawn']);
+
+        await mail.execute(ctxFor('Alex', ['read']));
+        assert.match(replies.at(-1), /Steve/);
+        assert.match(replies.at(-1), /meet at spawn/);
+        assert.strictEqual(scratch.unreadMailCount('Alex'), 0, 'reading marks the mail read');
+
+        await mail.execute(ctxFor('Alex', ['list']));
+        assert.match(replies.at(-1), /read \|/);
+
+        await mail.execute(ctxFor('Alex', ['clear']));
+        assert.match(replies.at(-1), /Cleared 1 read message/);
+        assert.deepStrictEqual(scratch.mailsFor('Alex'), []);
+
+        await mail.execute(ctxFor('Alex', []));
+        assert.match(replies.at(-1), /No unread messages/);
         scratch.close();
     });
 

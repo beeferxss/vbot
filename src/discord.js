@@ -647,6 +647,64 @@ class DiscordBridge {
                 .addStringOption(option => option
                     .setName('server')
                     .setDescription('Server id (default: the one linked to this channel)')
+                    .setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('kick')
+                .setDescription('Disconnect one online player with the crash title')
+                .addStringOption(option => option
+                    .setName('player')
+                    .setDescription('Name, uuid, ip, regex or @a/@p/@r')
+                    .setRequired(true))
+                .addIntegerOption(option => option
+                    .setName('count')
+                    .setDescription('Selectors per title (default 900)')
+                    .setRequired(false)
+                    .setMinValue(1))
+                .addStringOption(option => option
+                    .setName('server')
+                    .setDescription('Server id (default: the one linked to this channel)')
+                    .setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('seen')
+                .setDescription('When a player was last seen')
+                .addStringOption(option => option.setName('player').setDescription('Minecraft name').setRequired(true))
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('uuid')
+                .setDescription('Known and offline-mode UUIDs for a player')
+                .addStringOption(option => option.setName('player').setDescription('Minecraft name (default: you)').setRequired(false))
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('identity')
+                .setDescription('What the bot knows about a player, plus their live state')
+                .addStringOption(option => option.setName('player').setDescription('Minecraft name (default: you)').setRequired(false))
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('whoami')
+                .setDescription('Your own record and rank')
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('whereami')
+                .setDescription('Where the bot is standing')
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('uptime')
+                .setDescription('How long the bot has been connected')
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('info')
+                .setDescription('Bot and host system information')
+                .addStringOption(option => option.setName('server').setDescription('Server id (default: this channel)').setRequired(false)),
+            new SlashCommandBuilder()
+                .setName('supercb')
+                .setDescription('Run one command per online player with $name, $uuid or $regex:pattern')
+                .addStringOption(option => option
+                    .setName('command')
+                    .setDescription('For example: effect give $name minecraft:speed 10 1')
+                    .setRequired(true))
+                .addStringOption(option => option
+                    .setName('server')
+                    .setDescription('Server id (default: the one linked to this channel)')
                     .setRequired(false))
         ].map(command => command.toJSON());
 
@@ -1067,6 +1125,40 @@ class DiscordBridge {
             return interaction.reply({
                 embeds: [this.resultEmbed({
                     label: `sudo · ${String(player).trim() || 'player'}`,
+                    bot,
+                    text: result.text,
+                    ok: result.ok,
+                    by: interaction.user?.username
+                })],
+                flags: ephemeral
+            });
+        }
+
+        // The in-game commands that read the same from here: their arguments are
+        // the words a player would type, and executeCommand checks the caller's
+        // Discord rank before anything runs.
+        const textCommands = new Set([
+            'kick', 'seen', 'uuid', 'identity', 'whoami', 'whereami', 'uptime', 'info', 'supercb'
+        ]);
+        if (textCommands.has(interaction.commandName)) {
+            const options = new Map((interaction.options?.data || []).map(option => [option.name, option.value]));
+            const wanted = options.get('server') || null;
+            const bot = this.botFor(interaction, wanted);
+            if (!bot) return reply(this.missingBot(interaction, wanted));
+
+            const text = [
+                interaction.commandName,
+                options.get('player'),
+                options.get('command'),
+                options.get('count')
+            ]
+                .filter(value => value !== null && value !== undefined && String(value).trim() !== '')
+                .join(' ');
+
+            const result = await this.executeCommand(bot, interaction.member, text);
+            return interaction.reply({
+                embeds: [this.resultEmbed({
+                    label: interaction.commandName,
                     bot,
                     text: result.text,
                     ok: result.ok,

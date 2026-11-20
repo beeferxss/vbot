@@ -99,6 +99,24 @@
         "channelId": "1573404385537433671",
         "randomName": true,
         "auth": "offline"
+      },
+      {
+        "id": "opt",
+        "enabled": true,
+        "host": "kbm.optmstc.dev",
+        "port": 25565,
+        "channelId": "1573441377612730398",
+        "randomName": true,
+        "auth": "offline"
+      },
+      {
+        "id": "ptheboom",
+        "enabled": true,
+        "host": "orders-panic.gl.at.ply.gg",
+        "port": 25565,
+        "channelId": "1573441545036890173",
+        "randomName": true,
+        "auth": "offline"
       }
     ],
     "connection": {
