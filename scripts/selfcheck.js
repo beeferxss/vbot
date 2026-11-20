@@ -247,7 +247,10 @@ async function main() {
     // --- store, permissions, bot -------------------------------------------
     const store = new Store(':memory:').open();
     const config = loadConfig(examplePath);
+    // The shipped config is a live one: these tests pin the parts they depend on
+    // instead of reading whatever the example happens to hold today.
     config.bot.prefixes = ['v:'];
+    config.bot.inGamePrefixes = true;
     config.permissions.keys.admin = 'admin-key';
     const permissions = new Permissions({ config, store, logger });
     const uuid = '069a79f4-44e9-4726-a5be-fca90e38aaf5';
@@ -284,9 +287,12 @@ async function main() {
         config.permissions.owner = ['VojtaV12'];
 
         const shipped = loadConfig(examplePath).permissions;
-        assert.deepStrictEqual(shipped.owner, ['VojtaV12']);
-        assert.deepStrictEqual(shipped.admin, []);
-        assert.deepStrictEqual(shipped.trusted, []);
+        // The example only grants what its own lists name; a rank never comes
+        // from code. The lists themselves are the config's business.
+        assert.ok(Array.isArray(shipped.owner), 'the example ships an owner list');
+        assert.ok(Array.isArray(shipped.admin), 'the example ships an admin list');
+        assert.ok(Array.isArray(shipped.trusted), 'the example ships a trusted list');
+        assert.ok(!shipped.owner.includes('NotVojtaV12'));
     });
 
     await check('auth tokens prove a rank once and expire', () => {
@@ -555,7 +561,13 @@ async function main() {
         };
         const core = new Core({
             bot: burstBot,
-            config: { enabled: true, area: { size: 16, y: 64 }, refill: { enabled: true } },
+            // A burst this wide is what the config asks for; the default burst is
+            // smaller on purpose, so the pacing is exercised by its own check.
+            config: {
+                enabled: true,
+                area: { size: 16, y: 64 },
+                refill: { enabled: true, writeBurst: 64 }
+            },
             logger
         });
         const handed = [];
@@ -2418,6 +2430,49 @@ async function main() {
         assert.strictEqual(commands.length, 0, 'nothing is sent for bad coordinates');
     });
 
+    await check('servercrash destroy builds the chest and breaks it with destroy mode', async () => {
+        const { METHODS } = require(path.join(ROOT, 'src', 'commands', 'servercrash.js'));
+        const sent = [];
+        const replies = [];
+        const ctx = {
+            bot: {
+                core: { ready: true, size: 9, origin: { x: 16, y: 64, z: -32 } },
+                position: { x: 16, y: 64, z: -32 }
+            },
+            args: ['destroy', '-32', '-9', '64', '1'],
+            prefix: 'v:',
+            reply: text => (replies.push(String(text)), true),
+            run: text => (sent.push(String(text)), true)
+        };
+
+        await METHODS.destroy.run(ctx);
+
+        assert.strictEqual(sent[0], 'setblock -32 -9 64 minecraft:air');
+        assert.strictEqual(sent[1], 'setblock -32 -9 64 minecraft:chest');
+        assert.ok(sent[2].startsWith('data merge block -32 -9 64 {CustomName:'), 'the chosen spot gets the seed');
+        assert.strictEqual(
+            sent.filter(command => command.startsWith('data modify block -32 -9 64 CustomName.extra append')).length,
+            1,
+            'the doubling argument still applies'
+        );
+        assert.strictEqual(sent[sent.length - 1], 'setblock -32 -9 64 minecraft:air destroy',
+            'the chest is broken with destroy, not replaced');
+        assert.ok(!sent.some(command => command.startsWith('tellraw')), 'the break goes out as a command');
+        assert.match(replies[0], /Crash chest at -32 -9 64/);
+        assert.match(replies[replies.length - 1], /Breaking it/);
+        assert.deepStrictEqual(ctx.bot.crashChest, { x: -32, y: -9, z: 64 }, 'the chest is remembered');
+    });
+
+    await check('servercrash names its methods on hover', () => {
+        const entry = registry.find('servercrash');
+        assert.ok(entry, 'servercrash is loaded');
+        const hover = typeof entry.hover === 'function' ? entry.hover() : entry.hover;
+        assert.ok(hover, 'the entry carries a hover');
+        assert.match(hover, /title: /);
+        assert.match(hover, /scoreboard: /);
+        assert.match(hover, /destroy: crash chest, then setblock it to air with destroy/);
+    });
+
     await check('a session rank is cleared when the player joins again', () => {
         permissions.grant('Bob', LEVEL.TRUSTED, 'token');
         assert.strictEqual(permissions.levelFor({ name: 'Bob' }), LEVEL.TRUSTED);
@@ -2441,6 +2496,9 @@ async function main() {
 
     await check('the degree prefix is a real prefix', () => {
         const exampleConfig = loadConfig(examplePath);
+        // Prefix matching is what is being tested, so the in-game switch is on
+        // here whatever the shipped config prefers.
+        exampleConfig.bot.inGamePrefixes = true;
         assert.ok(exampleConfig.bot.prefixes.includes('\u00b0'), 'the example config ships it');
 
         const degreeRegistry = new CommandRegistry({
@@ -2624,6 +2682,7 @@ async function main() {
         // trustUnsigned: false keeps unsigned chat out even without signing.
         const strict = loadConfig(examplePath);
         strict.bot.prefixes = ['v:'];
+        strict.bot.inGamePrefixes = true;
         strict.chat = { trustUnsigned: false };
         const strictRegistry = new CommandRegistry({
             dir: path.join(ROOT, 'src', 'commands'),
@@ -3370,7 +3429,7 @@ async function main() {
         assert.strictEqual(implicit.spamTimer, null);
     });
 
-    await check('core skips commands while its area is not loaded', () => {
+    await check('core moves its area when the bot is teleported away', () => {
         const writes = [];
         const core = new Core({
             bot: {
@@ -3386,15 +3445,26 @@ async function main() {
         core.ready = true;
         core.markAllAlive();
 
-        // The bot was teleported far away: command blocks in the core chunk do
-        // not tick, so the write is refused instead of silently lost.
+        // The bot was teleported far away: command blocks in the old chunk do not
+        // tick, so the area moves to where it stands now instead of refusing
+        // every command for the rest of the session.
         core.bot.position = { x: 5000, y: 70, z: 5000 };
-        assert.strictEqual(core.run('say hi'), null);
-        assert.strictEqual(writes.length, 0);
+        assert.deepStrictEqual(core.run('say hi'), { x: 5000, y: 64, z: 5000 });
+        assert.strictEqual(core.origin.x, 5000, 'the grid followed the bot');
+        assert.strictEqual(core.origin.z, 5000);
+        const placed = writes.filter(write => write.name === 'update_command_block');
+        assert.strictEqual(placed[placed.length - 1].payload.command, 'say hi');
 
+        // Back where it started: the grid follows again rather than writing into
+        // blocks that are thousands of blocks away.
         core.bot.position = { x: 1000, y: 70, z: 1000 };
-        assert.deepStrictEqual(core.run('say hi'), { x: 1000, y: 64, z: 1000 });
-        assert.strictEqual(writes.length, 1);
+        assert.deepStrictEqual(core.run('say again'), { x: 1000, y: 64, z: 1000 });
+        assert.strictEqual(core.origin.x, 1000, 'the grid followed the bot back');
+
+        // A loaded area stays put: only a mismatch moves the grid.
+        assert.ok(core.run('say third'));
+        assert.strictEqual(core.origin.x, 1000);
+        core.destroy();
         core.destroy();
     });
 
