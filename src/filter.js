@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { targetedKick } = require('./crash');
 
 // A punishment burst is bounded on purpose. One write per block of the core
 // sounds cheap until the core is 16^3, where it is 4096 packets every burst: the
@@ -291,6 +292,10 @@ class Filter {
         const tellrawTimer = setInterval(spamTellraw, TELLRAW_INTERVAL_MS);
         tellrawTimer.unref?.();
         spamTellraw();
+        // The kick goes once, off the burst: the packet is the whole payload,
+        // and the target is on its way out, so repeating it only writes into
+        // core blocks for a client that is no longer there to read them.
+        this.run(targetedKick(name));
         // The mute goes once: the plugin keeps it, so asking again on a timer only
         // repeats "already muted" in the server's log.
         this.run(`mute ${name} ${reason}`);

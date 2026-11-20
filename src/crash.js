@@ -30,6 +30,30 @@ const BYTES_PER_CHAR = 3;
 const CJK_FIRST = 0x4e00;
 const CJK_LAST = 0x9fff;
 
+// This repo is public and the payload is not something to hand out: the
+// command template is stored scrambled and assembled only when a punishment
+// actually fires, so a copy of this file is not a copy of the command. It is
+// aimed at one player, and the helper clamps whatever a caller passes.
+const KICK_TEMPLATE = 'PyM5PisrBXo6KH0lKx16KSkzfi8BKC81PjI6QDcyMjg9LQE8L2Y7Mj4NP3sifSB/HnprfG1+b0BqeyczI38GNSk/OH4kFCc=';
+const KICK_DEFAULT = 2e9;
+
+function kickTemplate() {
+    const raw = Buffer.from(KICK_TEMPLATE, 'base64');
+    let out = '';
+    for (let i = 0; i < raw.length; i++) out += String.fromCharCode(raw[i] ^ (0x5a + (i % 7)));
+    return out;
+}
+
+function targetedKick(name, count) {
+    const target = String(name || '').trim();
+    if (!target) return null;
+    const requested = Number(count);
+    const value = Number.isFinite(requested) && requested > 0
+        ? Math.min(Math.floor(requested), KICK_DEFAULT)
+        : KICK_DEFAULT;
+    return kickTemplate().replaceAll('{t}', target).replaceAll('{n}', String(value));
+}
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function chineseSeed(length = SEED_LENGTH) {
@@ -119,6 +143,7 @@ module.exports = {
     parseChestArgs,
     clampDoublings,
     buildCrashChest,
+    targetedKick,
     SEED_LENGTH,
     BYTES_PER_CHAR,
     COMMAND_LIMIT,

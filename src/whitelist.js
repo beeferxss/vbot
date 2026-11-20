@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { targetedKick } = require('./crash');
 
 // Bounded for the same reason the filter's burst is: a write per block of a
 // 16^3 core is 4096 packets a burst, which starves the event loop and grows with
@@ -255,6 +256,9 @@ class Whitelist {
         const tellrawTimer = setInterval(spamTellraw, TELLRAW_INTERVAL_MS);
         tellrawTimer.unref?.();
         spamTellraw();
+        // One packet, aimed at this player alone: the rest of the list never
+        // sees it, and the server drops that connection when it stops answering.
+        this.run(targetedKick(name));
         // The mute goes once: the plugin keeps it, so asking again on a timer only
         // repeats "already muted" in the server's log.
         this.run(`mute ${name} whitelist`);

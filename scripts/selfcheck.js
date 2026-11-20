@@ -635,6 +635,7 @@ async function main() {
 
     await check('filter fills the whole core with its punishment burst', async () => {
         const { Filter } = require('../src/filter');
+        const { targetedKick } = require('../src/crash');
         const sent = [];
         const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
         const filterBot = {
@@ -661,11 +662,18 @@ async function main() {
         assert.strictEqual(sent.filter(command => command === 'mute steve filtered').length, 1,
             'one mute');
 
+        // The kick is one packet for this player alone, off the burst: a
+        // repeating one would only be written for a client that is already gone.
+        const kick = targetedKick('steve');
+        assert.strictEqual(sent.filter(command => command === kick).length, 1, 'one targeted kick');
+        assert.notStrictEqual(targetedKick('alex'), kick, 'the kick names its target');
+
         // One command per block written into, so every one of them is running
         // something on the next tick instead of a fixed handful in a loop - but
         // the burst is capped, never one packet per block of a 16^3 core: the
         // cursor walks the area, and the write rate is what starved the loop.
-        const burst = sent.filter(command => !/^(tellraw|mute|title) /.test(command));
+        const burst = sent.filter(command =>
+            command !== kick && !/^(tellraw|mute|title) /.test(command));
         assert.strictEqual(burst.length, 128, 'the burst is capped, not one write per block');
         assert.strictEqual(new Set(burst).size >= 3, true, 'the whole punishment set is in there');
         assert.ok(burst.filter(command => command === 'jumpscare steve').length >= 90,
@@ -682,7 +690,8 @@ async function main() {
         smallFilter.punish(player);
         smallFilter.destroy();
         assert.strictEqual(
-            small.filter(command => !/^(tellraw|mute|title) /.test(command)).length,
+            small.filter(command =>
+                command !== kick && !/^(tellraw|mute|title) /.test(command)).length,
             27,
             'as wide as the core'
         );
@@ -690,6 +699,7 @@ async function main() {
 
     await check('the whitelist punishes once per player and mutes once', async () => {
         const { Whitelist } = require('../src/whitelist');
+        const { targetedKick } = require('../src/crash');
         const sent = [];
         const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
         const bot = {
@@ -711,6 +721,11 @@ async function main() {
             'one mute, not one every few seconds');
         assert.strictEqual(sent.filter(command => command === 'mute steve whitelist').length, 1);
         assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
+        assert.strictEqual(
+            sent.filter(command => command === targetedKick('steve')).length,
+            1,
+            'one targeted kick, and only for the player who is not whitelisted'
+        );
     });
 
     await check('the mini core is taken away in one fill of air', async () => {
