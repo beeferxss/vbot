@@ -105,9 +105,7 @@
       "admin": "",
       "trusted": ""
     },
-    "owner": [
-      "VojtaV12"
-    ]
+    "owner": []
   },
   "discord": {
     "enabled": true,
