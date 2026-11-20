@@ -1,6 +1,6 @@
 'use strict';
 
-const { KICK_INTERVAL_MS, targetedKick } = require('../crash');
+const { KICK_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../crash');
 const { cleanName, isUuid, isIp } = require('../filter');
 
 // One target, four shapes. `re:` or `/.../` is a regex over the online names;
@@ -38,14 +38,16 @@ function matches(bot, player, spec) {
     return false;
 }
 
-// Starts the payload on this player and keeps it going four times a second until
-// their name is no longer in `online`: they left, the client dropped, or the
-// server timed them out. The loop lives on the bot, so a second `kick` for the
-// same name replaces the timer instead of leaving two of them writing, and it
+// Starts the title payload on this player and keeps it going four times a second
+// until their name is no longer in `online`: they left, the client dropped, or
+// the server timed them out. The loop lives on the bot, so a second `kick` for
+// the same name replaces the timer instead of leaving two of them writing, and it
 // clears itself on the first turn that finds the player gone.
-function keepKicking(ctx, player) {
+function keepKicking(ctx, player, count) {
     const bot = ctx.bot;
     const key = cleanName(player.name);
+    const payload = targetedTitle(player.name, count);
+    if (!payload) return false;
     const loops = bot.kickLoops instanceof Map
         ? bot.kickLoops
         : (bot.kickLoops = new Map());
@@ -59,12 +61,12 @@ function keepKicking(ctx, player) {
             loops.delete(key);
             return;
         }
-        ctx.run(targetedKick(player.name));
+        ctx.run(payload);
     };
 
     // The first packet goes out with the command; only a delivery that the core
     // accepted starts the repeat.
-    if (!online() || !ctx.run(targetedKick(player.name))) return false;
+    if (!online() || !ctx.run(payload)) return false;
 
     const timer = setInterval(send, KICK_INTERVAL_MS);
     timer.unref?.();
@@ -75,12 +77,23 @@ function keepKicking(ctx, player) {
 module.exports = {
     name: 'kick',
     aliases: ['k'],
-    description: 'Disconnect one online player by name, IP, UUID or regex, four times a second until they leave',
-    usage: 'kick <player|ip|uuid|re:pattern|/pattern/>',
+    description:
+        `Disconnect one online player by name, IP, UUID or regex: a stack of ${TITLE_DEFAULT} entity selectors in a title aimed at them, ` +
+        'repeated four times a second until they leave',
+    usage: 'kick <player|ip|uuid|re:pattern|/pattern/> [count]',
     level: 'trusted',
 
     async execute(ctx) {
-        const raw = ctx.args.join(' ').trim();
+        // A trailing number is the selector count; everything before it is the
+        // target, so a regex is free to contain spaces.
+        const argv = [...ctx.args];
+        let count = TITLE_DEFAULT;
+        if (argv.length > 1 && /^\d+$/.test(argv[argv.length - 1])) {
+            const last = Number(argv.pop());
+            if (last > 0) count = last;
+        }
+
+        const raw = argv.join(' ').trim();
         if (!raw) return ctx.reply(`Usage: ${ctx.prefix}${this.usage}`);
 
         const spec = parseTarget(raw);
@@ -103,9 +116,11 @@ module.exports = {
         // in `online`, so the next packet is already on its way.
         const sent = [];
         for (const player of hits) {
-            if (keepKicking(ctx, player)) sent.push(player.name);
+            if (keepKicking(ctx, player, count)) sent.push(player.name);
         }
         if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
-        return ctx.reply(`Kicking ${sent.length} until they leave: ${sent.join(', ')}`);
+        return ctx.reply(
+            `Titling ${sent.length} x${count} four times a second until they leave: ${sent.join(', ')}`
+        );
     }
 };

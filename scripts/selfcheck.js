@@ -4251,8 +4251,9 @@ async function main() {
 
     await check('kick repeats the payload four times a second until the player is gone', async () => {
         const kick = require('../src/commands/kick');
-        const { KICK_INTERVAL_MS, targetedKick } = require('../src/crash');
+        const { KICK_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../src/crash');
         assert.strictEqual(KICK_INTERVAL_MS, 250, 'four times a second');
+        assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors by default');
 
         const sent = [];
         const bot = {
@@ -4269,16 +4270,30 @@ async function main() {
         };
 
         await kick.execute(ctx);
-        const payload = targetedKick('Steve');
+        const payload = targetedTitle('Steve');
         assert.strictEqual(sent[0], payload, 'the first packet goes out at once');
+        assert.ok(payload.startsWith('title Steve title '), 'a title, aimed at that player alone');
+        assert.strictEqual(
+            payload.split('{"selector":"@e[limit=100]"}').length - 1,
+            TITLE_DEFAULT,
+            'nine hundred selectors in the component');
+        assert.ok(sent[0].length <= 32000, 'and it still fits one core command');
         assert.strictEqual(sent.length, 2, 'and the reply follows it');
         assert.ok(bot.kickLoops instanceof Map, 'the repeat is tracked on the bot');
         assert.strictEqual(bot.kickLoops.size, 1);
 
         // A second kick for the same name replaces the timer rather than adding
-        // one, so the payload still goes out once per interval.
-        await kick.execute(ctx);
+        // one, so the payload still goes out once per interval. A trailing number
+        // is the selector count and the name in front of it is the target.
+        await kick.execute({ ...ctx, args: ['Steve', '1200'] });
         assert.strictEqual(bot.kickLoops.size, 1, 'one timer per name');
+        assert.strictEqual(
+            sent.filter(command => command === targetedTitle('Steve', 1200)).length,
+            1,
+            'a count argument changes the selector stack');
+
+        // Back to the default payload for the rest of the checks.
+        await kick.execute(ctx);
 
         const sentBefore = sent.filter(command => command === payload).length;
         await new Promise(resolve => setTimeout(resolve, KICK_INTERVAL_MS + 80));
