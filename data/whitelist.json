@@ -40,5 +40,17 @@
         "players": [],
         "uuids": [],
         "ips": []
+    },
+    "pboom": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
+    },
+    "ptheboom": {
+        "enabled": false,
+        "players": [],
+        "uuids": [],
+        "ips": []
     }
 }
