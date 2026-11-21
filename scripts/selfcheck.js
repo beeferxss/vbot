@@ -4633,7 +4633,7 @@ async function main() {
         await kick.execute(ctx);
         const payload = targetedTeleport('Steve');
         assert.strictEqual(payload,
-            'execute in minecraft:the_nether run minecraft:tp Steve 0 -20000000 0',
+            'essentials:tppos Steve 0 -20000000 0 world_nether',
             'the nether teleport, at the exploit y');
         assert.strictEqual(sent[0], payload, 'the teleport goes out at once');
         assert.strictEqual(sent.some(command => command.startsWith('title ')), false,
@@ -4693,6 +4693,9 @@ async function main() {
 
         await run(['@a']);
         assert.strictEqual(sent[0], targetedTeleport('@a'), 'the whole list is teleported by selector');
+        assert.strictEqual(sent[0],
+            'execute in minecraft:the_nether run minecraft:tp @a 0 -20000000 0',
+            'a selector keeps the vanilla form, which the server resolves');
         assert.strictEqual(bot.kickLoops.size, 1, 'one loop for @a, not one per player');
         assert.match(sent[1], /@a/);
 

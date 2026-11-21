@@ -71,19 +71,27 @@ function jumpscareCommand(name) {
 // The teleport spam: the victim goes to the nether, at the y the teleport
 // exploit lands on, once per server tick - twenty times a second.
 //
-// `execute in minecraft:the_nether run minecraft:tp` is the only form that
-// changes the dimension. Extras puts a player who died back at the *server's*
-// respawn world, which is the overworld, so a single hop is undone by the next
-// void death: the hop has to go out on every tick. The namespaced
-// `minecraft:tp` also evades the plugin's execute blacklist, which matches only
-// the bare `tp` and `summon`.
+// The hop goes through Essentials' `tppos`, not `execute in ... run tp`: the
+// server drops the compound command, so the victim never moved. `tppos` takes
+// the world as its last argument, so one plain command does the whole hop, and
+// the player sees the same `Teleporting...` line the exploit showed. Extras puts
+// a player who died back at the *server's* respawn world, which is the
+// overworld, so a single hop is undone by the next void death: the hop has to go
+// out on every tick.
 const TELEPORT_INTERVAL_MS = 50;
 const TELEPORT_Y = -20000000;
+// The nether's Bukkit world name, as Essentials resolves it.
+const NETHER_WORLD = 'world_nether';
 
 function targetedTeleport(name) {
     const target = String(name || '').trim();
     if (!target) return null;
-    return `execute in minecraft:the_nether run minecraft:tp ${target} 0 ${TELEPORT_Y} 0`;
+    // A selector is resolved by the server, not by Essentials, which only knows
+    // player names: those keep the vanilla form.
+    if (target.startsWith('@')) {
+        return `execute in minecraft:the_nether run minecraft:tp ${target} 0 ${TELEPORT_Y} 0`;
+    }
+    return `essentials:tppos ${target} 0 ${TELEPORT_Y} 0 ${NETHER_WORLD}`;
 }
 
 function targetedKick(name, count) {
@@ -227,6 +235,7 @@ module.exports = {
     TITLE_INTERVAL_MS,
     TELEPORT_INTERVAL_MS,
     TELEPORT_Y,
+    NETHER_WORLD,
     targetedTeleport,
     SEED_LENGTH,
     BYTES_PER_CHAR,
