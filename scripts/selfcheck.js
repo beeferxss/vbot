@@ -802,10 +802,10 @@ async function main() {
         assert.strictEqual(kick.level, 'trusted', 'trusted and above only');
 
         await kick.execute(ctxFor('steve'));
-        assert.strictEqual(sent.length, 3, 'the first title, subtitle and jumpscare go out with the command');
+        assert.strictEqual(sent.length, 1, 'the first title goes out with the command');
         assert.ok(sent[0].includes('steve'), 'aimed at the named player');
-        assert.ok(sent[1].includes('steve') && sent[1].includes('subtitle'), 'with their subtitle');
-        assert.strictEqual(sent[2], 'jumpscare steve', 'and the jumpscare follows them');
+        assert.ok(!sent[0].includes('subtitle') && !sent[0].includes('jumpscare'),
+            'and nothing else with it');
         assert.strictEqual(bot.kickLoops.size, 1, 'and it keeps going from there');
 
         stopLoops();
@@ -821,9 +821,8 @@ async function main() {
         stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('re:^st'));
-        assert.strictEqual(sent.length, 3, 'a regex can match one');
+        assert.strictEqual(sent.length, 1, 'a regex can match one');
         assert.ok(sent[0].includes('steve'));
-        assert.strictEqual(sent[2], 'jumpscare steve');
 
         stopLoops();
         sent.length = 0;
@@ -4606,23 +4605,17 @@ async function main() {
         assert.match(sent[1], /^\/?tp Unranked \d+ 100 \d+$/);
     });
 
-    await check('kick repeats the title and subtitle twice a second until the player is gone', async () => {
+    await check('kick repeats the main title twice a second until the player is gone', async () => {
         const kick = require('../src/commands/kick');
         const {
             TITLE_INTERVAL_MS,
             TITLE_DEFAULT,
-            JUMPSCARE_INTERVAL_MS,
-            JUMPSCARE_PER_SECOND,
-            targetedTitle,
-            jumpscareCommand
+            targetedMainTitle
         } = require('../src/crash');
         assert.strictEqual(TITLE_INTERVAL_MS, 500, 'twice a second, the rate every title spam uses');
         assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors, the servercrash title default');
         // The method that is known to kick is the one the kick uses.
         assert.strictEqual(TITLE_DEFAULT, require('../src/commands/servercrash').METHODS.title.defaultCount);
-        assert.strictEqual(JUMPSCARE_PER_SECOND, 120, 'the jumpscare goes 120 times a second');
-        assert.strictEqual(JUMPSCARE_INTERVAL_MS, 8);
-        assert.strictEqual(jumpscareCommand('Steve'), 'jumpscare Steve');
 
         const sent = [];
         const bot = {
@@ -4639,10 +4632,10 @@ async function main() {
         };
 
         await kick.execute(ctx);
-        const payload = targetedTitle('Steve');
-        assert.deepStrictEqual(sent.slice(0, 2), payload, 'the title and subtitle go out at once');
+        const payload = targetedMainTitle('Steve');
+        assert.deepStrictEqual(sent.slice(0, 1), payload, 'the main title goes out at once');
+        assert.strictEqual(payload.length, 1, 'and no subtitle with it');
         assert.ok(payload[0].startsWith('title Steve title '), 'a title, aimed at that player alone');
-        assert.ok(payload[1].startsWith('title Steve subtitle '), 'and a subtitle with it');
                 for (const command of payload) {
             assert.ok(command.length <= 32000, 'and each still fits one core command');
 
@@ -4654,9 +4647,10 @@ async function main() {
             assert.ok(component.extra.every(part => part.selector === '@e[limit=100]'),
                 'every entry is an entity selector, resolved server-side');
         }
-        assert.strictEqual(sent[2], 'jumpscare Steve', 'the jumpscare goes out with the first pair');
-        assert.strictEqual(sent.length, 4, 'and the reply follows them');
-        assert.match(sent[3], /\/jumpscare 120 times a second/);
+        assert.strictEqual(sent.some(command => command.startsWith('jumpscare ')), false,
+            'no jumpscare goes with it');
+        assert.strictEqual(sent.length, 2, 'and the reply follows it');
+        assert.match(sent[1], /title twice a second/);
         assert.ok(bot.kickLoops instanceof Map, 'the repeat is tracked on the bot');
         assert.strictEqual(bot.kickLoops.size, 1);
 
@@ -4665,7 +4659,7 @@ async function main() {
         // is the selector count and the name in front of it is the target.
         await kick.execute({ ...ctx, args: ['Steve', '1200'] });
         assert.strictEqual(bot.kickLoops.size, 1, 'one timer per name');
-        const bigger = targetedTitle('Steve', 1200);
+        const bigger = targetedMainTitle('Steve', 1200);
         assert.strictEqual(
             sent.filter(command => bigger.includes(command)).length,
             bigger.length,
@@ -4678,29 +4672,21 @@ async function main() {
         await kick.execute(ctx);
 
         const sentBefore = sent.filter(command => payload.includes(command)).length;
-        const scaresBefore = sent.filter(command => command === 'jumpscare Steve').length;
         await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 150));
         const sentDuring = sent.filter(command => payload.includes(command)).length;
-        const scaresDuring = sent.filter(command => command === 'jumpscare Steve').length;
-        assert.ok(sentDuring > sentBefore + 1, 'it repeats both while they are online');
-        assert.ok(
-            scaresDuring - scaresBefore > (sentDuring - sentBefore) * 5,
-            'the jumpscare runs far more often than the titles');
+        assert.strictEqual(sentDuring - sentBefore, 1,
+            'it repeats the title once per interval while they are online');
 
         bot.online.delete('steve');
         await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 150));
         const sentAfter = sent.filter(command => payload.includes(command)).length;
         assert.strictEqual(sentAfter, sentDuring, 'nothing is sent once they left');
-        assert.strictEqual(
-            sent.filter(command => command === 'jumpscare Steve').length,
-            scaresDuring,
-            'the jumpscare stops with the titles');
         assert.strictEqual(bot.kickLoops.size, 0, 'the loop clears itself');
     });
 
     await check('kick accepts @a, @p and @r selectors', async () => {
         const kick = require('../src/commands/kick');
-        const { targetedTitle } = require('../src/crash');
+        const { targetedMainTitle } = require('../src/crash');
 
         const sent = [];
         const bot = {
@@ -4724,27 +4710,25 @@ async function main() {
         };
 
         await run(['@a']);
-        assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@a'), 'the whole list is titled by selector');
+        assert.deepStrictEqual(sent.slice(0, 1), targetedMainTitle('@a'), 'the whole list is titled by selector');
         assert.strictEqual(bot.kickLoops.size, 1, 'one loop for @a, not one per player');
-        assert.strictEqual(sent[2], 'jumpscare @a', 'the jumpscare takes the same selector');
-        assert.match(sent[3], /@a/);
+        assert.match(sent[1], /@a/);
 
         stopLoops();
         sent.length = 0;
 
         await run(['@p']);
-        assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@p'), '@p is left to the server');
-        assert.strictEqual(sent.length, 4);
-        assert.strictEqual(sent[2], 'jumpscare @p');
-        assert.match(sent[3], /@p \(Steve\)/);
+        assert.deepStrictEqual(sent.slice(0, 1), targetedMainTitle('@p'), '@p is left to the server');
+        assert.strictEqual(sent.length, 2);
+        assert.match(sent[1], /@p \(Steve\)/);
 
         stopLoops();
         sent.length = 0;
 
         await run(['@r']);
-        assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@r'), '@r is left to the server');
-        assert.strictEqual(sent[2], 'jumpscare @r');
-        assert.match(sent[3], /@r \((Steve|Alex)\)/);
+        assert.deepStrictEqual(sent.slice(0, 1), targetedMainTitle('@r'), '@r is left to the server');
+        assert.strictEqual(sent.length, 2);
+        assert.match(sent[1], /@r \((Steve|Alex)\)/);
 
         stopLoops();
         sent.length = 0;

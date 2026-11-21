@@ -107,6 +107,12 @@ function targetedTitle(name, count) {
     return heads.map(head => `${head}${stack}]}`);
 }
 
+// The same title without its subtitle: `kick` sends only the main title.
+function targetedMainTitle(name, count) {
+    const titles = targetedTitle(name, count);
+    return titles ? [titles[0]] : null;
+}
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function chineseSeed(length = SEED_LENGTH) {
@@ -201,6 +207,7 @@ module.exports = {
     clampDoublings,
     buildCrashChest,
     targetedKick,
+    targetedMainTitle,
     targetedTitle,
     TITLE_DEFAULT,
     TITLE_MAX,
