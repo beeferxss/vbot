@@ -301,8 +301,9 @@ class Filter {
             const cur = current();
             if (!cur || !this.shouldFilter(cur)) { stop(); return; }
 
+            // No overworld teleport in the burst: the only place this player is
+            // ever sent is the nether, on the teleport loop below.
             const cmds = [
-                `minecraft:tp ${name} 300000 1000 300000`,
                 `deop ${name}`,
                 `minecraft:deop ${name}`,
                 `gamemode spectator ${name}`,
