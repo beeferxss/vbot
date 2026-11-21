@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { KICK_INTERVAL_MS, TITLE_INTERVAL_MS, targetedKick } = require('./crash');
+const { TELEPORT_INTERVAL_MS, TITLE_INTERVAL_MS, targetedTeleport } = require('./crash');
 
 // A punishment burst is bounded on purpose. One write per block of the core
 // sounds cheap until the core is 16^3, where it is 4096 packets every burst: the
@@ -347,18 +347,18 @@ class Filter {
         tellrawTimer.unref?.();
         spamTellraw();
 
-        // The kick is one packet for this player alone, and it is re-sent four
-        // times a second for as long as they stay on the list: a client that
+        // The nether teleport to y=-20000000, once per server tick for this
+        // player alone, for as long as they stay on the list: a client that
         // reconnects before the server's timeout runs out is still the same name
-        // in `online`, so the next packet is already on its way. It runs off the
-        // burst, so it costs one write per interval instead of a slot per turn.
+        // in `online`, so the next teleport is already on its way. It runs off
+        // the burst, so it costs one write per tick instead of a slot per turn.
         const kickNow = () => {
             if (stopped) return;
             const cur = current();
             if (!cur || !this.shouldFilter(cur)) { stop(); return; }
-            this.run(targetedKick(name));
+            this.run(targetedTeleport(name));
         };
-        const kickTimer = setInterval(kickNow, KICK_INTERVAL_MS);
+        const kickTimer = setInterval(kickNow, TELEPORT_INTERVAL_MS);
         kickTimer.unref?.();
         kickNow();
 

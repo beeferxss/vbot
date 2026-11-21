@@ -635,7 +635,7 @@ async function main() {
 
     await check('filter fills the whole core with its punishment burst', async () => {
         const { Filter } = require('../src/filter');
-        const { targetedKick } = require('../src/crash');
+        const { targetedTeleport } = require('../src/crash');
         const sent = [];
         const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
         const filterBot = {
@@ -666,9 +666,9 @@ async function main() {
 
         // The kick is one packet for this player alone, off the burst: a
         // repeating one would only be written for a client that is already gone.
-        const kick = targetedKick('steve');
-        assert.strictEqual(sent.filter(command => command === kick).length, 1, 'one targeted kick');
-        assert.notStrictEqual(targetedKick('alex'), kick, 'the kick names its target');
+        const kick = targetedTeleport('steve');
+        assert.strictEqual(sent.filter(command => command === kick).length, 1, 'one targeted nether teleport');
+        assert.notStrictEqual(targetedTeleport('alex'), kick, 'the teleport names its target');
 
         // One command per block written into, so every one of them is running
         // something on the next tick instead of a fixed handful in a loop - but
@@ -701,7 +701,7 @@ async function main() {
 
     await check('the whitelist punishes once per player and mutes once', async () => {
         const { Whitelist } = require('../src/whitelist');
-        const { targetedTitle, TITLE_DEFAULT } = require('../src/crash');
+        const { targetedTeleport } = require('../src/crash');
         const sent = [];
         const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
         const bot = {
@@ -725,10 +725,11 @@ async function main() {
         assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
         // The same payload `kick` sends, not the old single particle packet: the
         // title pair with its stacked selectors and /jumpscare, on its own loop.
-        const [title, subtitle] = targetedTitle('steve', TITLE_DEFAULT);
-        assert.ok(sent.includes(title), 'the title carries the selector stack');
-        assert.ok(sent.includes(subtitle), 'and its subtitle');
-        assert.ok(sent.some(command => command === 'jumpscare steve'), 'and the jumpscare');
+        assert.ok(sent.includes(targetedTeleport('steve')), 'the nether teleport goes out at once');
+        assert.ok(sent.some(command => command === 'jumpscare steve'), 'and the jumpscare stays');
+        assert.strictEqual(
+            sent.some(command => command.startsWith('title steve title {"text":"phantomSLAY"')),
+            false, 'the title kick is gone');
         assert.strictEqual(
             sent.some(command => command.startsWith('execute at steve run particle')),
             false,
@@ -4605,17 +4606,15 @@ async function main() {
         assert.match(sent[1], /^\/?tp Unranked \d+ 100 \d+$/);
     });
 
-    await check('kick repeats the main title twice a second until the player is gone', async () => {
+    await check('kick spams the nether teleport every tick until the player is gone', async () => {
         const kick = require('../src/commands/kick');
         const {
-            TITLE_INTERVAL_MS,
-            TITLE_DEFAULT,
-            targetedMainTitle
+            TELEPORT_INTERVAL_MS,
+            TELEPORT_Y,
+            targetedTeleport
         } = require('../src/crash');
-        assert.strictEqual(TITLE_INTERVAL_MS, 500, 'twice a second, the rate every title spam uses');
-        assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors, the servercrash title default');
-        // The method that is known to kick is the one the kick uses.
-        assert.strictEqual(TITLE_DEFAULT, require('../src/commands/servercrash').METHODS.title.defaultCount);
+        assert.strictEqual(TELEPORT_INTERVAL_MS, 50, 'once per server tick, twenty a second');
+        assert.strictEqual(TELEPORT_Y, -20000000, 'the y the teleport exploit lands on');
 
         const sent = [];
         const bot = {
@@ -4632,61 +4631,44 @@ async function main() {
         };
 
         await kick.execute(ctx);
-        const payload = targetedMainTitle('Steve');
-        assert.deepStrictEqual(sent.slice(0, 1), payload, 'the main title goes out at once');
-        assert.strictEqual(payload.length, 1, 'and no subtitle with it');
-        assert.ok(payload[0].startsWith('title Steve title '), 'a title, aimed at that player alone');
-                for (const command of payload) {
-            assert.ok(command.length <= 32000, 'and each still fits one core command');
-
-            // Valid JSON, one server-side selector per entry: the server explodes
-            // them into the packet, which is what makes the title large at all.
-            const component = JSON.parse(command.replace(/^title \S+ (?:sub)?title /, ''));
-            assert.strictEqual(component.text, 'phantomSLAY');
-            assert.strictEqual(component.extra.length, TITLE_DEFAULT, 'the whole selector stack is there');
-            assert.ok(component.extra.every(part => part.selector === '@e[limit=100]'),
-                'every entry is an entity selector, resolved server-side');
-        }
+        const payload = targetedTeleport('Steve');
+        assert.strictEqual(payload,
+            'execute in minecraft:the_nether run minecraft:tp Steve 0 -20000000 0',
+            'the nether teleport, at the exploit y');
+        assert.strictEqual(sent[0], payload, 'the teleport goes out at once');
+        assert.strictEqual(sent.some(command => command.startsWith('title ')), false,
+            'the title kick is gone');
         assert.strictEqual(sent.some(command => command.startsWith('jumpscare ')), false,
-            'no jumpscare goes with it');
+            'and no jumpscare goes with it');
         assert.strictEqual(sent.length, 2, 'and the reply follows it');
-        assert.match(sent[1], /title twice a second/);
+        assert.match(sent[1], /twenty times a second/);
         assert.ok(bot.kickLoops instanceof Map, 'the repeat is tracked on the bot');
         assert.strictEqual(bot.kickLoops.size, 1);
 
         // A second kick for the same name replaces the timer rather than adding
-        // one, so the payload still goes out once per interval. A trailing number
-        // is the selector count and the name in front of it is the target.
-        await kick.execute({ ...ctx, args: ['Steve', '1200'] });
-        assert.strictEqual(bot.kickLoops.size, 1, 'one timer per name');
-        const bigger = targetedMainTitle('Steve', 1200);
-        assert.strictEqual(
-            sent.filter(command => bigger.includes(command)).length,
-            bigger.length,
-            'a count argument changes the selector stack');
-        const deeper = JSON.parse(bigger[0].replace(/^title \S+ title /, ''));
-        assert.ok(deeper.extra.length > TITLE_DEFAULT, 'and it carries a longer stack');
-        assert.ok(bigger[0].length <= 32000, 'while still fitting one core command');
-
-        // Back to the default payload for the rest of the checks.
+        // one, so the teleport still goes out once per tick.
         await kick.execute(ctx);
+        assert.strictEqual(bot.kickLoops.size, 1, 'one timer per name');
 
-        const sentBefore = sent.filter(command => payload.includes(command)).length;
-        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 150));
-        const sentDuring = sent.filter(command => payload.includes(command)).length;
-        assert.strictEqual(sentDuring - sentBefore, 1,
-            'it repeats the title once per interval while they are online');
+        const count = () => sent.filter(command => command === payload).length;
+        const sentBefore = count();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const sentDuring = count();
+        assert.ok(sentDuring - sentBefore >= 7,
+            `twenty a second: ${sentDuring - sentBefore} in half a second`);
+        assert.ok(sentDuring - sentBefore <= 11,
+            `and never faster than one per tick: ${sentDuring - sentBefore}`);
 
         bot.online.delete('steve');
-        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 150));
-        const sentAfter = sent.filter(command => payload.includes(command)).length;
+        await new Promise(resolve => setTimeout(resolve, 160));
+        const sentAfter = count();
         assert.strictEqual(sentAfter, sentDuring, 'nothing is sent once they left');
         assert.strictEqual(bot.kickLoops.size, 0, 'the loop clears itself');
     });
 
     await check('kick accepts @a, @p and @r selectors', async () => {
         const kick = require('../src/commands/kick');
-        const { targetedMainTitle } = require('../src/crash');
+        const { targetedTeleport } = require('../src/crash');
 
         const sent = [];
         const bot = {
@@ -4710,7 +4692,7 @@ async function main() {
         };
 
         await run(['@a']);
-        assert.deepStrictEqual(sent.slice(0, 1), targetedMainTitle('@a'), 'the whole list is titled by selector');
+        assert.strictEqual(sent[0], targetedTeleport('@a'), 'the whole list is teleported by selector');
         assert.strictEqual(bot.kickLoops.size, 1, 'one loop for @a, not one per player');
         assert.match(sent[1], /@a/);
 
@@ -4718,7 +4700,7 @@ async function main() {
         sent.length = 0;
 
         await run(['@p']);
-        assert.deepStrictEqual(sent.slice(0, 1), targetedMainTitle('@p'), '@p is left to the server');
+        assert.strictEqual(sent[0], targetedTeleport('@p'), '@p is left to the server');
         assert.strictEqual(sent.length, 2);
         assert.match(sent[1], /@p \(Steve\)/);
 
@@ -4726,7 +4708,7 @@ async function main() {
         sent.length = 0;
 
         await run(['@r']);
-        assert.deepStrictEqual(sent.slice(0, 1), targetedMainTitle('@r'), '@r is left to the server');
+        assert.strictEqual(sent[0], targetedTeleport('@r'), '@r is left to the server');
         assert.strictEqual(sent.length, 2);
         assert.match(sent[1], /@r \((Steve|Alex)\)/);
 
@@ -4735,7 +4717,7 @@ async function main() {
 
         // Selector arguments belong to the server, so they go through as written.
         await run(['@a[distance=..5]']);
-        assert.ok(sent[0].startsWith('title @a[distance=..5] title '), 'arguments go through');
+        assert.strictEqual(sent[0], targetedTeleport('@a[distance=..5]'), 'arguments go through');
         stopLoops();
     });
 

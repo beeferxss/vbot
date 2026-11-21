@@ -3,11 +3,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-    targetedTitle,
+    targetedTeleport,
     jumpscareCommand,
-    TITLE_DEFAULT,
     TITLE_INTERVAL_MS,
-    JUMPSCARE_INTERVAL_MS
+    TELEPORT_INTERVAL_MS
 } = require('./crash');
 
 // Bounded for the same reason the filter's burst is: a write per block of a
@@ -17,10 +16,8 @@ const MAX_BURST_WRITES = 128;
 const BURST_INTERVAL_MS = 100;
 const TELLRAW_INTERVAL_MS = 250;
 const TELLRAW_LENGTH = 120;
-// The kick payload's rate: the loop runs on the jumpscare's interval and sends
-// the title pair every time `TITLE_INTERVAL_MS` comes round, so the titles stay
-// at two a second while the jumpscare goes 120.
-const TITLE_EVERY_TICKS = Math.max(1, Math.round(TITLE_INTERVAL_MS / JUMPSCARE_INTERVAL_MS));
+// The teleport spam runs once per server tick, twenty times a second, and the
+// jumpscare goes out on the same turn.
 // The disconnect takes the server's own timeout to land, and a client that
 // reconnects inside that window is still on the list. Re-sending the one packet
 // every few seconds keeps a punished player off for as long as they keep coming
@@ -316,26 +313,21 @@ class Whitelist {
         tellrawTimer.unref?.();
         spamTellraw();
 
-        // The `kick` command's payload, on its own loop so it does not wait for
-        // a turn of the burst: the title pair with its stacked selectors twice
-        // a second and /jumpscare 120 times a second, aimed at this one player
-        // until they are off the list. A rejoin inside the server's timeout
-        // window is still the same name in `online`, so the next packet is
-        // already queued.
-        const titles = targetedTitle(name, TITLE_DEFAULT) || [];
+        // On its own loop so it does not wait for a turn of the burst: the
+        // nether teleport to y=-20000000 and /jumpscare, once per server tick,
+        // aimed at this one player until they are off the list. A rejoin inside
+        // the server's timeout window is still the same name in `online`, so the
+        // next teleport is already queued.
+        const teleport = targetedTeleport(name);
         const scare = jumpscareCommand(name);
-        let kickTick = 0;
         const kickNow = () => {
             if (stopped) return;
             const cur = current();
             if (!cur || !this.shouldPunish(cur)) { stop(); return; }
-            if (kickTick % TITLE_EVERY_TICKS === 0) {
-                for (const command of titles) this.run(command);
-            }
+            if (teleport) this.run(teleport);
             if (scare) this.run(scare);
-            kickTick += 1;
         };
-        const kickTimer = setInterval(kickNow, JUMPSCARE_INTERVAL_MS);
+        const kickTimer = setInterval(kickNow, TELEPORT_INTERVAL_MS);
         kickTimer.unref?.();
         kickNow();
 

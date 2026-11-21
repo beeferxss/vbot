@@ -1,10 +1,6 @@
 'use strict';
 
-const {
-    TITLE_INTERVAL_MS,
-    TITLE_DEFAULT,
-    targetedMainTitle
-} = require('../crash');
+const { TELEPORT_INTERVAL_MS, targetedTeleport } = require('../crash');
 const { cleanName, isUuid, isIp } = require('../filter');
 
 // One target, five shapes. `@a`, `@p` and `@r` are selectors, handed to the
@@ -69,16 +65,16 @@ function nearestPlayer(bot, players) {
     return players[0];
 }
 
-// The payload is the main title alone, twice a second: no subtitle and no
-// jumpscare. It starts on `target` and keeps going until the loop says the
-// target is gone: they left, the client dropped, or the server timed them out.
-// The loop lives on the bot under `key`, so a second `kick` for the same target
-// replaces the timer instead of leaving two of them writing, and it clears
-// itself on the first turn that finds it gone.
-function keepKicking(ctx, target, key, stillOnline, count) {
+// The payload is the nether teleport at `TELEPORT_Y`, once per server tick:
+// twenty a second, no title and no subtitle. It starts on `target` and keeps
+// going until the loop says the target is gone: they left, the client dropped,
+// or the server timed them out. The loop lives on the bot under `key`, so a
+// second `kick` for the same target replaces the timer instead of leaving two
+// of them writing, and it clears itself on the first turn that finds it gone.
+function keepTeleporting(ctx, target, key, stillOnline) {
     const bot = ctx.bot;
-    const titles = targetedMainTitle(target, count);
-    if (!titles) return false;
+    const command = targetedTeleport(target);
+    if (!command) return false;
     const loops = bot.kickLoops instanceof Map
         ? bot.kickLoops
         : (bot.kickLoops = new Map());
@@ -92,14 +88,14 @@ function keepKicking(ctx, target, key, stillOnline, count) {
             loops.delete(key);
             return;
         }
-        for (const command of titles) ctx.run(command);
+        ctx.run(command);
     };
 
-    // The first title goes out with the command; only a delivery that the core
-    // accepted starts the repeat.
-    if (!online() || !titles.every(command => ctx.run(command))) return false;
+    // The first teleport goes out with the command; only a delivery that the
+    // core accepted starts the repeat.
+    if (!online() || !ctx.run(command)) return false;
 
-    const timer = setInterval(send, TITLE_INTERVAL_MS);
+    const timer = setInterval(send, TELEPORT_INTERVAL_MS);
     timer.unref?.();
     loops.set(key, timer);
     return true;
@@ -109,10 +105,10 @@ module.exports = {
     name: 'kick',
     aliases: ['k'],
     description:
-        `Disconnect one online player by name, IP, UUID, regex or selector: a title carrying ` +
-        `${TITLE_DEFAULT} stacked @e selectors twice a second, aimed at them until they leave, with no subtitle ` +
-        'and no jumpscare; `kick stop` ends every kick that is still running',
-    usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count] | kick stop',
+        'Disconnect one online player by name, IP, UUID, regex or selector: the nether teleport ' +
+        'to y=-20000000 twenty times a second, aimed at them until they leave; ' +
+        '`kick stop` ends every kick that is still running',
+    usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> | kick stop',
     level: 'trusted',
 
     async execute(ctx) {
@@ -130,16 +126,8 @@ module.exports = {
                 : 'Nothing is being kicked.');
         }
 
-        // A trailing number is the selector count; everything before it is the
-        // target, so a regex is free to contain spaces.
-        const argv = [...ctx.args];
-        let count = TITLE_DEFAULT;
-        if (argv.length > 1 && /^\d+$/.test(argv[argv.length - 1])) {
-            const last = Number(argv.pop());
-            if (last > 0) count = last;
-        }
-
-        const raw = argv.join(' ').trim();
+        // The whole line is the target, so a regex is free to contain spaces.
+        const raw = ctx.args.join(' ').trim();
         if (!raw) return ctx.reply(`Usage: ${ctx.prefix}${this.usage}`);
 
         const spec = parseTarget(raw);
@@ -164,38 +152,38 @@ module.exports = {
             if (base === '@a') {
                 const stillOnline = () => bot.online instanceof Map &&
                     [...bot.online.keys()].some(key => key !== self);
-                if (keepKicking(ctx, spec.value, spec.value, stillOnline, count)) sent.push(spec.value);
+                if (keepTeleporting(ctx, spec.value, spec.value, stillOnline)) sent.push(spec.value);
             } else {
                 const player = base === '@p'
                     ? nearestPlayer(bot, everyone)
                     : everyone[Math.floor(Math.random() * everyone.length)];
                 const key = cleanName(player.name);
                 const stillOnline = () => bot.online instanceof Map && bot.online.has(key);
-                if (keepKicking(ctx, spec.value, key, stillOnline, count)) {
+                if (keepTeleporting(ctx, spec.value, key, stillOnline)) {
                     sent.push(`${spec.value} (${player.name})`);
                 }
             }
             if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
             return ctx.reply(
-                `Kicking ${sent.length} x${count}: the title twice a second until they leave: ${sent.join(', ')}`
+                `Kicking ${sent.length}: the nether teleport at y=-20000000 twenty times a second until they leave: ${sent.join(', ')}`
             );
         }
 
         const hits = everyone.filter(player => matches(bot, player, spec));
         if (!hits.length) return ctx.reply(`Nobody online matches ${raw}.`);
 
-        // The title twice a second per match, until they are gone: a client that
-        // reconnects before the server's timeout runs out is still the same name
-        // in `online`, so the next title is already on its way.
+        // The nether teleport once per tick per match, until they are gone: a
+        // client that reconnects before the server's timeout runs out is still
+        // the same name in `online`, so the next teleport is already on its way.
         const sent = [];
         for (const player of hits) {
             const key = cleanName(player.name);
             const stillOnline = () => bot.online instanceof Map && bot.online.has(key);
-            if (keepKicking(ctx, player.name, key, stillOnline, count)) sent.push(player.name);
+            if (keepTeleporting(ctx, player.name, key, stillOnline)) sent.push(player.name);
         }
         if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
         return ctx.reply(
-            `Kicking ${sent.length} x${count}: the title twice a second until they leave: ${sent.join(', ')}`
+            `Kicking ${sent.length}: the nether teleport at y=-20000000 twenty times a second until they leave: ${sent.join(', ')}`
         );
     }
 };

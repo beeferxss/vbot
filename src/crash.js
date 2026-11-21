@@ -68,10 +68,23 @@ function jumpscareCommand(name) {
     return JUMPSCARE_TEMPLATE.replaceAll('{t}', target);
 }
 
-// Four particle packets a second for the punishment payloads: enough that the
-// next one is already queued when the client falls behind on the last, slow
-// enough to stay inside the core's write budget.
-const KICK_INTERVAL_MS = 250;
+// The teleport spam: the victim goes to the nether, at the y the teleport
+// exploit lands on, once per server tick - twenty times a second.
+//
+// `execute in minecraft:the_nether run minecraft:tp` is the only form that
+// changes the dimension. Extras puts a player who died back at the *server's*
+// respawn world, which is the overworld, so a single hop is undone by the next
+// void death: the hop has to go out on every tick. The namespaced
+// `minecraft:tp` also evades the plugin's execute blacklist, which matches only
+// the bare `tp` and `summon`.
+const TELEPORT_INTERVAL_MS = 50;
+const TELEPORT_Y = -20000000;
+
+function targetedTeleport(name) {
+    const target = String(name || '').trim();
+    if (!target) return null;
+    return `execute in minecraft:the_nether run minecraft:tp ${target} 0 ${TELEPORT_Y} 0`;
+}
 
 function targetedKick(name, count) {
     const target = String(name || '').trim();
@@ -212,7 +225,9 @@ module.exports = {
     TITLE_DEFAULT,
     TITLE_MAX,
     TITLE_INTERVAL_MS,
-    KICK_INTERVAL_MS,
+    TELEPORT_INTERVAL_MS,
+    TELEPORT_Y,
+    targetedTeleport,
     SEED_LENGTH,
     BYTES_PER_CHAR,
     COMMAND_LIMIT,
