@@ -55,5 +55,21 @@
         "ips": [],
         "regex": null,
         "mutes": []
+    },
+    "ptheboom": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
+    },
+    "pboom": {
+        "enabled": true,
+        "players": [],
+        "uuids": [],
+        "ips": [],
+        "regex": null,
+        "mutes": []
     }
 }
