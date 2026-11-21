@@ -510,10 +510,26 @@ class Core {
 
     miniFillLost() {
         this.fillFailures += 1;
-        this.fillItem?.refused?.();
+        const mini = this.fillItem;
+        mini?.refused?.();
+
+        // The fill went into a block that looked alive and was not: a bulk edit
+        // takes the main core and the cube in one go, and a write into one of
+        // those cells is accepted and lost. Chat is the one route that still
+        // reaches the world with nothing standing, so the cube is asked for there
+        // at once instead of waiting out the refusal.
+        const again = mini?.fillCommand?.({ force: true });
+        if (again && this.chatFill(again, 'mini core lost')) {
+            mini?.recover?.();
+            this.logEvery('mini-fill-chat', 10000, 'warn',
+                'the mini core fill did not land; it went out as chat instead');
+            return true;
+        }
+
         this.logEvery('mini-fill-unconfirmed', 10000, 'warn',
             'the mini core fill did not land; the core is filled through a ' +
             'core block or chat instead');
+        return false;
     }
 
     // Writes the fill into a core block that is still standing. That block only

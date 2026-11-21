@@ -121,8 +121,8 @@ module.exports = {
     name: 'kick',
     aliases: ['k'],
     description:
-        `Disconnect one online player by name, IP, UUID, regex or selector: a title and its subtitle nested ${TITLE_DEFAULT} ` +
-        `levels deep and filled with ideographs ten times a second, plus /jumpscare ${JUMPSCARE_PER_SECOND} times a second, ` +
+        `Disconnect one online player by name, IP, UUID, regex or selector: a title and its subtitle carrying ` +
+        `${TITLE_DEFAULT} stacked @e selectors ten times a second, plus /jumpscare ${JUMPSCARE_PER_SECOND} times a second, ` +
         'aimed at them until they leave',
     usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count]',
     level: 'trusted',

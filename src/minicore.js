@@ -213,8 +213,11 @@ class MiniCore {
 
     // The whole cube in one command. The core runs it through a block that is
     // still standing, or as chat; either way one command puts the mini core down.
-    fillCommand() {
-        if (!this.usable) return null;
+    // `force` hands the command out even when no cell of the cube answered - the
+    // case a fill that went into a block that was not there leaves behind - and
+    // skips the rate limit, because the caller is about to send it another way.
+    fillCommand({ force = false } = {}) {
+        if (!force && !this.usable) return null;
         const at = this.feet();
         if (!at) return null;
 
@@ -222,8 +225,8 @@ class MiniCore {
         if (!box) return null;
         // Every cell already shown standing: there is nothing to fill, and a
         // fill that is still on its way is not sent twice.
-        if (this.slots.size >= this.count && this.standing) return null;
-        if (this.flushedAt && Date.now() - this.flushedAt < MINI_FILL_MS) return null;
+        if (!force && this.slots.size >= this.count && this.standing) return null;
+        if (!force && this.flushedAt && Date.now() - this.flushedAt < MINI_FILL_MS) return null;
 
         this.flushedAt = Date.now();
         return `fill ${box.min.x} ${box.min.y} ${box.min.z} ` +
@@ -273,6 +276,14 @@ class MiniCore {
         this.box = null;
         this.boxKey = null;
         this.slots.clear();
+        return true;
+    }
+
+    // A fill that was lost has been asked for another way, so the cube is worth
+    // trusting again at once: the refusal only exists to stop a loop of block
+    // writes, not to keep the cube off for a minute after a chat fill.
+    recover() {
+        this.retryUntil = 0;
         return true;
     }
 

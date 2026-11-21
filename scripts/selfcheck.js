@@ -1355,6 +1355,56 @@ async function main() {
         core.destroy();
     });
 
+    await check('a worldedit that takes both cores refills the mini core as chat', () => {
+        const writes = [];
+        const chats = [];
+        const bot = {
+            client: { version: '1.21.4' },
+            position: { x: 10.7, y: 64, z: -3.2 },
+            write: (name, payload) => (writes.push({ name, payload }), true),
+            sendChat: command => (chats.push(command), true)
+        };
+        const core = new Core({
+            bot,
+            config: { enabled: true, area: { size: 9, y: 64 }, joinRtp: false, refill: { enabled: true, item: true } },
+            logger
+        });
+        core.origin = { x: 0, y: 64, z: 0 };
+        core.bounds = { x: 8, y: 72, z: 8 };
+        core.ready = true;
+        core.everReady = true;
+        core.graceUntil = 0;
+        core.markAllAlive();
+
+        const mini = core.fillItem;
+        const CMD_STATE = require('minecraft-data')('1.21.4').blocksByName.command_block.defaultState;
+        for (const cell of mini.current().cells) mini.noteBlockChange({ location: { ...cell }, type: CMD_STATE });
+        assert.strictEqual(mini.needsFill(), false, 'a whole cube needs nothing');
+
+        // WorldEdit takes both cores and announces nothing, so the core still
+        // believes its blocks stand: the fill is written into one of them and is
+        // accepted by the write and lost by the world.
+        mini.goneAll();
+        core.lastRefillAt = 0;
+        core.refilling = false;
+        mini.flushedAt = 0;
+        assert.strictEqual(core.refill('worldedit'), true);
+        assert.ok(writes.some(write => /^fill 9 66 -5 10 67 -4 /.test(write.payload.command)),
+            'the block route is tried first');
+        assert.deepStrictEqual(chats, [], 'nothing is sent as chat yet');
+
+        // That fill never answers, so the cube is asked for as chat instead of
+        // being written off for the whole retry window.
+        core.lastChatFillAt = 0;
+        assert.strictEqual(core.miniFillLost(), true);
+        assert.strictEqual(chats.length, 1, 'the mini core fill goes out as chat');
+        assert.match(chats[0], /^\/fill 9 66 -5 10 67 -4 .*repeating_command_block/);
+        assert.strictEqual(mini.usable, true, 'the cube is usable again at once');
+        assert.strictEqual(mini.retryUntil, 0);
+        assert.strictEqual(mini.needsFill(), true, 'and it is filled again until a cell answers');
+        core.destroy();
+    });
+
     await check('the core starts once the position is known, however often it is asked', () => {
         const fills = [];
         const startBot = {
@@ -4548,7 +4598,9 @@ async function main() {
             jumpscareCommand
         } = require('../src/crash');
         assert.strictEqual(TITLE_INTERVAL_MS, 100, 'ten times a second');
-        assert.strictEqual(TITLE_DEFAULT, 500, 'five hundred nested levels by default');
+        assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors, the servercrash title default');
+        // The method that is known to kick is the one the kick uses.
+        assert.strictEqual(TITLE_DEFAULT, require('../src/commands/servercrash').METHODS.title.defaultCount);
         assert.strictEqual(JUMPSCARE_PER_SECOND, 120, 'the jumpscare goes 120 times a second');
         assert.strictEqual(JUMPSCARE_INTERVAL_MS, 8);
         assert.strictEqual(jumpscareCommand('Steve'), 'jumpscare Steve');
@@ -4572,26 +4624,16 @@ async function main() {
         assert.deepStrictEqual(sent.slice(0, 2), payload, 'the title and subtitle go out at once');
         assert.ok(payload[0].startsWith('title Steve title '), 'a title, aimed at that player alone');
         assert.ok(payload[1].startsWith('title Steve subtitle '), 'and a subtitle with it');
-        const depthOf = command => command.split('"extra":[').length - 2;
-        for (const command of payload) {
+                for (const command of payload) {
             assert.ok(command.length <= 32000, 'and each still fits one core command');
-            assert.ok(!command.includes('@e['), 'no entity selectors are nested');
-            assert.match(command, /[\u4e00-\u9fff]/, 'the filler is ideographs');
 
-            // Valid JSON, nested to the depth the payload claims, ending in the
-            // leaf the client has to reach.
+            // Valid JSON, one server-side selector per entry: the server explodes
+            // them into the packet, which is what makes the title large at all.
             const component = JSON.parse(command.replace(/^title \S+ (?:sub)?title /, ''));
-            let node = component;
-            let levels = 0;
-            while (Array.isArray(node.extra) && node.extra.length) {
-                node = node.extra[0];
-                levels += 1;
-            }
-            // The walk starts at the title's own component, so it takes one more
-            // step than the levels nested inside it.
-            assert.strictEqual(levels, TITLE_DEFAULT + 1, 'the component nests that many levels');
-            assert.strictEqual(depthOf(command), TITLE_DEFAULT);
-            assert.strictEqual(node.text, 'phantomSLAY', 'and ends at the leaf');
+            assert.strictEqual(component.text, 'phantomSLAY');
+            assert.strictEqual(component.extra.length, TITLE_DEFAULT, 'the whole selector stack is there');
+            assert.ok(component.extra.every(part => part.selector === '@e[limit=100]'),
+                'every entry is an entity selector, resolved server-side');
         }
         assert.strictEqual(sent[2], 'jumpscare Steve', 'the jumpscare goes out with the first pair');
         assert.strictEqual(sent.length, 4, 'and the reply follows them');
@@ -4609,7 +4651,8 @@ async function main() {
             sent.filter(command => bigger.includes(command)).length,
             bigger.length,
             'a count argument changes the selector stack');
-        assert.ok(depthOf(bigger[0]) > TITLE_DEFAULT, 'and it nests deeper');
+        const deeper = JSON.parse(bigger[0].replace(/^title \S+ title /, ''));
+        assert.ok(deeper.extra.length > TITLE_DEFAULT, 'and it carries a longer stack');
         assert.ok(bigger[0].length <= 32000, 'while still fitting one core command');
 
         // Back to the default payload for the rest of the checks.
