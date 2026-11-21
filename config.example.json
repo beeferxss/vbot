@@ -39,7 +39,7 @@
       },
       {
         "id": "hceboom",
-        "enabled": false,
+        "enabled": true,
         "host": "kaboom.hcesaropz.dev",
         "port": 25565,
         "channelId": "1532881552009203812",
@@ -66,7 +66,7 @@
       },
       {
         "id": "altnorat",
-        "enabled": false,
+        "enabled": true,
         "host": "alt.norat.pw",
         "port": 25565,
         "channelId": "1572692644830777436",
@@ -75,7 +75,7 @@
       },
       {
         "id": "norat",
-        "enabled": false,
+        "enabled": true,
         "host": "play.norat.pw",
         "port": 25565,
         "channelId": "1572692313644335245",
