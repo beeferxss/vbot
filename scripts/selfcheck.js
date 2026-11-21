@@ -796,9 +796,10 @@ async function main() {
         assert.strictEqual(kick.level, 'trusted', 'trusted and above only');
 
         await kick.execute(ctxFor('steve'));
-        assert.strictEqual(sent.length, 2, 'the first title and subtitle go out with the command');
+        assert.strictEqual(sent.length, 3, 'the first title, subtitle and jumpscare go out with the command');
         assert.ok(sent[0].includes('steve'), 'aimed at the named player');
         assert.ok(sent[1].includes('steve') && sent[1].includes('subtitle'), 'with their subtitle');
+        assert.strictEqual(sent[2], 'jumpscare steve', 'and the jumpscare follows them');
         assert.strictEqual(bot.kickLoops.size, 1, 'and it keeps going from there');
 
         stopLoops();
@@ -814,8 +815,9 @@ async function main() {
         stopLoops();
         sent.length = 0;
         await kick.execute(ctxFor('re:^st'));
-        assert.strictEqual(sent.length, 2, 'a regex can match one');
+        assert.strictEqual(sent.length, 3, 'a regex can match one');
         assert.ok(sent[0].includes('steve'));
+        assert.strictEqual(sent[2], 'jumpscare steve');
 
         stopLoops();
         sent.length = 0;
@@ -4066,7 +4068,8 @@ async function main() {
             channelFor,
             createDiscordBridge,
             stripMarkdown,
-            takeBatch
+            takeBatch,
+            memberColor
         } = require('../src/discord');
 
         assert.strictEqual(
@@ -4078,6 +4081,16 @@ async function main() {
                 .map(part => part.text).join(''),
             '[Discord] Alex (reply to @Sam): hello'
         );
+        // The name is drawn in the colour of the member's highest coloured role,
+        // the way Discord shows it, and stays green when there is no colour.
+        assert.strictEqual(memberColor({ displayColor: 0xff0000 }), '#ff0000');
+        assert.strictEqual(memberColor({ displayColor: 0 }), '', '0 means no role colour');
+        assert.strictEqual(memberColor({ displayHexColor: '#00FF88' }), '#00ff88');
+        assert.strictEqual(memberColor(null), '');
+        const red = discordComponent({ author: 'Alex', message: 'hi', color: memberColor({ displayColor: 0xff0000 }) });
+        assert.strictEqual(red[1].color, '#ff0000', 'a red rank reads red');
+        assert.strictEqual(discordComponent({ author: 'Alex', message: 'hi' })[1].color, '#62d66b');
+
         assert.strictEqual(stripMarkdown('**bold** and `code`'), 'bold and code');
         assert.deepStrictEqual(takeBatch(['a', 'b', 'c']), { content: 'a\nb\nc', consumed: 3 });
         assert.strictEqual(
@@ -4526,9 +4539,19 @@ async function main() {
 
     await check('kick repeats the title and subtitle ten times a second until the player is gone', async () => {
         const kick = require('../src/commands/kick');
-        const { TITLE_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../src/crash');
+        const {
+            TITLE_INTERVAL_MS,
+            TITLE_DEFAULT,
+            JUMPSCARE_INTERVAL_MS,
+            JUMPSCARE_PER_SECOND,
+            targetedTitle,
+            jumpscareCommand
+        } = require('../src/crash');
         assert.strictEqual(TITLE_INTERVAL_MS, 100, 'ten times a second');
-        assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors by default');
+        assert.strictEqual(TITLE_DEFAULT, 500, 'five hundred nested levels by default');
+        assert.strictEqual(JUMPSCARE_PER_SECOND, 120, 'the jumpscare goes 120 times a second');
+        assert.strictEqual(JUMPSCARE_INTERVAL_MS, 8);
+        assert.strictEqual(jumpscareCommand('Steve'), 'jumpscare Steve');
 
         const sent = [];
         const bot = {
@@ -4549,14 +4572,30 @@ async function main() {
         assert.deepStrictEqual(sent.slice(0, 2), payload, 'the title and subtitle go out at once');
         assert.ok(payload[0].startsWith('title Steve title '), 'a title, aimed at that player alone');
         assert.ok(payload[1].startsWith('title Steve subtitle '), 'and a subtitle with it');
+        const depthOf = command => command.split('"extra":[').length - 2;
         for (const command of payload) {
-            assert.strictEqual(
-                command.split('{"selector":"@e[limit=100]"}').length - 1,
-                TITLE_DEFAULT,
-                'nine hundred selectors in each component');
             assert.ok(command.length <= 32000, 'and each still fits one core command');
+            assert.ok(!command.includes('@e['), 'no entity selectors are nested');
+            assert.match(command, /[\u4e00-\u9fff]/, 'the filler is ideographs');
+
+            // Valid JSON, nested to the depth the payload claims, ending in the
+            // leaf the client has to reach.
+            const component = JSON.parse(command.replace(/^title \S+ (?:sub)?title /, ''));
+            let node = component;
+            let levels = 0;
+            while (Array.isArray(node.extra) && node.extra.length) {
+                node = node.extra[0];
+                levels += 1;
+            }
+            // The walk starts at the title's own component, so it takes one more
+            // step than the levels nested inside it.
+            assert.strictEqual(levels, TITLE_DEFAULT + 1, 'the component nests that many levels');
+            assert.strictEqual(depthOf(command), TITLE_DEFAULT);
+            assert.strictEqual(node.text, 'phantomSLAY', 'and ends at the leaf');
         }
-        assert.strictEqual(sent.length, 3, 'and the reply follows them');
+        assert.strictEqual(sent[2], 'jumpscare Steve', 'the jumpscare goes out with the first pair');
+        assert.strictEqual(sent.length, 4, 'and the reply follows them');
+        assert.match(sent[3], /\/jumpscare 120 times a second/);
         assert.ok(bot.kickLoops instanceof Map, 'the repeat is tracked on the bot');
         assert.strictEqual(bot.kickLoops.size, 1);
 
@@ -4570,22 +4609,30 @@ async function main() {
             sent.filter(command => bigger.includes(command)).length,
             bigger.length,
             'a count argument changes the selector stack');
-        assert.ok(
-            bigger[0].split('{"selector":"@e[limit=100]"}').length - 1 > TITLE_DEFAULT,
-            'and it asks for more selectors');
+        assert.ok(depthOf(bigger[0]) > TITLE_DEFAULT, 'and it nests deeper');
+        assert.ok(bigger[0].length <= 32000, 'while still fitting one core command');
 
         // Back to the default payload for the rest of the checks.
         await kick.execute(ctx);
 
         const sentBefore = sent.filter(command => payload.includes(command)).length;
+        const scaresBefore = sent.filter(command => command === 'jumpscare Steve').length;
         await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 80));
         const sentDuring = sent.filter(command => payload.includes(command)).length;
+        const scaresDuring = sent.filter(command => command === 'jumpscare Steve').length;
         assert.ok(sentDuring > sentBefore + 1, 'it repeats both while they are online');
+        assert.ok(
+            scaresDuring - scaresBefore > (sentDuring - sentBefore) * 5,
+            'the jumpscare runs far more often than the titles');
 
         bot.online.delete('steve');
         await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 80));
         const sentAfter = sent.filter(command => payload.includes(command)).length;
         assert.strictEqual(sentAfter, sentDuring, 'nothing is sent once they left');
+        assert.strictEqual(
+            sent.filter(command => command === 'jumpscare Steve').length,
+            scaresDuring,
+            'the jumpscare stops with the titles');
         assert.strictEqual(bot.kickLoops.size, 0, 'the loop clears itself');
     });
 
@@ -4617,22 +4664,25 @@ async function main() {
         await run(['@a']);
         assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@a'), 'the whole list is titled by selector');
         assert.strictEqual(bot.kickLoops.size, 1, 'one loop for @a, not one per player');
-        assert.match(sent[2], /@a/);
+        assert.strictEqual(sent[2], 'jumpscare @a', 'the jumpscare takes the same selector');
+        assert.match(sent[3], /@a/);
 
         stopLoops();
         sent.length = 0;
 
         await run(['@p']);
         assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@p'), '@p is left to the server');
-        assert.strictEqual(sent.length, 3);
-        assert.match(sent[2], /@p \(Steve\)/);
+        assert.strictEqual(sent.length, 4);
+        assert.strictEqual(sent[2], 'jumpscare @p');
+        assert.match(sent[3], /@p \(Steve\)/);
 
         stopLoops();
         sent.length = 0;
 
         await run(['@r']);
         assert.deepStrictEqual(sent.slice(0, 2), targetedTitle('@r'), '@r is left to the server');
-        assert.match(sent[2], /@r \((Steve|Alex)\)/);
+        assert.strictEqual(sent[2], 'jumpscare @r');
+        assert.match(sent[3], /@r \((Steve|Alex)\)/);
 
         stopLoops();
         sent.length = 0;

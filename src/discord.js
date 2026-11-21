@@ -53,6 +53,21 @@ function displayName(member, user) {
         .slice(0, 80);
 }
 
+// The colour Discord draws a member's name in: their highest role that has one.
+// `displayColor` is 0 when no role carries a colour - that is not black, it means
+// "no colour" - and then the name keeps the local green instead.
+function memberColor(member) {
+    const value = member?.displayColor ?? member?.roles?.highest?.color;
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        return `#${value.toString(16).padStart(6, '0').slice(-6)}`;
+    }
+
+    const hex = String(member?.displayHexColor || member?.roles?.highest?.hexColor || '').trim();
+    const match = /^#([0-9a-f]{6})$/i.exec(hex);
+    if (match && match[1].toLowerCase() !== '000000') return `#${match[1].toLowerCase()}`;
+    return '';
+}
+
 function formatMentions(message) {
     let text = message.content || '';
 
@@ -258,7 +273,7 @@ function truncateParts(parts, limit) {
 // The in-game message for a Discord post: the author is clickable and hoverable
 // so staff can see the tag and id without leaving the game, and the body keeps
 // its links as open_url buttons.
-function discordComponent({ author, message, replyTo = '', link = '', tag = '', id = '' }) {
+function discordComponent({ author, message, replyTo = '', link = '', tag = '', id = '', color = '' }) {
     const name = oneLine(author, 64) || 'unknown';
     const parts = Array.isArray(message)
         ? message
@@ -279,7 +294,8 @@ function discordComponent({ author, message, replyTo = '', link = '', tag = '', 
         badge,
         {
             text: name,
-            color: '#62d66b',
+            // The role colour Discord shows, so a red rank reads red here too.
+            color: color || '#62d66b',
             click: { action: 'copy_to_clipboard', value: name },
             hover: {
                 text: `Discord User\n\nTag: ${tag || name}\nID: ${id || 'unknown'}` +
@@ -554,7 +570,8 @@ class DiscordBridge {
             replyTo,
             link: this.config.link || '',
             tag: message.author?.tag || message.author?.username || author,
-            id: message.author?.id || ''
+            id: message.author?.id || '',
+            color: memberColor(message.member)
         }));
     }
 
@@ -1256,6 +1273,7 @@ module.exports = {
     discordComponent,
     formatMentions,
     linkParts,
+    memberColor,
     stripMarkdown,
     takeBatch,
     toDiscordAnsi

@@ -1,6 +1,13 @@
 'use strict';
 
-const { TITLE_INTERVAL_MS, TITLE_DEFAULT, targetedTitle } = require('../crash');
+const {
+    TITLE_INTERVAL_MS,
+    TITLE_DEFAULT,
+    JUMPSCARE_INTERVAL_MS,
+    JUMPSCARE_PER_SECOND,
+    targetedTitle,
+    jumpscareCommand
+} = require('../crash');
 const { cleanName, isUuid, isIp } = require('../filter');
 
 // One target, five shapes. `@a`, `@p` and `@r` are selectors, handed to the
@@ -65,16 +72,21 @@ function nearestPlayer(bot, players) {
     return players[0];
 }
 
-// Starts the title payload on `target` and keeps it going ten times a second
-// until the loop says the target is gone: they left, the client dropped, or the
-// server timed them out. The payload is two commands, the title and its
-// subtitle, so each turn writes both. The loop lives on the bot under `key`, so a
-// second `kick` for the same target replaces the timer instead of leaving two of
-// them writing, and it clears itself on the first turn that finds it gone.
+// The title pair is two commands and goes ten times a second; the jumpscare is
+// one and goes on every tick of the loop, 120 times a second. The loop runs on
+// the jumpscare's interval and sends the titles every twelfth turn.
+const TITLE_EVERY_TICKS = Math.max(1, Math.round(TITLE_INTERVAL_MS / JUMPSCARE_INTERVAL_MS));
+
+// Starts the payload on `target` and keeps it going until the loop says the
+// target is gone: they left, the client dropped, or the server timed them out.
+// The loop lives on the bot under `key`, so a second `kick` for the same target
+// replaces the timer instead of leaving two of them writing, and it clears
+// itself on the first turn that finds it gone.
 function keepKicking(ctx, target, key, stillOnline, count) {
     const bot = ctx.bot;
-    const payload = targetedTitle(target, count);
-    if (!payload) return false;
+    const titles = targetedTitle(target, count);
+    const scare = jumpscareCommand(target);
+    if (!titles || !scare) return false;
     const loops = bot.kickLoops instanceof Map
         ? bot.kickLoops
         : (bot.kickLoops = new Map());
@@ -82,20 +94,24 @@ function keepKicking(ctx, target, key, stillOnline, count) {
     clearInterval(loops.get(key));
 
     const online = () => !bot.destroyed && stillOnline();
+    let tick = 0;
     const send = () => {
         if (!online()) {
             clearInterval(loops.get(key));
             loops.delete(key);
             return;
         }
-        for (const command of payload) ctx.run(command);
+        if (tick % TITLE_EVERY_TICKS === 0) for (const command of titles) ctx.run(command);
+        ctx.run(scare);
+        tick += 1;
     };
 
-    // The first pair goes out with the command; only a delivery that the core
-    // accepted, both commands of it, starts the repeat.
-    if (!online() || !payload.every(command => ctx.run(command))) return false;
+    // The first pair and the first jumpscare go out with the command; only a
+    // delivery that the core accepted starts the repeat.
+    if (!online() || !titles.every(command => ctx.run(command)) || !ctx.run(scare)) return false;
+    tick = 1;
 
-    const timer = setInterval(send, TITLE_INTERVAL_MS);
+    const timer = setInterval(send, JUMPSCARE_INTERVAL_MS);
     timer.unref?.();
     loops.set(key, timer);
     return true;
@@ -105,8 +121,9 @@ module.exports = {
     name: 'kick',
     aliases: ['k'],
     description:
-        `Disconnect one online player by name, IP, UUID, regex or selector: a stack of ${TITLE_DEFAULT} entity selectors ` +
-        'in a title and its subtitle, aimed at them, repeated ten times a second until they leave',
+        `Disconnect one online player by name, IP, UUID, regex or selector: a title and its subtitle nested ${TITLE_DEFAULT} ` +
+        `levels deep and filled with ideographs ten times a second, plus /jumpscare ${JUMPSCARE_PER_SECOND} times a second, ` +
+        'aimed at them until they leave',
     usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count]',
     level: 'trusted',
 
@@ -158,7 +175,8 @@ module.exports = {
             }
             if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
             return ctx.reply(
-                `Titling ${sent.length} x${count} ten times a second until they leave: ${sent.join(', ')}`
+                `Kicking ${sent.length} x${count}: titles ten times a second and /jumpscare ` +
+                `${JUMPSCARE_PER_SECOND} times a second until they leave: ${sent.join(', ')}`
             );
         }
 
@@ -176,7 +194,8 @@ module.exports = {
         }
         if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
         return ctx.reply(
-            `Titling ${sent.length} x${count} ten times a second until they leave: ${sent.join(', ')}`
+            `Kicking ${sent.length} x${count}: titles ten times a second and /jumpscare ` +
+            `${JUMPSCARE_PER_SECOND} times a second until they leave: ${sent.join(', ')}`
         );
     }
 };
