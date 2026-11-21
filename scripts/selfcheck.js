@@ -4606,7 +4606,7 @@ async function main() {
         assert.match(sent[1], /^\/?tp Unranked \d+ 100 \d+$/);
     });
 
-    await check('kick repeats the title and subtitle ten times a second until the player is gone', async () => {
+    await check('kick repeats the title and subtitle twice a second until the player is gone', async () => {
         const kick = require('../src/commands/kick');
         const {
             TITLE_INTERVAL_MS,
@@ -4616,7 +4616,7 @@ async function main() {
             targetedTitle,
             jumpscareCommand
         } = require('../src/crash');
-        assert.strictEqual(TITLE_INTERVAL_MS, 100, 'ten times a second');
+        assert.strictEqual(TITLE_INTERVAL_MS, 500, 'twice a second, the rate every title spam uses');
         assert.strictEqual(TITLE_DEFAULT, 900, 'nine hundred selectors, the servercrash title default');
         // The method that is known to kick is the one the kick uses.
         assert.strictEqual(TITLE_DEFAULT, require('../src/commands/servercrash').METHODS.title.defaultCount);
@@ -4679,7 +4679,7 @@ async function main() {
 
         const sentBefore = sent.filter(command => payload.includes(command)).length;
         const scaresBefore = sent.filter(command => command === 'jumpscare Steve').length;
-        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 80));
+        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 150));
         const sentDuring = sent.filter(command => payload.includes(command)).length;
         const scaresDuring = sent.filter(command => command === 'jumpscare Steve').length;
         assert.ok(sentDuring > sentBefore + 1, 'it repeats both while they are online');
@@ -4688,7 +4688,7 @@ async function main() {
             'the jumpscare runs far more often than the titles');
 
         bot.online.delete('steve');
-        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 80));
+        await new Promise(resolve => setTimeout(resolve, TITLE_INTERVAL_MS + 150));
         const sentAfter = sent.filter(command => payload.includes(command)).length;
         assert.strictEqual(sentAfter, sentDuring, 'nothing is sent once they left');
         assert.strictEqual(

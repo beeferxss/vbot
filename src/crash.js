@@ -51,9 +51,10 @@ const SUBTITLE_HEAD = 'title {t} subtitle {"text":"phantomSLAY","color":"#ffccee
 const TITLE_DEFAULT = 900;
 const TITLE_MAX = 5000;
 
-// Ten title/subtitle pairs a second while the player is still online: the client
-// never finishes laying out one pair before the next is in its queue.
-const TITLE_INTERVAL_MS = 100;
+// Two title/subtitle pairs a second while the player is still online, and the
+// same rate for every other title a punishment re-applies: the title is the
+// screen takeover, the jumpscare is what keeps the connection busy.
+const TITLE_INTERVAL_MS = 500;
 
 // The jumpscare the kick mixes in: the server's own `/jumpscare <player>`,
 // aimed at the same target 120 times a second for as long as the titles run.

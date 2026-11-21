@@ -72,9 +72,9 @@ function nearestPlayer(bot, players) {
     return players[0];
 }
 
-// The title pair is two commands and goes ten times a second; the jumpscare is
-// one and goes on every tick of the loop, 120 times a second. The loop runs on
-// the jumpscare's interval and sends the titles every twelfth turn.
+// The title pair is two commands and goes twice a second; the jumpscare is one
+// and goes on every tick of the loop, 120 times a second. The loop runs on the
+// jumpscare's interval and sends the titles on every sixty-third turn.
 const TITLE_EVERY_TICKS = Math.max(1, Math.round(TITLE_INTERVAL_MS / JUMPSCARE_INTERVAL_MS));
 
 // Starts the payload on `target` and keeps it going until the loop says the
@@ -122,7 +122,7 @@ module.exports = {
     aliases: ['k'],
     description:
         `Disconnect one online player by name, IP, UUID, regex or selector: a title and its subtitle carrying ` +
-        `${TITLE_DEFAULT} stacked @e selectors ten times a second, plus /jumpscare ${JUMPSCARE_PER_SECOND} times a second, ` +
+        `${TITLE_DEFAULT} stacked @e selectors twice a second, plus /jumpscare ${JUMPSCARE_PER_SECOND} times a second, ` +
         'aimed at them until they leave; `kick stop` ends every kick that is still running',
     usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count] | kick stop',
     level: 'trusted',
@@ -189,7 +189,7 @@ module.exports = {
             }
             if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
             return ctx.reply(
-                `Kicking ${sent.length} x${count}: titles ten times a second and /jumpscare ` +
+                `Kicking ${sent.length} x${count}: titles twice a second and /jumpscare ` +
                 `${JUMPSCARE_PER_SECOND} times a second until they leave: ${sent.join(', ')}`
             );
         }
@@ -208,7 +208,7 @@ module.exports = {
         }
         if (!sent.length) return ctx.reply('Core is not ready; nothing was sent.');
         return ctx.reply(
-            `Kicking ${sent.length} x${count}: titles ten times a second and /jumpscare ` +
+            `Kicking ${sent.length} x${count}: titles twice a second and /jumpscare ` +
             `${JUMPSCARE_PER_SECOND} times a second until they leave: ${sent.join(', ')}`
         );
     }

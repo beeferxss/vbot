@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { KICK_INTERVAL_MS, targetedKick } = require('./crash');
+const { KICK_INTERVAL_MS, TITLE_INTERVAL_MS, targetedKick } = require('./crash');
 
 // A punishment burst is bounded on purpose. One write per block of the core
 // sounds cheap until the core is 16^3, where it is 4096 packets every burst: the
@@ -365,9 +365,11 @@ class Filter {
         // The mute goes once: the plugin keeps it, so asking again on a timer only
         // repeats "already muted" in the server's log.
         this.run(`mute ${name} ${reason}`);
+        // The title is put back at the same two-a-second rate every punishment
+        // uses, so a respawn or a world change cannot leave the screen clear.
         const titleTimer = setInterval(() => {
             if (!stopped) this.applyTitle(name, reason);
-        }, 1500);
+        }, TITLE_INTERVAL_MS);
         titleTimer.unref?.();
         this.applyTitle(name, reason);
         this.punishTimers.set(key, { timeout: null, tellrawTimer, titleTimer, kickTimer });

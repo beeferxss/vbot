@@ -6,6 +6,7 @@ const {
     targetedTitle,
     jumpscareCommand,
     TITLE_DEFAULT,
+    TITLE_INTERVAL_MS,
     JUMPSCARE_INTERVAL_MS
 } = require('./crash');
 
@@ -16,12 +17,10 @@ const MAX_BURST_WRITES = 128;
 const BURST_INTERVAL_MS = 100;
 const TELLRAW_INTERVAL_MS = 250;
 const TELLRAW_LENGTH = 120;
-// The kick payload's rate: the loop runs on the jumpscare's interval, but the
-// title pair only goes twice a second. The title is the screen takeover; the
-// jumpscare 120 times a second is what keeps the connection busy.
-const PUNISH_TITLE_PER_SECOND = 2;
-const TITLE_EVERY_TICKS = Math.max(1,
-    Math.round((1000 / PUNISH_TITLE_PER_SECOND) / JUMPSCARE_INTERVAL_MS));
+// The kick payload's rate: the loop runs on the jumpscare's interval and sends
+// the title pair every time `TITLE_INTERVAL_MS` comes round, so the titles stay
+// at two a second while the jumpscare goes 120.
+const TITLE_EVERY_TICKS = Math.max(1, Math.round(TITLE_INTERVAL_MS / JUMPSCARE_INTERVAL_MS));
 // The disconnect takes the server's own timeout to land, and a client that
 // reconnects inside that window is still on the list. Re-sending the one packet
 // every few seconds keeps a punished player off for as long as they keep coming
@@ -345,7 +344,7 @@ class Whitelist {
         this.run(`mute ${name} whitelist`);
         const titleTimer = setInterval(() => {
             if (!stopped) this.applyTitle(name);
-        }, 1500);
+        }, TITLE_INTERVAL_MS);
         titleTimer.unref?.();
         this.applyTitle(name);
         this.punishTimers.set(key, { timeout: null, tellrawTimer, titleTimer, kickTimer });
