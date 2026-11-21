@@ -123,11 +123,25 @@ module.exports = {
     description:
         `Disconnect one online player by name, IP, UUID, regex or selector: a title and its subtitle carrying ` +
         `${TITLE_DEFAULT} stacked @e selectors ten times a second, plus /jumpscare ${JUMPSCARE_PER_SECOND} times a second, ` +
-        'aimed at them until they leave',
-    usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count]',
+        'aimed at them until they leave; `kick stop` ends every kick that is still running',
+    usage: 'kick <player|ip|uuid|re:pattern|/pattern/|@a|@p|@r> [count] | kick stop',
     level: 'trusted',
 
     async execute(ctx) {
+        // `stop` takes the word, so a player named "stop" cannot be kicked by
+        // name; every other target is parsed as before.
+        if (String(ctx.args[0] || '').trim().toLowerCase() === 'stop') {
+            const loops = ctx.bot.kickLoops instanceof Map ? ctx.bot.kickLoops : null;
+            const running = loops ? loops.size : 0;
+            if (loops) {
+                for (const timer of loops.values()) clearInterval(timer);
+                loops.clear();
+            }
+            return ctx.reply(running
+                ? `Stopped ${running} kick${running === 1 ? '' : 's'}.`
+                : 'Nothing is being kicked.');
+        }
+
         // A trailing number is the selector count; everything before it is the
         // target, so a regex is free to contain spaces.
         const argv = [...ctx.args];

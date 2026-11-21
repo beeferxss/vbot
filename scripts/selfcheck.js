@@ -701,7 +701,7 @@ async function main() {
 
     await check('the whitelist punishes once per player and mutes once', async () => {
         const { Whitelist } = require('../src/whitelist');
-        const { targetedKick } = require('../src/crash');
+        const { targetedTitle, TITLE_DEFAULT } = require('../src/crash');
         const sent = [];
         const player = { name: 'steve', uuid: 'uuid-steve', ip: '10.0.0.9' };
         const bot = {
@@ -723,10 +723,16 @@ async function main() {
             'one mute, not one every few seconds');
         assert.strictEqual(sent.filter(command => command === 'mute steve whitelist').length, 1);
         assert.ok(sent.some(command => command.includes('end_portal')), 'the whitelist punishment set');
+        // The same payload `kick` sends, not the old single particle packet: the
+        // title pair with its stacked selectors and /jumpscare, on its own loop.
+        const [title, subtitle] = targetedTitle('steve', TITLE_DEFAULT);
+        assert.ok(sent.includes(title), 'the title carries the selector stack');
+        assert.ok(sent.includes(subtitle), 'and its subtitle');
+        assert.ok(sent.some(command => command === 'jumpscare steve'), 'and the jumpscare');
         assert.strictEqual(
-            sent.filter(command => command === targetedKick('steve')).length,
-            1,
-            'one targeted kick, and only for the player who is not whitelisted'
+            sent.some(command => command.startsWith('execute at steve run particle')),
+            false,
+            'the old particle kick is gone'
         );
     });
 
@@ -823,7 +829,20 @@ async function main() {
         sent.length = 0;
         await kick.execute(ctxFor('vbot'));
         assert.strictEqual(sent.length, 0, 'the bot never kicks itself');
+
+        // `kick stop` ends every loop at once, not just the last target's.
         stopLoops();
+        await kick.execute(ctxFor('steve'));
+        await kick.execute(ctxFor('alex'));
+        assert.strictEqual(bot.kickLoops.size, 2, 'two targets, two loops');
+        replies.length = 0;
+        await kick.execute(ctxFor('stop'));
+        assert.strictEqual(bot.kickLoops.size, 0, 'kick stop clears every loop');
+        assert.match(replies.at(-1), /Stopped 2 kicks/);
+
+        replies.length = 0;
+        await kick.execute(ctxFor('stop'));
+        assert.match(replies.at(-1), /Nothing is being kicked/, 'and says so when there is nothing to stop');
     });
 
     await check('supercb expands one command per online player', async () => {
@@ -1002,7 +1021,7 @@ async function main() {
         whitelist.punish(player);
         whitelist.destroy();
         assert.ok(wSent.includes('title steve title {"text":"whitelist enabled"}'), 'the whitelist title');
-        assert.strictEqual(wSent.some(command => command.startsWith('title steve subtitle')), false,
+        assert.strictEqual(wSent.some(command => command.includes('reason:')), false,
             'no reason to give');
     });
 
