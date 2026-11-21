@@ -2443,6 +2443,91 @@ async function main() {
         scratch.close();
     });
 
+    await check('a join with mail waiting is told privately how much', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-mailnotice-'));
+        const scratch = new Store(path.join(dir, 'vbot.sqlite')).open();
+        scratch.sendMail('Steve', 'Alex', 'meet at spawn');
+        scratch.sendMail('Steve', 'Alex', 'and bring a pickaxe');
+
+        const { MailNotice } = require('../src/mailnotice');
+        const sent = [];
+        const fake = {
+            config: { bot: { prefixes: ['\\', '\u00b0'] } },
+            client: { version: '1.21.4' },
+            state: 'ready',
+            online: new Map([['alex', { name: 'Alex' }]]),
+            chat: message => (sent.push(message), true)
+        };
+        const notice = new MailNotice({ bot: fake, store: scratch, config: { delayMs: 0, retryMs: 0 }, logger });
+        assert.strictEqual(notice.prefix, '\\', 'the hint names the prefix the bot listens for');
+
+        assert.strictEqual(notice.note('Alex'), true);
+        await new Promise(resolve => setTimeout(resolve, 20));
+
+        assert.strictEqual(sent.length, 1, 'one private line, never a broadcast');
+        assert.match(sent[0], /^\/tellraw Alex /, 'only the joining player is told');
+        const body = JSON.parse(/^\/tellraw Alex (.*)$/s.exec(sent[0])[1]);
+        assert.match(body.text, /2 unread messages/);
+        assert.match(body.text, /\\mail read/);
+        assert.strictEqual(scratch.unreadMailCount('Alex'), 2, 'being told does not mark it read');
+
+        // Nothing is waiting for Steve, so his join is silent.
+        assert.strictEqual(notice.note('Steve'), true);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.strictEqual(sent.length, 1);
+
+        // A reply the core refuses is retried, and one notice is never doubled.
+        let refusals = 1;
+        fake.chat = message => {
+            if (refusals > 0) {
+                refusals -= 1;
+                return false;
+            }
+            sent.push(message);
+            return true;
+        };
+        notice.note('Alex');
+        await new Promise(resolve => setTimeout(resolve, 40));
+        assert.strictEqual(sent.length, 2, 'the retry gets the notice out');
+
+        // They left before it could go out: nothing is carried over.
+        fake.online.delete('alex');
+        notice.note('Alex');
+        await new Promise(resolve => setTimeout(resolve, 20));
+        assert.strictEqual(sent.length, 2);
+
+        notice.destroy();
+        assert.strictEqual(notice.pending.size, 0);
+        scratch.close();
+    });
+
+    await check('only players arriving after the first tab list are greeted', () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-primed-'));
+        const scratch = new Store(path.join(dir, 'vbot.sqlite')).open();
+        const primed = new Bot({
+            server: { id: 'primed', host: '127.0.0.1', port: 1, username: 'vbot', auth: 'offline' },
+            config,
+            store: scratch,
+            permissions,
+            registry: { dispatch: async () => {} },
+            logger
+        });
+        const greeted = [];
+        primed.mailNotice.note = name => (greeted.push(name), true);
+
+        primed.handlePlayerInfo({ entries: [{ uuid: offlineUuid('Alex'), name: 'Alex' }] });
+        assert.deepStrictEqual(greeted, [], 'players already online are not joining');
+
+        primed.handlePlayerInfo({ entries: [{ uuid: offlineUuid('Steve'), name: 'Steve' }] });
+        assert.deepStrictEqual(greeted, ['Steve'], 'a new tab list entry is a join');
+
+        primed.notePlayerList('[PLAYER_LIST] Alex, Steve, Herobrine');
+        assert.deepStrictEqual(greeted, ['Steve', 'Herobrine'], 'a vanished player joins through the scan');
+
+        primed.destroy();
+        scratch.close();
+    });
+
     await check('store checkpoints the WAL before the database is committed', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vbot-db-'));
         const file = path.join(dir, 'vbot.sqlite');

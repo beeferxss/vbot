@@ -110,6 +110,15 @@ function defaults() {
             timeoutMs: 4000,
             rescanMs: 300000
         },
+        // A player who joins with mail waiting is told privately how much there
+        // is, so an unread message is never silent. The notice waits for the
+        // world and the core, and is retried while the player is still online.
+        mail: {
+            notifyOnJoin: true,
+            delayMs: 4000,
+            retryMs: 2500,
+            attempts: 16
+        },
         selfCare: {
             enabled: true,
             // A bot teleported into the end (or the nether) is brought back to

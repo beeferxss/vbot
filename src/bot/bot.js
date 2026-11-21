@@ -14,6 +14,7 @@ const { Warp } = require('../warp');
 const { FilterGuard } = require('../filterguard');
 const { IpLookup } = require('../iplookup');
 const { VersionLookup } = require('../versions');
+const { MailNotice } = require('../mailnotice');
 const path = require('node:path');
 const { Filter } = require('../filter');
 const { Whitelist } = require('../whitelist');
@@ -73,6 +74,15 @@ class Bot extends EventEmitter {
             config: config.versions || {},
             logger: this.log
         });
+        // A join with mail waiting is answered privately, so `/mail` is not
+        // something a player has to think of first.
+        this.mailNotice = new MailNotice({
+            bot: this,
+            store,
+            registry,
+            config: config.mail || {},
+            logger: this.log
+        });
 
         const dataDir = path.join(require('../config').ROOT || process.cwd(), 'data');
         this.filter = new Filter({
@@ -114,6 +124,9 @@ class Bot extends EventEmitter {
         this.online = new Map();
         // Who the tab list itself lists, to tell a vanished player from a listed one.
         this.listed = new Set();
+        // The first tab list of a session is everyone already online, not a set
+        // of joins, so only entries after it are treated as arrivals.
+        this.onlinePrimed = false;
         this.scanTimer = null;
         // Set once a signed player chat packet arrives: until then the server may
         // simply not support chat signing, so unsigned chat is all there is.
@@ -265,6 +278,7 @@ class Bot extends EventEmitter {
             this.supportsPlayerLoaded = this.supportsPacket('player_loaded');
             this.emit('ready');
             this.applyPrefixTag();
+            this.onlinePrimed = false;
             this.startPlayerScan();
             // Give the position packet a moment to arrive before placing anything.
             setTimeout(() => this.core?.onReady(), 1500).unref?.();
@@ -339,6 +353,8 @@ class Bot extends EventEmitter {
             this.registries = { item: null, components: null };
             this.online.clear();
             this.listed.clear();
+            this.onlinePrimed = false;
+            this.mailNotice?.destroy();
             if (this.scanTimer) clearInterval(this.scanTimer);
             this.scanTimer = null;
             this.filter?.destroy();
@@ -509,6 +525,7 @@ class Bot extends EventEmitter {
             if (isNew) {
                 this.ipLookup?.queue(name);
                 this.versions?.queue(name);
+                if (this.onlinePrimed) this.mailNotice?.note(name);
                 // A rank redeemed with a token belongs to the session it was
                 // redeemed in, so joining again starts at public instead of
                 // carrying an old rank back in.
@@ -525,6 +542,8 @@ class Bot extends EventEmitter {
             }
         }
 
+        // Everything in this packet was already there when the session began.
+        this.onlinePrimed = true;
         this.log.debug(`player list: ${entries.length} entries, ${this.online.size} online`);
     }
 
@@ -597,6 +616,8 @@ class Bot extends EventEmitter {
             if (!existing) {
                 this.ipLookup?.queue(name);
                 this.versions?.queue(name);
+                // A vanished player only shows up here, so this is their join.
+                if (this.onlinePrimed) this.mailNotice?.note(name);
             }
             added += 1;
         }
@@ -764,6 +785,7 @@ class Bot extends EventEmitter {
         this.filterGuard?.destroy();
         this.ipLookup?.destroy();
         this.versions?.destroy();
+        this.mailNotice?.destroy();
         this.removeAllListeners();
     }
 }
